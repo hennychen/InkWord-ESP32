@@ -1,0 +1,39 @@
+# PlatformIO build system
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# ESP-IDF build artifacts (if built with idf.py standalone)
+build/
+sdkconfig.old
+sdkconfig.defaults.old
+
+# Compiled binaries & artifacts
+*.elf
+*.bin
+*.map
+*.hex
+
+# CMake (ESP-IDF uses CMake under the hood)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake
+
+# Dependencies lock (regenerated on build)
+dependencies.lock
+managed_components/
+
+# IDE & editor
+.vscode/*.state.json
+.vscode/.cortex-debug.*
+.cache/
+.idea/
+
+# Logs
+*.log
+monitor_log*.txt
+
+# OS files
+.DS_Store
+Thumbs.db

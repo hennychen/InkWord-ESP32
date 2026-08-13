@@ -1,0 +1,31 @@
+# src/CMakeLists.txt (ESP-IDF "main" component, used by PlatformIO espidf framework)
+# Task F-03: 注册主组件并声明组件级依赖。
+idf_component_register(
+    SRCS
+        "debug_log.c"
+        "epd_driver.c"
+        "audio_player.c"
+        "button_handler.c"
+        "storage_manager.c"
+        "refresh_scheduler.c"
+        "word_parser.c"
+        "srs_engine.c"
+        "study_mode_machine.c"
+        "wifi_manager.c"
+        "wifi_config_ui.c"
+        "sync_client.c"
+        "ota_manager.c"
+        "main.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_event
+        nvs_flash
+        esp_wifi
+        esp_http_client
+        esp_https_ota
+        driver
+        fatfs
+        spiffs
+        json
+)
