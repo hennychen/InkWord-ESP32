@@ -7,6 +7,7 @@
  */
 #include "study_mode_machine.h"
 #include "debug_log.h"
+#include "gpio_config.h"
 #include "epd_driver.h"
 #include "audio_player.h"
 #include "word_parser.h"
@@ -102,6 +103,9 @@ void study_mode_handle_action(int action)
         break;
     }
 
-    /* 触发重绘 */
-    ui_render_word(s_current, s_cursor);
+    /* 仅画面变化的动作触发重绘：翻页(prev/next)局刷内容区；
+     * confirm(2) 暂无画面变化、speak(3) 只播放音频，不浪费刷新次数 */
+    if (action == 0 || action == 1) {
+        ui_render_word(s_current, s_cursor);
+    }
 }

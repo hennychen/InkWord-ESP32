@@ -9,6 +9,7 @@
 #define INKWORD_REFRESH_SCHEDULER_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,7 +28,7 @@ void refresh_scheduler_init(uint8_t partial_threshold);
 /**
  * @brief 提交一次刷新请求。
  *        调度器内部决定走局刷还是全刷；达到阈值会自动清屏+全刷。
- * @param area 目标矩形（全屏请传 {0,0,EPD_WIDTH,EPD_HEIGHT}）。
+ * @param area 目标矩形（竖屏面板坐标，全屏请传 {0,0,EPD_WIDTH,EPD_HEIGHT}）。
  * @param data 像素数据；为 NULL 时表示清屏。
  */
 void refresh_submit(Rect area, const uint8_t *data);
@@ -36,6 +37,14 @@ void refresh_submit(Rect area, const uint8_t *data);
  * @brief 强制立即执行一次全屏清残影刷新。
  */
 void refresh_force_full(void);
+
+/**
+ * @brief GFX 差分局刷（epd_gfx_flush_window）前置检查。
+ *        未达阈值：局刷计数 +1，返回 false，调用方继续局刷；
+ *        达到阈值：执行清屏全刷清残影并归零，返回 true ——
+ *        此时屏幕已被清白，调用方必须整屏重绘后走全刷。
+ */
+bool refresh_gfx_before_partial(void);
 
 /**
  * @brief 当前自上次全刷以来的局刷次数。

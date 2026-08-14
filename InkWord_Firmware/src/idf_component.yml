@@ -1,7 +1,3 @@
-# ESP-IDF component manifest (Task F-03)
-# 声明本项目依赖的托管组件。PlatformIO espidf 框架 + idf.py 均会读取本文件。
-# 注：cJSON 已内置于 ESP-IDF，无需额外声明。
 dependencies:
-  espressif/esp_tinyuf2: "^1.0.0"   # 可选：USB 便捷存储（按需裁剪）
   idf:
-    version: ">=5.0"
+    version: '>=5.0'

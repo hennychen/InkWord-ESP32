@@ -1,9 +1,14 @@
 /**
  * @file epd_driver.h
- * @brief 墨水屏驱动封装 (Task F-05 ~ F-09)
+ * @brief 墨水屏驱动封装 — DEPG0370BBU253F33HP-M7 3.7" 直驱 SPI
  *
- * 基于 EPDiy V7 库，封装屏幕初始化/版本检测、全刷、局刷与深度休眠。
- * 屏幕型号：ED097TC2（9.7 寸，1200x825，横屏使用）。
+ * 硬件：ESP32-S3 + EVK011 升压转接板 + DEPG0370 3.7" 墨水屏
+ * 接口：4 线 SPI（BS1=LOW），驱动核心为 GxEPD2，本文件为 C API 薄适配层
+ * 控制器：屏载 UC8253 类 COG（升压由 COG 经 GDR 自主驱动板上分立 boost，
+ *         MCU 唯一电源职责是向 J2-16 (EPAPER_VCI) 供 3.3V，无 GDR/RESE 信号）
+ *
+ * 分辨率：面板物理 240 x 416；GFX 显示层默认横屏 416 x 240（rotation=1）
+ * 帧缓冲：12,480 字节 (1bpp, 竖屏格式，bit=1 白)
  */
 #ifndef INKWORD_EPD_DRIVER_H
 #define INKWORD_EPD_DRIVER_H
@@ -16,77 +21,106 @@
 extern "C" {
 #endif
 
-/* 屏幕几何参数（ED097TC2 横屏） */
-#define EPD_WIDTH       (1200)
-#define EPD_HEIGHT      (825)
+/* 双坐标体系：
+ *   - 面板物理/底层直通：竖屏 240x416（epd_full_refresh / epd_partial_refresh）
+ *   - GFX 显示层：横屏 416x240，rotation=1（epd_gfx_* 系列，UI 主路径） */
+#define EPD_WIDTH       (240)
+#define EPD_HEIGHT      (416)
+#define EPD_GFX_WIDTH   (416)   /* 显示坐标宽（横屏） */
+#define EPD_GFX_HEIGHT  (240)   /* 显示坐标高（横屏） */
+#define EPD_FB_SIZE     (EPD_WIDTH / 8 * EPD_HEIGHT)  /* 12,480 字节，竖屏格式（30 字节/行 x 416 行） */
 
 /**
- * @brief 初始化墨水屏与 EPDiy 底层。(F-05/F-06)
- * @return 0 成功；非 0 表示失败码。
+ * @brief 初始化墨水屏硬件：GPIO / SPI / 升压使能。
+ * @return 0 成功；非 0 失败。
  */
 int epd_driver_init(void);
 
 /**
- * @brief 上电（开启负高压生成电路）。刷新前需先上电。
+ * @brief 保留兼容的空操作：COG 收到 0x04 后自主升压，无需 MCU 干预。
  */
 void epd_power_on(void);
 
 /**
- * @brief 下电（关闭高压电路，降低静态功耗）。
+ * @brief 发送 0x02 让 COG 关闭高压 rails（VCI 3.3V 保持供电）。
  */
 void epd_power_off(void);
 
 /**
- * @brief 读取屏幕厂商 ID / 版本。(F-06)
- * @param[out] manufacturer 厂商字符串缓冲（至少 32 字节）。
- * @return 0xFFFF 表示读取失败；否则返回有效 ID。
- */
-uint16_t epd_get_manufacturer(char *manufacturer, size_t len);
-
-/**
- * @brief 全屏刷新（Full Refresh）。(F-07)
- *        清除残影，耗时较长（约 1~2 秒），适合 Logo/切换大画面。
- * @param framebuffer 全屏像素缓冲（EPD_WIDTH/8 * EPD_HEIGHT 字节，1=黑）。
- */
-void epd_full_refresh(const uint8_t *framebuffer);
-
-/**
- * @brief 全屏清白。
+ * @brief 全屏清白（全刷）。
  */
 void epd_clear_screen(void);
 
 /**
- * @brief 局部刷新（Partial Refresh）。(F-08)
- *        仅更新指定矩形区域，速度快（<1 秒），适合翻单词。
- * @param x,y,w,h 目标矩形（像素）。
- * @param data    该区域的像素缓冲，行字节对齐 = w/8 向上取整。
+ * @brief 全屏刷新（全刷模式，竖屏 240x416）。
+ * @param data 竖屏格式 1bpp 位图（EPD_FB_SIZE 字节，行宽 30，
+ *             bit=1 为白 0x00=黑，与 demo/COG SRAM 语义一致）。
+ *             NULL 时等同于 epd_clear_screen()。
+ */
+void epd_full_refresh(const uint8_t *data);
+
+/**
+ * @brief 局部刷新（局刷模式，双缓冲对比，竖屏 GFX 坐标）。
+ * @param x,y,w,h 目标矩形（竖屏显示坐标，同 epd_gfx_*，x/w 需 8 像素对齐）。
+ * @param data    该区域 1bpp 位图，行宽 = ceil(w/8) 字节，
+ *                bit=1 为白 0x00=黑（与 demo/COG SRAM 语义一致）。
+ *
+ * 内部自动维护上一帧缓冲，无需外部传入旧画面。
  */
 void epd_partial_refresh(int x, int y, int w, int h, const uint8_t *data);
 
 /**
- * @brief 进入深度休眠，功耗降至极低。(F-09)
- *        唤醒需重新调用 epd_driver_init()。
+ * @brief 深度休眠（0x07/0xA5）。下次刷新前 GxEPD2 自动硬件复位并
+ *        重新初始化 COG，无需重新调用 epd_driver_init()。
  */
 void epd_deep_sleep(void);
 
 /**
- * @brief 获取内部帧缓冲指针（供 EPDiy highlevel API 绘图）。
- *        布局：1bit/pixel，1=黑 0=白，共 EPD_WIDTH/8*EPD_HEIGHT 字节。
+ * @brief 读取屏幕厂商 ID（桩实现）。
  */
-uint8_t *epd_get_framebuffer(void);
-
-/* framebuffer 像素颜色宏（用于 EPDiy 绘图函数的 color 参数）
- * EPDiy 4bpp 约定：高位有效，0x00=黑, 0xF0=白, 0x80=灰
- * 参考: https://epdiy.readthedocs.io/en/latest/api.html#colors */
-#define EPD_DRAW_BLACK  (0x00)   /**< 黑色 */
-#define EPD_DRAW_WHITE  (0xF0)   /**< 白色 */
-#define EPD_DRAW_GRAY   (0x80)   /**< 灰色 */
-
-/* 字体属性颜色宏（同上约定，用于 EpdFontProperties 的 fg_color / bg_color） */
-#define EPD_FONT_FG_BLACK   (0x00)   /**< 黑色文字 */
-#define EPD_FONT_FG_WHITE   (0xF0)   /**< 白色文字（反白底） */
+uint16_t epd_get_manufacturer(char *manufacturer, size_t len);
 
 #ifdef __cplusplus
 }
 #endif
+
+/* ============================================================
+ * C-callable GFX 包装函数（供 .c 文件使用）
+ * 基于内部 1bpp 帧缓冲的简易绘图 API
+ * ============================================================ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** @brief 获取帧缓冲宽度 */
+int epd_gfx_width(void);
+/** @brief 获取帧缓冲高度 */
+int epd_gfx_height(void);
+/** @brief 填充整个屏幕 (0=白, 1=黑) */
+void epd_gfx_fill_screen(uint16_t color);
+/** @brief 填充矩形 */
+void epd_gfx_fill_rect(int x, int y, int w, int h, uint16_t color);
+/** @brief 画矩形边框 */
+void epd_gfx_draw_rect(int x, int y, int w, int h, uint16_t color);
+/** @brief 画水平线 */
+void epd_gfx_draw_hline(int x, int y, int w, uint16_t color);
+/** @brief 画垂直线 */
+void epd_gfx_draw_vline(int x, int y, int h, uint16_t color);
+/** @brief 画文本（font_size: 1=小9pt, 2=中14pt默认, 3=大18pt, 4=特大24pt；y 为基线） */
+void epd_gfx_draw_text(int x, int y, const char *text, uint16_t color, int font_size);
+/** @brief 测量文本宽高 */
+void epd_gfx_text_bounds(const char *text, int font_size, int *out_w, int *out_h);
+/** @brief 将帧缓冲推送到屏幕（全刷） */
+void epd_gfx_flush(void);
+/** @brief 将指定区域推送到屏幕（局刷） */
+void epd_gfx_flush_window(int x, int y, int w, int h);
+
+#ifdef __cplusplus
+}
+#endif
+
+/* GFX 颜色常量 */
+#define EPD_GFX_BLACK  1
+#define EPD_GFX_WHITE  0
+
 #endif /* INKWORD_EPD_DRIVER_H */

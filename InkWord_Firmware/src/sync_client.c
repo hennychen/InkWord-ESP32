@@ -50,13 +50,15 @@ typedef struct {
     int    offset;
 } recv_ctx_t;
 
-static esp_err_t recv_cb(esp_http_client_handle_t client,
-                         char *data, int len, void *user_ctx)
+static recv_ctx_t *s_pull_ctx = NULL;
+
+static esp_err_t pull_event_handler(esp_http_client_event_t *evt)
 {
-    recv_ctx_t *ctx = (recv_ctx_t *)user_ctx;
-    if (ctx->offset + len < ctx->buf_size) {
-        memcpy(ctx->buf + ctx->offset, data, len);
-        ctx->offset += len;
+    if (s_pull_ctx && evt->event_id == HTTP_EVENT_ON_DATA) {
+        if (s_pull_ctx->offset + evt->data_len < s_pull_ctx->buf_size) {
+            memcpy(s_pull_ctx->buf + s_pull_ctx->offset, evt->data, evt->data_len);
+            s_pull_ctx->offset += evt->data_len;
+        }
     }
     return ESP_OK;
 }
@@ -70,23 +72,23 @@ int sync_pull_words(int local_version, char *out_buf, int buf_size)
              s_base_url, local_version);
 
     recv_ctx_t ctx = { .buf = out_buf, .buf_size = buf_size, .offset = 0 };
+    s_pull_ctx = &ctx;
 
     esp_http_client_config_t cfg = {
         .url = url,
         .cert_pem = NULL,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .event_handler = NULL,
+        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
+        .event_handler = pull_event_handler,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
         .timeout_ms = 15000,
-        .user_data = &ctx,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     esp_http_client_set_method(client, HTTP_METHOD_GET);
     set_common_headers(client);
-    esp_http_client_set_on_data(client, recv_cb, &ctx);
 
     esp_err_t err = esp_http_client_perform(client);
+    s_pull_ctx = NULL;
     int status = esp_http_client_get_status_code(client);
     int ret = -1;
 
@@ -130,7 +132,7 @@ int sync_push_progress(const ProgressItem *items, int count)
 
     esp_http_client_config_t cfg = {
         .url = url,
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
         .timeout_ms = 15000,
     };
@@ -166,7 +168,7 @@ int sync_heartbeat(int battery, const char *fw_ver)
 
     esp_http_client_config_t cfg = {
         .url = url,
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
         .timeout_ms = 10000,
     };

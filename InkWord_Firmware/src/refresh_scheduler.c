@@ -32,6 +32,18 @@ uint8_t refresh_partial_count(void)
     return s_partial_cnt;
 }
 
+bool refresh_gfx_before_partial(void)
+{
+    if (s_partial_cnt >= s_threshold) {
+        LOG_I("partial count reached %u, auto full refresh", s_partial_cnt);
+        epd_clear_screen();
+        s_partial_cnt = 0;
+        return true; /* 已清屏：调用方需整屏重绘后全刷 */
+    }
+    s_partial_cnt++;
+    return false;
+}
+
 void refresh_submit(Rect area, const uint8_t *data)
 {
     /* 达到阈值：先清残影再继续 */

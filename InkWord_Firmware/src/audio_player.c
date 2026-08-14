@@ -8,7 +8,7 @@
 #include "debug_log.h"
 #include "gpio_config.h"
 
-#include "driver/i2s_std.h"
+#include "driver/i2s.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -17,17 +17,26 @@
 #include <string.h>
 #include <stdio.h>
 
-/* 轻量 MP3 解码（libhelix-mp3，作为组件提供） */
+/* 轻量 MP3 解码（libhelix-mp3，可选组件） */
+#ifdef HAVE_LIBHELIX_MP3
 #include "mp3dec.h"
+#else
+/* 无 MP3 解码库时，play_mp3 返回错误 */
+#endif
 
 static const char *TAG = "AUDIO";
 
+#define I2S_PORT_NUM     I2S_NUM_0
 #define I2S_READ_LEN     (1024)        /* 单次写 I2S 的帧数 */
 #define MP3_BUF_LEN      (2048)        /* MP3 输入缓冲 */
+#ifdef HAVE_LIBHELIX_MP3
 #define PCM_BUF_LEN      (MAX_NGRAN * MAX_NCHAN * MAX_NSPC * 2) /* 单帧 PCM 字节数 */
+#else
+#define PCM_BUF_LEN      (4608)        /* MP3 最大 PCM 输出 (1152 * 2ch * 2bytes) */
+#endif
 
-static i2s_chan_handle_t s_tx_handle = NULL;
 static bool s_inited = false;
+static bool s_i2s_installed = false;  /* 跟踪 I2S 驱动是否已安装 */
 static volatile bool s_playing = false;
 static volatile bool s_stop_req = false;
 
@@ -48,18 +57,35 @@ typedef struct __attribute__((packed)) {
 
 static int i2s_configure_std(uint32_t sample_rate, uint16_t bits, uint16_t channels)
 {
-    i2s_std_config_t std_cfg = {
-        .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(bits, (channels == 2) ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO),
-        .gpio_cfg = {
-            .bclk  = I2S_BCK_PIN,
-            .ws    = I2S_WS_PIN,
-            .dout  = I2S_DATA_OUT_PIN,
-            .din   = -1,
-            .mclk  = -1,
-        },
+    /* 旧版 API: 重新安装驱动以切换采样率 */
+    i2s_config_t i2s_cfg = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+        .sample_rate = sample_rate,
+        .bits_per_sample = (i2s_bits_per_sample_t)bits,
+        .channel_format = (channels == 2) ? I2S_CHANNEL_FMT_RIGHT_LEFT
+                                          : I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = 256,
+        .use_apll = false,
+        .tx_desc_auto_clear = true,
     };
-    esp_err_t ret = i2s_channel_init_std_mode(s_tx_handle, &std_cfg);
+    /* 仅当驱动已安装时才卸载，避免首次调用报错 */
+    if (s_i2s_installed) {
+        i2s_driver_uninstall(I2S_PORT_NUM);
+    }
+    esp_err_t ret = i2s_driver_install(I2S_PORT_NUM, &i2s_cfg, 0, NULL);
+    if (ret != ESP_OK) return -1;
+    s_i2s_installed = true;
+
+    i2s_pin_config_t pin_cfg = {
+        .bck_io_num   = I2S_BCK_PIN,
+        .ws_io_num    = I2S_WS_PIN,
+        .data_out_num = I2S_DATA_OUT_PIN,
+        .data_in_num  = I2S_PIN_NO_CHANGE,
+    };
+    ret = i2s_set_pin(I2S_PORT_NUM, &pin_cfg);
     return (ret == ESP_OK) ? 0 : -1;
 }
 
@@ -69,20 +95,8 @@ int audio_init(void)
         return 0;
     }
 
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT, I2S_ROLE_MASTER);
-    if (i2s_new_channel(&chan_cfg, &s_tx_handle, NULL) != ESP_OK) {
-        LOG_E("i2s new channel failed");
-        return -1;
-    }
-
     if (i2s_configure_std(I2S_SAMPLE_RATE, I2S_SAMPLE_BITS, 1) != 0) {
-        LOG_E("i2s std config failed");
-        return -1;
-    }
-
-    /* MAX98357A 无需 MCLK，使能通道即开始输出 BCLK/LRCK。 */
-    if (i2s_channel_enable(s_tx_handle) != ESP_OK) {
-        LOG_E("i2s enable failed");
+        LOG_E("i2s config failed");
         return -1;
     }
 
@@ -95,18 +109,15 @@ void audio_deinit(void)
 {
     if (!s_inited) return;
     audio_stop();
-    i2s_channel_disable(s_tx_handle);
-    i2s_del_channel(s_tx_handle);
-    s_tx_handle = NULL;
+    i2s_stop(I2S_PORT_NUM);
+    i2s_driver_uninstall(I2S_PORT_NUM);
     s_inited = false;
 }
 
 int audio_set_sample_rate(uint32_t sample_rate)
 {
     if (!s_inited) return -1;
-    i2s_channel_disable(s_tx_handle);
     int r = i2s_configure_std(sample_rate, I2S_SAMPLE_BITS, 1);
-    i2s_channel_enable(s_tx_handle);
     LOG_I("sample rate -> %lu", (unsigned long)sample_rate);
     return r;
 }
@@ -114,11 +125,7 @@ int audio_set_sample_rate(uint32_t sample_rate)
 static void i2s_write_mono(const uint8_t *data, size_t len)
 {
     size_t written = 0;
-    /* MAX98357A 单声道：把单声道 PCM 复制成双声道或直接送单声道槽位均可，
-     * 这里按 slot 配置为 mono，直接写。 */
-    if (s_tx_handle) {
-        i2s_channel_write(s_tx_handle, data, len, &written, portMAX_DELAY);
-    }
+    i2s_write(I2S_PORT_NUM, data, len, &written, portMAX_DELAY);
 }
 
 /* ---- WAV(PCM) 播放 ---- */
@@ -157,9 +164,14 @@ static int play_wav(const char *path)
     return 0;
 }
 
-/* ---- MP3 播放（libhelix-mp3） ---- */
+/* ---- MP3 播放（libhelix-mp3，可选） ---- */
 static int play_mp3(const char *path)
 {
+#ifndef HAVE_LIBHELIX_MP3
+    LOG_E("MP3 decoding not available (compile with HAVE_LIBHELIX_MP3)");
+    (void)path;
+    return -1;
+#else
     FILE *f = fopen(path, "rb");
     if (!f) {
         LOG_E("open mp3 failed: %s", path);
@@ -187,10 +199,8 @@ static int play_mp3(const char *path)
     int prev_sample_rate = 0;
 
     while (!s_stop_req) {
-        /* 定位帧同步字 */
         int offset = MP3FindSyncWord(read_ptr, (int)buf_fill, &read_ptr);
         if (offset < 0) {
-            /* 没找到同步字，尝试继续读入 */
             memmove(in_buf, read_ptr, buf_fill);
             read_bytes = fread(in_buf + buf_fill, 1, MP3_BUF_LEN - buf_fill, f);
             if (read_bytes == 0) break;
@@ -205,7 +215,6 @@ static int play_mp3(const char *path)
         int err = MP3Decode(decoder, &read_ptr, (int *)&buf_fill, pcm_buf, 0);
         if (err) {
             LOG_D("MP3Decode err=%d, skip", err);
-            /* 出错时跳过 1 字节继续找同步 */
             if (buf_fill > 0) { read_ptr++; buf_fill--; }
             continue;
         }
@@ -219,11 +228,9 @@ static int play_mp3(const char *path)
         size_t pcm_bytes = (size_t)info.outputSamps * sizeof(int16_t);
         i2s_write_mono((uint8_t *)pcm_buf, pcm_bytes);
 
-        /* 将剩余未解码数据搬回头部 */
         memmove(in_buf, read_ptr, buf_fill);
         read_ptr = in_buf;
 
-        /* 补充输入 */
         if (buf_fill < MP3_BUF_LEN / 2) {
             read_bytes = fread(in_buf + buf_fill, 1, MP3_BUF_LEN - buf_fill, f);
             buf_fill += read_bytes;
@@ -234,6 +241,7 @@ static int play_mp3(const char *path)
     free(in_buf); free(pcm_buf); MP3FreeDecoder(decoder);
     fclose(f);
     return 0;
+#endif
 }
 
 static bool ends_with(const char *s, const char *suf)

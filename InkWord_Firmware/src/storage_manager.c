@@ -26,7 +26,7 @@ int storage_init(void)
 
     /* 1. 初始化 SPI 总线与 SDSPI 设备 */
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SD_SPI_HOST;
+    host.slot = SPI3_HOST;
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = SD_MOSI_PIN,
         .miso_io_num = SD_MISO_PIN,

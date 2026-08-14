@@ -10,6 +10,7 @@
 #include "debug_log.h"
 
 #include "esp_https_ota.h"
+#include "esp_http_client.h"
 #include "esp_ota_ops.h"
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
@@ -30,12 +31,15 @@ typedef struct {
     int   offset;
 } ota_recv_t;
 
-static esp_err_t ota_recv_cb(esp_http_client_handle_t c, char *data, int len, void *arg)
+static ota_recv_t *s_ota_ctx = NULL;
+
+static esp_err_t ota_event_handler(esp_http_client_event_t *evt)
 {
-    ota_recv_t *r = (ota_recv_t *)arg;
-    if (r->offset + len < r->size) {
-        memcpy(r->buf + r->offset, data, len);
-        r->offset += len;
+    if (s_ota_ctx && evt->event_id == HTTP_EVENT_ON_DATA) {
+        if (s_ota_ctx->offset + evt->data_len < s_ota_ctx->size) {
+            memcpy(s_ota_ctx->buf + s_ota_ctx->offset, evt->data, evt->data_len);
+            s_ota_ctx->offset += evt->data_len;
+        }
     }
     return ESP_OK;
 }
@@ -47,16 +51,17 @@ bool ota_check_for_update(char *out_url, int url_len, char *out_md5, int md5_len
 
     static char buf[1024];
     ota_recv_t r = { .buf = buf, .size = sizeof(buf), .offset = 0 };
+    s_ota_ctx = &r;
 
     esp_http_client_config_t cfg = {
         .url = url,
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .user_data = &r,
+        .event_handler = ota_event_handler,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    esp_http_client_set_on_data(client, ota_recv_cb, &r);
     esp_err_t err = esp_http_client_perform(client);
+    s_ota_ctx = NULL;
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
@@ -91,7 +96,7 @@ int ota_perform_upgrade(const char *url, const char *expect_md5)
 
     esp_http_client_config_t cfg = {
         .url = url,
-        .crt_bundle_attach = esp_crt_bundle_attach,
+        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
         .timeout_ms = 30000,
         .keep_alive_enable = true,
@@ -148,7 +153,7 @@ int ota_mark_valid(void)
     if (esp_ota_get_state_partition(running, &st) == ESP_OK) {
         if (st == ESP_OTA_IMG_PENDING_VERIFY) {
             LOG_I("marking current firmware as valid (cancel rollback)");
-            return (esp_ota_mark_app_valid_rollback_and_reboot() == ESP_OK) ? 0 : -1;
+            return (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) ? 0 : -1;
         }
     }
     return 0;

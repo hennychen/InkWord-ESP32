@@ -3,7 +3,7 @@
 idf_component_register(
     SRCS
         "debug_log.c"
-        "epd_driver.c"
+        "epd_driver.cpp"
         "audio_player.c"
         "button_handler.c"
         "storage_manager.c"
@@ -15,7 +15,7 @@ idf_component_register(
         "wifi_config_ui.c"
         "sync_client.c"
         "ota_manager.c"
-        "main.c"
+        "main.cpp"
     INCLUDE_DIRS
         "."
     REQUIRES
