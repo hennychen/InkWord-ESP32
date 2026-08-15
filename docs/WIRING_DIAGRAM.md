@@ -1,7 +1,9 @@
-# InkWord ESP32-S3 详细接线图
+# InkWord ESP32-S3 详细接线图（2026-08 实测版）
 
-> 基于 [gpio_config.h](../InkWord_Firmware/src/gpio_config.h) 引脚定义生成。
+> 依据 [gpio_config.h](../InkWord_Firmware/src/gpio_config.h) 引脚定义 + 上板实测整理。
 > 芯片: ESP32-S3-DevKitC-1 (16MB Flash, 8MB PSRAM)
+> 实测状态：**EPD 屏幕已验证**（横屏 UI + 全刷/局刷 + Wi-Fi 配置页，8 线方案）；
+> SD 卡模块**未接线**；音频/按键**待验证**（引脚已定义）。
 
 ---
 
@@ -24,12 +26,12 @@
         ┌───────────────────┼───────┼──────────────────────┐
         │                   │       │                      │
   ┌─────┴─────┐    ┌────────▼───┐ ┌─▼──────────┐  ┌────────▼──────┐
-  │  ESP32-S3 │    │ MAX98357A  │ │  MicroSD   │  │   4x 按键     │
-  │ DevKitC-1 │    │  I2S 功放   │ │  TF Card   │  │  KEY_A/B/C/D  │
-  │           │    │            │ │  (SPI模式)  │  │               │
+  │  ESP32-S3 │    │ MAX98357A  │ │  MicroSD   │  │  6x 按键      │
+  │ DevKitC-1 │    │  I2S 功放   │ │  TF Card   │  │ KEY_A~F       │
+  │           │    │ (待验证)    │ │ (未接线)    │  │ (待验证)      │
   └─────┬─────┘    └────────────┘ └────────────┘  └───────────────┘
         │
-        │ J2 排针 (2x8)
+        │ 8 根线
   ┌─────▼─────────────────────┐
   │   EVK011 升压转接板         │
   │  ┌─────────────────────┐  │
@@ -46,11 +48,14 @@
 
 ## 二、逐模块详细接线
 
-### 2.1 EPD 墨水屏（EVK011 转接板 + DEPG0370）
+### 2.1 EPD 墨水屏（EVK011 转接板 + DEPG0370）—— 8 根线，已实测 ✅
 
-> 驱动：GxEPD2（`GxEPD2_374_DEPG0370`，UC8253 类 COG，硬件 SPI）。
+> 驱动：GxEPD2（`GxEPD2_374_DEPG0370`，UC8253 类 COG，硬件 SPI 4MHz）。
 > EVK011 板上分立升压电路由**屏幕 COG 从 FPC pin2(GDR) 自主驱动**，
 > MCU 不输出 GDR/RESE 信号，仅需向 J2-16 供 3.3V。
+>
+> **2026-08 省线实测**：BS 线已去掉（原 GPIO11→J2-10），板侧 J2-10 短接
+> GND，固件 `EPD_BS_PIN=-1`。9 根 → **8 根**。
 
 ```
   ESP32-S3           EVK011 转接板              DEPG0370 屏幕
@@ -62,9 +67,11 @@
   │ GPIO10 ├─CS─────►│ J2-6 CS       │         │ VGH +15V   │
   │ GPIO13 ├─RST────►│ J2-8 RES      │         │ VGL -15V   │
   │ GPIO12 │◄─BUSY───│ J2-9 BUSY     │         │ VCOM       │
-  │ GPIO11 ├─BS─────►│ J2-10 BS(=L)  │         │            │
+  │ (GPIO11)          │ J2-10 BS ──┐  │         │            │
+  │   已去线，GPIO11  │            └─► 板侧短接 GND          │
+  │   现已释放        │               │         │            │
   │ 3V3    ├─VCI────►│ J2-16 EPAPER_VCI（唯一供电脚！）│   │
-  │ GND    ├────────►│ GND           │         │            │
+  │ GND    ├────────►│ J2-1 GND      │         │            │
   └────────┘         └───────────────┘         └────────────┘
 ```
 
@@ -74,13 +81,13 @@
 | GPIO8 | J2-5 SDO | SPI MOSI |
 | GPIO9 | J2-7 D/C# | 命令/数据 |
 | GPIO10 | J2-6 CS | 片选 |
-| GPIO13 | J2-8 RES | 硬复位（低有效） |
+| GPIO13 | J2-8 RES | 硬复位（低有效，深睡唯一唤醒途径） |
 | GPIO12 | J2-9 BUSY | 忙信号（LOW=忙） |
-| GPIO11 | J2-10 BS | BS1=LOW 选 4 线 SPI |
 | 3V3 | J2-16 VCI | 屏幕唯一供电 3.3V |
-| **GND** | **J2-1（必须接！）** | 共地 —— J2 无标签脚 pin1/2/12/13/14/15 均为 GND/NC，任选其一，用万用表通断档确认与 J1 金属屏蔽导通 |
+| **GND** | **J2-1（必须接！）** | 共地 —— J2 无标签脚 pin1/2/12/13/14/15 均为 GND/NC，任选其一 |
+| ~~GPIO11~~ | ~~J2-10 BS~~ | **已去线**：板侧短接 GND，固件 `EPD_BS_PIN=-1`；GPIO11 已释放可复用 |
 
-> **共地警告（2026-08 实测教训）**: 未接 GND 时 EVK011/屏幕 COG 完全无电，
+> **共地警告（实测教训）**: 未接 GND 时 EVK011/屏幕 COG 完全无电，
 > 症状为 BUSY 悬空恒读 0、VGH 仅剩感应电压（实测 2.6V，正常 +15V）、屏幕无任何反应。
 > VCI 3.3V 与 GND 缺一不可！
 
@@ -89,9 +96,20 @@
 > **严禁将 J1 侧任何高压引脚（pin21/23/24）接入 ESP32**。
 > J2 排针上无高压引脚，安全。
 
+#### 接线精简分析记录（2026-08，9 → 8 根，已实施）
+
+| 线 | 结论 | 分析 |
+|:---|:---:|:---|
+| SCK / MOSI / D/C# | ❌ 不可去 | SPI 通信本质线 |
+| 3V3(VCI) / GND | ❌ 不可去 | 供电与共地（漏接 GND 教训见上） |
+| **BS (原 GPIO11→J2-10)** | ✅ **已去** | 固件只用 4 线 SPI，BS 恒为 L；板侧短接 GND 比 GPIO 驱动更稳（消除 ESP32 启动前 ~100ms 高阻悬空窗口）。实测标准：无 "Busy Timeout!"、BUSY 诊断 idle HIGH |
+| CS (GPIO10→J2-6) | ⚠️ 不建议去 | EPD 独占总线理论可常拉低；但 ESP32 启动期 SCK/MOSI 高阻，噪声时钟可能向 COG 移入乱码命令，CS 高电平是上电窗口防误触发隔离 |
+| RST (GPIO13→J2-8) | ❌ 保留 | 深睡(0x07/0xA5)唯一唤醒途径 + COG 挂死唯一恢复手段（电池设备功耗优化必需） |
+| BUSY (GPIO12→J2-9) | ⚠️ 不建议去 | GxEPD2 无 BUSY 时降级固定延时（全刷1500ms/局刷350ms），变慢且低温下 COG 实际忙时长超固定值会截断波形撕裂画面；也是三态诊断排障载体 |
+
 ---
 
-### 2.2 I2S 音频功放（MAX98357A）
+### 2.2 I2S 音频功放（MAX98357A）—— 待接线验证
 
 ```
   ESP32-S3              MAX98357A               喇叭
@@ -125,77 +143,64 @@
 
 ---
 
-### 2.3 四个独立按键
+### 2.3 六个独立按键 —— 待接线验证
+
+> KEY_A~D 为学习操作键；KEY_E/F 为左右方向键（Wi-Fi 配置页软键盘用）。
 
 ```
-                    内部上拉
-                   ┌─▼─┐
-  ESP32-S3         │   │         KEY_A (Prev / Confirm)
-  ┌────────┐       │ ┌─┴─┐
-  │ GPIO0  ├───────┼─┤   ├── GND    ┌─── 按下接地(低电平有效)
-  │ GPIO1  ├───────┼─┤   ├── GND    │
-  │ GPIO2  ├───────┼─┤   ├── GND    ├── KEY_B (Next)
-  │ GPIO3  ├───────┼─┤   ├── GND    │
-  └────────┘       │ └─┬─┘           ├── KEY_C (Speak / Menu)
-                   │   │             │
-                   └───┘             └── KEY_D (Mode / Long=Clear)
-                    pull-up
+  ESP32-S3（内部上拉，按下接地，低电平有效）
+
+  GPIO0 ──[KEY_A]── GND    上一条 / 确认
+  GPIO1 ──[KEY_B]── GND    下一条
+  GPIO2 ──[KEY_C]── GND    发音 / 长按进入 Wi-Fi 配置   ⚠️ Boot strapping
+  GPIO3 ──[KEY_D]── GND    模式切换 / 长按清残影全刷     ⚠️ Boot strapping
+  GPIO14 ──[KEY_E]── GND   左方向（Wi-Fi 配置页）
+  GPIO15 ──[KEY_F]── GND   右方向（Wi-Fi 配置页）
 ```
 
 | ESP32-S3 引脚 | 按键 | 功能 | 短按 | 长按 (1.5s+) |
 |:---:|:---:|:---|:---|:---|
-| GPIO0 | KEY_A | 上/确认 | 上一条单词 | — |
+| GPIO0 | KEY_A | 上/确认 | 上一条单词 | — | 
 | GPIO1 | KEY_B | 下 | 下一条单词 | — |
-| GPIO2 | KEY_C | 发音/菜单 | 播放 MP3 发音 | 进入菜单 |
+| GPIO2 | KEY_C | 发音/菜单 | 播放 MP3 发音 | 进入 Wi-Fi 配置 |
 | GPIO3 | KEY_D | 模式/清残影 | 切换模式(闪卡/听写/复习) | 强制全屏刷新 |
-
-```
-  每个按键的实际接线：
-
-       GPIOx ──────────────┐
-                           │
-                      ┌────┴────┐
-                      │  按键    │  按下=导通
-                      │  KEY    │
-                      └────┬────┘
-                           │
-       GND   ──────────────┘
-```
+| GPIO14 | KEY_E | 左方向 | Wi-Fi 配置页光标左移 | — |
+| GPIO15 | KEY_F | 右方向 | Wi-Fi 配置页光标右移 | — |
 
 > **去抖**: 软件去抖 50ms，长按判定 1500ms，扫描周期 20ms。
 > **无需外部电阻**：使用 ESP32 内部 pull-up。
+> **KEY_E 与 LED 冲突**：`LED_STATUS_PIN`(14) 与 `BUTTON_E_PIN`(14) 重叠，
+> KEY_E 已启用 → 状态灯禁用；如需状态灯建议用 EPD 省线释放出的 **GPIO11**。
 
 ---
 
-### 2.4 MicroSD 卡（SPI 模式）
+### 2.4 MicroSD 卡（SPI 模式，SPI3_HOST）—— 未接线
+
+> ⚠️ 引脚与旧版文档不同：SD 已改用 **GPIO16/17/18/47**（旧 GPIO10-13 已被 EPD 占用）。
+> 实测未接线时挂载失败（`sdmmc_init_sd_if_cond 0x108`）不影响其他模块运行。
 
 ```
   ESP32-S3              MicroSD 模块          TF 卡
   ┌────────┐           ┌──────────┐      ┌──────────┐
-  │        │           │          │      │          │
-  │ GPIO10 ├──────────►│ CS       │      │          │
-  │        │           │          │      │          │
-  │ GPIO11 ├──────────►│ MOSI     │      │  TF Card │
-  │        │           │          │      │  (FAT32) │
-  │ GPIO12 ├──────────►│ SCLK     │      │          │
-  │        │           │          │      │          │
-  │ GPIO13 │◄──────────┤ MISO     │      │          │
-  │        │           │          │      │          │
+  │ GPIO47 ├──────────►│ CS       │      │          │
+  │ GPIO17 ├──────────►│ MOSI     │      │  TF Card │
+  │ GPIO18 ├──────────►│ SCLK     │      │  (FAT32) │
+  │ GPIO16 │◄──────────┤ MISO     │      │          │
   │ 3V3    ├──────────►│ VCC      │      │          │
   │ GND    ├──────────►│ GND      │      │          │
   └────────┘           └──────────┘      └──────────┘
 ```
 
-| ESP32-S3 引脚 | SD 模块引脚 | 线色 | 说明 |
-|:---:|:---:|:---:|:---|
-| GPIO10 | CS | 橙线 | 片选 (Chip Select) |
-| GPIO11 | MOSI | 绿线 | 主出从入 (Master Out) |
-| GPIO12 | SCLK | 黄线 | SPI 时钟 |
-| GPIO13 | MISO | 蓝线 | 主入从出 (Master In) |
-| 3V3 | VCC | 红线 | 供电 3.3V |
-| GND | GND | 黑线 | 共地 |
+| ESP32-S3 引脚 | SD 模块引脚 | 说明 |
+|:---:|:---:|:---|
+| GPIO47 | CS | 片选 (Chip Select) |
+| GPIO17 | MOSI | 主出从入 (Master Out) |
+| GPIO18 | SCLK | SPI 时钟 |
+| GPIO16 | MISO | 主入从出 (Master In) |
+| 3V3 | VCC | 供电 3.3V |
+| GND | GND | 共地 |
 
-> **SPI 主机**: SPI2_HOST，最大时钟 20MHz。
+> **SPI 主机**: SPI3_HOST，独立于 EPD 的 SPI2，最大时钟 20MHz。
 > **文件系统**: FAT，挂载点 `/sdcard/`，音频目录 `/sdcard/audio/`。
 
 ---
@@ -210,7 +215,7 @@
   └──────────┘     │  保护板   │     │  3.3V    │     └────┬─────┘
                    └────┬─────┘     └──────────┘          │
                         │                                 ├────► ESP32-S3 3V3
-                   ┌────▼─────┐                           ├────► EPDiy V7 3V3
+                   ┌────▼─────┐                           ├────► EVK011 J2-16 VCI
                    │ 3.7V     │                           ├────► MAX98357A VIN
                    │ LiPo     │                           ├────► SD Card VCC
                    │ 电池     │                           └────► 按键上拉
@@ -218,7 +223,7 @@
 
   电流预算：
     ESP32-S3 (WiFi TX):  ~240mA 峰值
-    EPD 全屏刷新:         ~30mA  (转接板升压)
+    EPD 全屏刷新:         ~30mA  (EVK011 升压)
     MAX98357A (播放):     ~10mA
     SD 卡读写:            ~30mA
     ────────────────────────────
@@ -228,39 +233,40 @@
 
 ---
 
-## 三、完整引脚分配总表
+## 三、完整引脚分配总表（2026-08，与 gpio_config.h 一致）
 
 | GPIO | 功能 | 外设 | 方向 | 备注 |
 |:---:|:---|:---|:---:|:---|
-| GPIO0 | KEY_A | 按键 | Input | 内部上拉，低有效 |
+| GPIO0 | KEY_A | 按键 | Input | 内部上拉，低有效；⚠️ Boot strapping（上电低=下载模式） |
 | GPIO1 | KEY_B | 按键 | Input | 内部上拉，低有效 |
-| GPIO2 | KEY_C / LED | 按键C / 板载LED | I/O | ⚠️ 复用：按键C + 状态灯，Boot Strapping 引脚 |
-| GPIO3 | KEY_D | 按键 | Input | 内部上拉，低有效 |
+| GPIO2 | KEY_C | 按键 | Input | 内部上拉，低有效；⚠️ Boot strapping（Flash 电压选择） |
+| GPIO3 | KEY_D | 按键 | Input | 内部上拉，低有效；⚠️ Boot strapping（JTAG 模式） |
 | GPIO4 | I2S_BCLK | MAX98357A | Output | I2S 位时钟 |
 | GPIO5 | I2S_WS | MAX98357A | Output | I2S 字选择 |
 | GPIO6 | I2S_DOUT | MAX98357A | Output | I2S 数据 |
-| GPIO7 | EPD_DATA | EPDiy V7 | I/O | 数据总线（库管理） |
-| GPIO8 | EPD_RESET | EPDiy V7 | Output | 屏幕硬复位 |
-| GPIO9 | EPD_CS | EPDiy V7 | Output | 片选（库管理） |
-| GPIO10 | SD_CS | SD 卡 | Output | SPI 片选 |
-| GPIO11 | SD_MOSI | SD 卡 | Output | SPI 主出从入 |
-| GPIO12 | SD_SCLK | SD 卡 | Output | SPI 时钟 |
-| GPIO13 | SD_MISO | SD 卡 | Input | SPI 主入从出 |
+| GPIO7 | EPD_SCK | EVK011 J2-3 | Output | EPD SPI 时钟 |
+| GPIO8 | EPD_MOSI | EVK011 J2-5 | Output | EPD SPI 数据 |
+| GPIO9 | EPD_DC | EVK011 J2-7 | Output | EPD 命令/数据 |
+| GPIO10 | EPD_CS | EVK011 J2-6 | Output | EPD 片选 |
+| **GPIO11** | **（已释放）** | — | — | 原 EPD_BS，2026-08 去线后空闲，可作状态灯等 |
+| GPIO12 | EPD_BUSY | EVK011 J2-9 | Input | EPD 忙信号（LOW=忙） |
+| GPIO13 | EPD_RESET | EVK011 J2-8 | Output | EPD 硬复位（低有效） |
+| GPIO14 | KEY_E | 按键 | Input | 左方向键；⚠️ 与 LED_STATUS_PIN 重叠 → LED 禁用 |
+| GPIO15 | KEY_F | 按键 | Input | 右方向键 |
+| GPIO16 | SD_MISO | SD 卡 | Input | SPI3 主入从出 |
+| GPIO17 | SD_MOSI | SD 卡 | Output | SPI3 主出从入 |
+| GPIO18 | SD_SCLK | SD 卡 | Output | SPI3 时钟 |
 | GPIO19 | USB_D- | — | I/O | USB（烧录/调试，勿复用） |
 | GPIO20 | USB_D+ | — | I/O | USB（烧录/调试，勿复用） |
 | GPIO43 | UART0_TX | — | Output | 串口 TX (115200) |
 | GPIO44 | UART0_RX | — | Input | 串口 RX (115200) |
-| GPIO48 | EPD_BUSY | EPDiy V7 | Input | 屏幕忙信号 |
+| GPIO47 | SD_CS | SD 卡 | Output | SPI3 片选 |
 
-> **Boot Strapping 引脚注意**:
-> - GPIO0: 上电时为低则进入下载模式（按键 A 共用，正常启动时为高）
-> - GPIO2: 上电时影响 Flash 电压选择（按键 C 共用）
-> - GPIO3: 上电时影响 JTAG 模式（按键 D 共用）
+> **Boot Strapping 引脚注意**（GPIO0/2/3 作按键时）:
+> 上电瞬间必须为高电平（内部上拉保证），启动后可安全用作按键输入。
 >
-> 这些引脚上电瞬间必须为高电平（上拉保证），启动后可安全用作按键输入。
->
-> ⚠️ **引脚复用警告**: 固件中 `LED_STATUS_PIN` 和 `BUTTON_C_PIN` 均定义为 GPIO2。
-> 如果需要独立的状态指示灯，请将 LED_STATUS_PIN 改为其他空闲 GPIO（如 GPIO14/15/16）。
+> **双 SPI 总线**: EPD 用 Arduino SPI（SPI2_HOST，GxEPD2 管理，4MHz），
+> SD 用 SPI3_HOST（ESP-IDF sdspi，≤20MHz），互不干扰。
 
 ---
 
@@ -274,9 +280,9 @@
   │                                 │
   │  ┌──────────┐  ┌──────────┐    │
   │  │ 数字区域  │  │ 高压区域  │    │
-  │  │ ESP32-S3 │  │ EPDiy升压 │    │
-  │  │ SD Card  │  │ 电容组    │    │
-  │  │ 按键     │  │           │    │
+  │  │ ESP32-S3 │  │ EVK011   │    │
+  │  │ SD Card  │  │ 升压电容组 │    │
+  │  │ 按键     │  │          │    │
   │  └──────────┘  └──────────┘    │
   │  保持 ≥5mm 间距 │               │
   │                                 │
@@ -292,9 +298,11 @@
 | 器件 | 电容规格 | 位置 |
 |:---|:---|:---|
 | ESP32-S3 VCC | 10μF + 0.1μF | 尽量靠近 3V3/EN 引脚 |
-| EPDiy 升压输出 | 47μF/25V × 4 | VGH/VSH/VSL 各处 |
+| EVK011 VCI (J2-16) | 10μF + 0.1μF | 靠近 J2-16（升压电流瞬时抽吸） |
 | MAX98357A VIN | 10μF + 0.1μF | 靠近 VIN 引脚 |
 | SD 卡 VCC | 10μF + 0.1μF | 靠近 VCC 引脚 |
+
+> 注：VGH/VGL/VCOM 高压电容组在 EVK011 板上已集成（Q1+L1+MBR0503 boost），PCB 侧无需重复。
 
 ### 4.3 走线建议
 
@@ -303,7 +311,7 @@
 | 电源 (3V3/GND) | 20mil+ | 尽量短粗 |
 | I2S 音频 | 8mil | 等长走线，远离开关电源 |
 | SD SPI | 8mil | 时钟线 ≤ 15cm，防反射 |
-| EPD FPC | — | 使用排线，≤ 10cm |
+| EPD SPI | 8mil | 杜邦线 ≤ 10cm（4MHz 下安全） |
 
 ---
 
