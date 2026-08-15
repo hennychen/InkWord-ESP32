@@ -46,9 +46,10 @@ static WordEntry s_word_pool[MAX_WORDS];
 /* ============================================================
  * 单词卡片 UI 渲染 + 局部刷新策略 (Task F-16)
  *
- * 布局（240x416 竖屏，FreeSans 基线 y 语义）：
- *   y[0,40)   状态栏：模式名（左）/ 序号（右）/ 分隔线
- *   y[40,416) 内容区：单词(24pt) 音标(9pt) 分隔线 释义(12pt 自动断行) 标签
+ * 布局（GFX 横屏 416x240，rotation=1，FreeSans 基线 y 语义）：
+ *   y[0,32)    状态栏：模式名（左）/ 序号（右）/ 分隔线
+ *   左栏 x[16,248)  单词(24pt 超宽自动降级) + 音标(9pt) + 底部标签
+ *   竖分隔线 x=248；右栏 x[264,400) 释义(12pt 自动断行 ≤6 行)
  *
  * 刷新策略：
  *   - 首帧 / 模式切换 / 清残影后：整屏重绘 + 全刷（epd_gfx_flush）
@@ -58,16 +59,19 @@ static WordEntry s_word_pool[MAX_WORDS];
  *   - 残影管理：局刷次数达到阈值时先清屏全刷再整屏重绘
  * ============================================================ */
 
-#define UI_STATUS_H     40    /* 状态栏高度 */
+#define UI_STATUS_H     32    /* 状态栏高度（rotation=1 下局刷窗口 y/h 需 8 对齐） */
 #define UI_MARGIN_X     16    /* 左右留白 */
-#define UI_STATUS_BASE  26    /* 状态栏文字基线 y */
-#define UI_WORD_BASE    140   /* 单词基线 y (24pt) */
-#define UI_PHON_BASE    172   /* 音标基线 y (9pt) */
-#define UI_SEP_Y        204   /* 释义区分隔线 y */
-#define UI_MEAN_BASE    236   /* 释义首行基线 y (12pt) */
-#define UI_MEAN_LH      24    /* 释义行距 */
-#define UI_MEAN_LINES   7     /* 释义最大行数 */
-#define UI_FOOT_BASE    402   /* 底部标签基线 y (9pt) */
+#define UI_STATUS_BASE  22    /* 状态栏文字基线 y */
+#define UI_WORD_BASE    100   /* 单词基线 y（左栏，24pt 超宽自动降级） */
+#define UI_PHON_BASE    132   /* 音标基线 y（左栏，9pt） */
+#define UI_VSEP_X       248   /* 左右分栏竖线 x */
+#define UI_MEAN_X       264   /* 释义起始 x（右栏） */
+#define UI_MEAN_BASE    62    /* 释义首行基线 y（右栏，12pt） */
+#define UI_MEAN_LH      26    /* 释义行距 */
+#define UI_MEAN_LINES   6     /* 释义最大行数 */
+#define UI_MEAN_MAX_W   (EPD_GFX_WIDTH - UI_MEAN_X - UI_MARGIN_X) /* 右栏文本宽 */
+#define UI_WORD_MAX_W   (UI_VSEP_X - 2 * UI_MARGIN_X)             /* 左栏文本宽 */
+#define UI_FOOT_BASE    224   /* 左栏底部标签基线 y（9pt） */
 
 static study_mode_t s_last_mode = MODE_COUNT; /* 无效值：首帧强制全刷 */
 static char s_mean_lines[UI_MEAN_LINES][128]; /* 释义断行缓冲 */
@@ -115,10 +119,21 @@ static int ui_wrap_meaning(const char *s, int font_size, int max_w)
     return n + 1;
 }
 
+/* 字号自适应：从 start_size 逐级降到能放进 max_w 的字号 */
+static int ui_fit_font(const char *text, int start_size, int max_w)
+{
+    int tw, th;
+    for (int fs = start_size; fs >= 1; fs--) {
+        epd_gfx_text_bounds(text, fs, &tw, &th);
+        if (tw <= max_w) return fs;
+    }
+    return 1;
+}
+
 /* 绘制状态栏：模式名（左）+ 序号（右）+ 分隔线 */
 static void ui_draw_status(study_mode_t mode, int index)
 {
-    epd_gfx_fill_rect(0, 0, EPD_WIDTH, UI_STATUS_H, EPD_GFX_WHITE);
+    epd_gfx_fill_rect(0, 0, EPD_GFX_WIDTH, UI_STATUS_H, EPD_GFX_WHITE);
 
     epd_gfx_draw_text(UI_MARGIN_X, UI_STATUS_BASE,
                       study_mode_name(mode), EPD_GFX_BLACK, 1);
@@ -128,32 +143,32 @@ static void ui_draw_status(study_mode_t mode, int index)
     int tw, th;
     snprintf(buf, sizeof(buf), "%d/%d", total ? index + 1 : 0, total);
     epd_gfx_text_bounds(buf, 1, &tw, &th);
-    epd_gfx_draw_text(EPD_WIDTH - UI_MARGIN_X - tw, UI_STATUS_BASE,
+    epd_gfx_draw_text(EPD_GFX_WIDTH - UI_MARGIN_X - tw, UI_STATUS_BASE,
                       buf, EPD_GFX_BLACK, 1);
 
     epd_gfx_draw_hline(UI_MARGIN_X, UI_STATUS_H,
-                       EPD_WIDTH - 2 * UI_MARGIN_X, EPD_GFX_BLACK);
+                       EPD_GFX_WIDTH - 2 * UI_MARGIN_X, EPD_GFX_BLACK);
 }
 
-/* 绘制内容区：单词卡片（调用前假定状态栏已存在或无需刷新） */
+/* 绘制内容区：左栏单词卡片 + 竖分隔线 + 右栏释义 */
 static void ui_draw_content(const WordEntry *w)
 {
-    epd_gfx_fill_rect(0, UI_STATUS_H, EPD_WIDTH, EPD_HEIGHT - UI_STATUS_H,
-                      EPD_GFX_WHITE);
+    epd_gfx_fill_rect(0, UI_STATUS_H, EPD_GFX_WIDTH,
+                      EPD_GFX_HEIGHT - UI_STATUS_H, EPD_GFX_WHITE);
 
-    epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, w->text, EPD_GFX_BLACK, 4);
+    epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, w->text, EPD_GFX_BLACK,
+                      ui_fit_font(w->text, 4, UI_WORD_MAX_W));
 
     if (w->phonetic[0])
         epd_gfx_draw_text(UI_MARGIN_X, UI_PHON_BASE,
                           w->phonetic, EPD_GFX_BLACK, 1);
 
-    epd_gfx_draw_hline(UI_MARGIN_X, UI_SEP_Y,
-                       EPD_WIDTH - 2 * UI_MARGIN_X, EPD_GFX_BLACK);
+    epd_gfx_draw_vline(UI_VSEP_X, UI_STATUS_H + 16,
+                       EPD_GFX_HEIGHT - UI_STATUS_H - 32, EPD_GFX_BLACK);
 
-    int lines = ui_wrap_meaning(w->meaning, 2,
-                                EPD_WIDTH - 2 * UI_MARGIN_X);
+    int lines = ui_wrap_meaning(w->meaning, 2, UI_MEAN_MAX_W);
     for (int i = 0; i < lines; i++)
-        epd_gfx_draw_text(UI_MARGIN_X, UI_MEAN_BASE + i * UI_MEAN_LH,
+        epd_gfx_draw_text(UI_MEAN_X, UI_MEAN_BASE + i * UI_MEAN_LH,
                           s_mean_lines[i], EPD_GFX_BLACK, 2);
 
     if (w->tag[0])
@@ -170,8 +185,8 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
 
     if (!w) { /* 词库为空：整屏提示 */
         ui_draw_status(mode, 0);
-        epd_gfx_fill_rect(0, UI_STATUS_H, EPD_WIDTH, EPD_HEIGHT - UI_STATUS_H,
-                          EPD_GFX_WHITE);
+        epd_gfx_fill_rect(0, UI_STATUS_H, EPD_GFX_WIDTH,
+                          EPD_GFX_HEIGHT - UI_STATUS_H, EPD_GFX_WHITE);
         epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE,
                           "No words", EPD_GFX_BLACK, 2);
         epd_gfx_flush();
@@ -190,9 +205,9 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
         epd_gfx_flush(); /* 整屏全刷 */
     } else {
         ui_draw_content(w);
-        /* 仅局刷内容区（x/w 已 8 对齐），状态栏不动 */
+        /* 仅局刷内容区（rotation=1 要求 y/h 8 对齐：y=32, h=208） */
         epd_gfx_flush_window(0, UI_STATUS_H,
-                             EPD_WIDTH, EPD_HEIGHT - UI_STATUS_H);
+                             EPD_GFX_WIDTH, EPD_GFX_HEIGHT - UI_STATUS_H);
     }
     s_last_mode = mode;
 

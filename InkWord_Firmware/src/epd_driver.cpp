@@ -69,9 +69,14 @@ int epd_driver_init(void)
         return 0;
     }
 
-    /* 1. BS1=LOW 选择 4 线 SPI 模式（EVK011 J2-10） */
+    /* 1. BS1=LOW 选择 4 线 SPI 模式（EVK011 J2-10）。
+     *    省线方案：在转接板侧将 J2-10 直接短接 GND（板上就近接 J2-1），
+     *    并把 gpio_config.h 的 EPD_BS_PIN 改为 -1 —— 硬接 GND 比 GPIO 驱动
+     *    更稳（ESP32 启动前 ~100ms 该脚高阻，硬接 GND 无采样不定窗口） */
+#if EPD_BS_PIN >= 0
     pinMode(EPD_BS_PIN, OUTPUT);
     digitalWrite(EPD_BS_PIN, LOW);
+#endif
 
     /* 2. BUSY 三态诊断：
      *    a) 高阻输入读电平：COG 空闲时应为 1

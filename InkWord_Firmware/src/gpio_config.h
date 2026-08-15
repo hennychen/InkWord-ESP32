@@ -24,8 +24,13 @@ extern "C" {
  * EVK011 墨水屏 EPD 引脚（4 线 SPI 模式）
  * BS1=LOW 选 4 线 SPI（DEPG0370 规格 Note5-5）
  * 注：无 GDR/RESE 定义 —— 升压由屏幕 COG 自主驱动（见文件头）
+ *
+ * 省线方案（BS，唯一可去线）：本项目只用 4 线 SPI，BS 永远为 L。
+ * 在转接板侧把 J2-10 短接 GND（就近接 J2-1）即可去掉这根线，
+ * 并把 EPD_BS_PIN 改为 -1（epd_driver_init 已做条件编译保护）；
+ * 释放出的 GPIO11 可改作他用（如状态灯，解决与 KEY_E 的 14 脚冲突）
  * ============================================================ */
-#define EPD_BS_PIN          (11)    /**< Boot Select: LOW=4线SPI, HIGH=3线SPI */
+#define EPD_BS_PIN          (-1)    /**< Boot Select：-1=已去线（J2-10 板侧短接 GND）；>0 时固件驱动 LOW 选 4 线 SPI */
 #define EPD_SCK_PIN         (7)     /**< SPI 时钟 (J2 pin3) */
 #define EPD_MOSI_PIN        (8)     /**< SPI 数据 MOSI (J2 pin5) */
 #define EPD_DC_PIN          (9)     /**< 数据/命令选择 (J2 pin7) */
