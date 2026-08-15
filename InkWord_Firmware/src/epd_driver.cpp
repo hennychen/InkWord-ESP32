@@ -92,11 +92,31 @@ int epd_driver_init(void)
     delay(5);
     int b_pulled = digitalRead(EPD_BUSY_PIN);
     pinMode(EPD_BUSY_PIN, INPUT); /* 恢复高阻，交回 GxEPD2 */
-    const char *busy_verdict = (b_float == 1) ? "OK: idle HIGH, COG alive"
+    const char *busy_verdict = (b_float == 1) ? "HIGH (idle — or floating, see RST test below)"
                                : (b_pulled == 1) ? "FLOATING (open wire / wrong pin / FPC not seated)"
                                : "DRIVEN LOW (COG busy, or short to GND)";
     Serial.printf("[EPD-DIAG] BUSY hi-Z: %d | with-pullup: %d -> %s\n",
                   b_float, b_pulled, busy_verdict);
+
+    /* 2b. RST 复位脉冲测试（决定性，区分「COG 真活着」与「BUSY 悬空浮高」）：
+     *     COG 复位后自检会主动拉低 BUSY 一段时间。
+     *     出现低电平 → COG 供电+GND+BUSY 线全通（浮空线绝不会有此反应）
+     *     无反应     → 屏断电(VCI/GND)/FPC 未插/BUSY 线断/RST 线断 */
+    pinMode(EPD_RESET_PIN, OUTPUT);
+    digitalWrite(EPD_RESET_PIN, HIGH);
+    delay(10);
+    digitalWrite(EPD_RESET_PIN, LOW);
+    delay(20);                            /* 复位脉宽 >10ms */
+    int rst_saw_low = 0, t_low_ms = -1;
+    digitalWrite(EPD_RESET_PIN, HIGH);    /* 释放复位，COG boot */
+    for (int i = 0; i < 400; i++) {       /* 400ms 窗口，1ms 采样 */
+        if (digitalRead(EPD_BUSY_PIN) == 0) { rst_saw_low = 1; t_low_ms = i; break; }
+        delay(1);
+    }
+    Serial.printf("[EPD-DIAG] RST pulse -> BUSY went LOW: %d (@%dms) %s\n",
+                  rst_saw_low, t_low_ms,
+                  rst_saw_low ? "-> COG ALIVE: VCI/GND/BUSY/RST all wired"
+                              : "-> NO RESPONSE: check VCI 3V3 / GND / FPC / BUSY wire / RST wire");
 
     /* 3. 硬件 SPI（EVK011 J2: SCK=pin3, SDO=pin5）。
      * GxEPD2 内部 SPI.beginTransaction 使用 GPIO matrix，任意引脚可用 */

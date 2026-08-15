@@ -30,9 +30,9 @@ extern "C" {
  * 并把 EPD_BS_PIN 改为 -1（epd_driver_init 已做条件编译保护）；
  * 释放出的 GPIO11 可改作他用（如状态灯，解决与 KEY_E 的 14 脚冲突）
  * ============================================================ */
-#define EPD_BS_PIN          (-1)    /**< Boot Select：-1=已去线（J2-10 板侧短接 GND）；>0 时固件驱动 LOW 选 4 线 SPI */
-#define EPD_SCK_PIN         (7)     /**< SPI 时钟 (J2 pin3) */
-#define EPD_MOSI_PIN        (8)     /**< SPI 数据 MOSI (J2 pin5) */
+#define EPD_BS_PIN          (11)    /**< Boot Select：11=J2-10 接 GPIO11，固件驱动 LOW 选 4 线 SPI；-1=已去线（板侧短接 GND） */
+#define EPD_SCK_PIN         (7)     /**< SPI 时钟 SCK (J2 pin3) */
+#define EPD_MOSI_PIN        (8)     /**< SPI 数据 SDO/MOSI (J2 pin5) */
 #define EPD_DC_PIN          (9)     /**< 数据/命令选择 (J2 pin7) */
 #define EPD_CS_PIN          (10)    /**< 片选 (J2 pin6) */
 #define EPD_BUSY_PIN        (12)    /**< 忙信号输入 (J2 pin9) - LOW=忙 */

@@ -3,7 +3,7 @@
  * @brief DKE DEPG0370BBU253F33HP-M7 驱动实现（基于 GxEPD2 骨架）
  *
  * 与 GxEPD2_370_GDEY037T03 的差异（对照 DEPG0370 官方 demo code）：
- *   _InitDisplay(): PSR = 0xDF, 0x0D（demo 扫描方向 x+ y+）
+ *   _InitDisplay(): PSR = 0xD3, 0x0D（扫描方向 x- y-：横屏最终方向修正）
  *   _Update_Full(): CDI = 0x97，无温度强制（demo 全刷序列）
  *   _Update_Part(): 0xE0/0x02 + 0xE5/100 + CDI = 0x17（demo 局刷序列）
  * 其余缓冲/窗口/刷新管理与 GxEPD2 原版一致。
@@ -353,7 +353,14 @@ void GxEPD2_374_DEPG0370::_InitDisplay()
   }
   _power_is_on = false;
   _writeCommand(0x00); // PANEL SETTING
-  _writeData(0xDF);    // DEPG0370 demo: x+ y+ 扫描方向 (x+y-:0xd7, x-y-:0xd3, x-y+:0xdd)
+  /* 扫描方向位（bit3=y/gate 轴, bit2=x/source 轴；demo 原注 "bit2=x,bit3=y"）：
+   *   0xDF = x+ y+（demo 默认）    0xD7 = x+ y-（bit3=0，翻转 416 轴）
+   *   0xDB = x- y+（bit2=0，翻转 240 轴）  0xD3 = x- y-（双翻=180°）
+   * （demo 注释中的 0xDD "x-y+" 与其自身 bit 定义矛盾，疑为笔误，未采用）
+   * 方向标定过程（2026-08，F 自检图案实测）：0xDF 双轴镜像 → 0xD7 修横轴后
+   * 实测 F 横笔朝下、TL 在左下（上下镜像，竖轴仍反）→ 再翻 x 轴（bit2）→
+   * 0xD3 为最终值。标定口诀：看哪轴镜像就翻对应 bit（横屏竖轴=x/bit2） */
+  _writeData(0xD3);    // 横屏方向最终修正：x- y-（0xDF→0xD7→0xD3 实测标定）
   _writeData(0x0d);
   _init_display_done = true;
 }
