@@ -1,0 +1,55 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{1602E413-A980-43B1-9263-D7C7D4DE8BCB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InkWord.Core", "src\InkWord.Core\InkWord.Core.csproj", "{FD6547CD-56F5-4520-8EDA-712A3B52C0F6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InkWord.Infrastructure", "src\InkWord.Infrastructure\InkWord.Infrastructure.csproj", "{6364E7C2-3CBE-4D7E-BBB6-B0F8D9FCE994}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InkWord.Services", "src\InkWord.Services\InkWord.Services.csproj", "{0AAD280C-340D-45A7-93C3-CDBDA25FD5C0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InkWord.Jobs", "src\InkWord.Jobs\InkWord.Jobs.csproj", "{B9C6F514-38FE-4740-AF8F-E4ACD158DF38}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InkWord.API", "src\InkWord.API\InkWord.API.csproj", "{B139CFED-895C-43B8-A596-7B860EF60D82}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{FD6547CD-56F5-4520-8EDA-712A3B52C0F6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FD6547CD-56F5-4520-8EDA-712A3B52C0F6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FD6547CD-56F5-4520-8EDA-712A3B52C0F6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FD6547CD-56F5-4520-8EDA-712A3B52C0F6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6364E7C2-3CBE-4D7E-BBB6-B0F8D9FCE994}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6364E7C2-3CBE-4D7E-BBB6-B0F8D9FCE994}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6364E7C2-3CBE-4D7E-BBB6-B0F8D9FCE994}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6364E7C2-3CBE-4D7E-BBB6-B0F8D9FCE994}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0AAD280C-340D-45A7-93C3-CDBDA25FD5C0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0AAD280C-340D-45A7-93C3-CDBDA25FD5C0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0AAD280C-340D-45A7-93C3-CDBDA25FD5C0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0AAD280C-340D-45A7-93C3-CDBDA25FD5C0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B9C6F514-38FE-4740-AF8F-E4ACD158DF38}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B9C6F514-38FE-4740-AF8F-E4ACD158DF38}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B9C6F514-38FE-4740-AF8F-E4ACD158DF38}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B9C6F514-38FE-4740-AF8F-E4ACD158DF38}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B139CFED-895C-43B8-A596-7B860EF60D82}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B139CFED-895C-43B8-A596-7B860EF60D82}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B139CFED-895C-43B8-A596-7B860EF60D82}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B139CFED-895C-43B8-A596-7B860EF60D82}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{FD6547CD-56F5-4520-8EDA-712A3B52C0F6} = {1602E413-A980-43B1-9263-D7C7D4DE8BCB}
+		{6364E7C2-3CBE-4D7E-BBB6-B0F8D9FCE994} = {1602E413-A980-43B1-9263-D7C7D4DE8BCB}
+		{0AAD280C-340D-45A7-93C3-CDBDA25FD5C0} = {1602E413-A980-43B1-9263-D7C7D4DE8BCB}
+		{B9C6F514-38FE-4740-AF8F-E4ACD158DF38} = {1602E413-A980-43B1-9263-D7C7D4DE8BCB}
+		{B139CFED-895C-43B8-A596-7B860EF60D82} = {1602E413-A980-43B1-9263-D7C7D4DE8BCB}
+	EndGlobalSection
+EndGlobal
