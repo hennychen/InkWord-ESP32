@@ -1,0 +1,70 @@
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+
+  h2 {
+    margin: 0;
+    font-size: 1.4rem;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 8px;
+  }
+}
+
+.filter-bar {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+
+  .search-field {
+    flex: 2;
+  }
+
+  .tag-field {
+    flex: 1;
+  }
+}
+
+.loading-row {
+  display: flex;
+  justify-content: center;
+  padding: 32px;
+}
+
+.table-container {
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.word-table {
+  width: 100%;
+
+  .definition-cell {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* 难度标签颜色 */
+.difficulty-easy {
+  color: #4caf50;
+  font-weight: 500;
+}
+
+.difficulty-medium {
+  color: #ff9800;
+  font-weight: 500;
+}
+
+.difficulty-hard {
+  color: #f44336;
+  font-weight: 500;
+}

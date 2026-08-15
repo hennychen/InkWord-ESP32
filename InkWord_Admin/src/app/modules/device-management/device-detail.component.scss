@@ -1,0 +1,121 @@
+/* 状态指示点 */
+.status-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  margin-right: 8px;
+  vertical-align: middle;
+
+  &.online {
+    background-color: #4caf50;
+    box-shadow: 0 0 6px rgba(76, 175, 80, 0.6);
+  }
+
+  &.offline {
+    background-color: #f44336;
+  }
+}
+
+/* 信息网格 */
+.info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+
+  .label {
+    font-size: 0.75rem;
+    color: #888;
+    margin-bottom: 4px;
+  }
+
+  .value {
+    font-size: 0.95rem;
+    color: #1a1a1a;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+
+    mat-icon {
+      font-size: 1.1rem;
+      width: auto;
+      height: auto;
+    }
+  }
+}
+
+.online-text {
+  color: #4caf50;
+  font-weight: 500;
+}
+
+.offline-text {
+  color: #f44336;
+  font-weight: 500;
+}
+
+/* 电量曲线 */
+.battery-card {
+  margin-bottom: 24px;
+}
+
+.battery-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+  height: 140px;
+  padding: 16px 8px 0;
+
+  .bar-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    height: 100%;
+    justify-content: flex-end;
+  }
+
+  .bar-fill {
+    width: 40px;
+    background: linear-gradient(180deg, #4caf50, #66bb6a);
+    border-radius: 4px 4px 0 0;
+    min-height: 4px;
+  }
+
+  .bar-value {
+    font-size: 0.7rem;
+    color: #555;
+  }
+
+  .bar-time {
+    font-size: 0.7rem;
+    color: #999;
+  }
+}
+
+/* 命令面板 */
+.command-panel {
+  h3 {
+    font-size: 1rem;
+    color: #333;
+    margin: 0 0 12px;
+  }
+}
+
+.command-buttons {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+
+  button {
+    flex: 1;
+    min-width: 140px;
+  }
+}

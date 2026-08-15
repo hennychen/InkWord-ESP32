@@ -1,0 +1,65 @@
+<div class="page-header">
+  <h2>设备管理</h2>
+  <button mat-raised-button color="primary">
+    <mat-icon>refresh</mat-icon>
+    刷新
+  </button>
+</div>
+
+@if (loading()) {
+  <div class="loading-row">
+    <mat-progress-spinner diameter="40" mode="indeterminate"></mat-progress-spinner>
+  </div>
+} @else if (devices().length === 0) {
+  <div class="empty-state">
+    <mat-icon>devices_off</mat-icon>
+    <p>暂无注册设备</p>
+  </div>
+} @else {
+  <div class="device-grid">
+    @for (device of devices(); track device.id) {
+      <mat-card class="device-card" (click)="openDetail(device)">
+        <div class="card-header">
+          <span
+            class="status-dot"
+            [class.online]="isOnline(device)"
+            [class.offline]="!isOnline(device)"
+          ></span>
+          <span class="device-name">{{ device.name || device.deviceCode }}</span>
+        </div>
+
+        <div class="card-body">
+          <div class="info-row">
+            <span class="info-label">设备编码</span>
+            <span class="info-value">{{ device.deviceCode }}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">固件版本</span>
+            <span class="info-value">{{ device.firmwareVersion }}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">电池</span>
+            <span class="info-value battery-badge" [class.low]="device.batteryLevel < 20">
+              {{ device.batteryLevel }}%
+            </span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">最后活跃</span>
+            <span class="info-value">
+              {{ device.lastHeartbeat ? (device.lastHeartbeat | date: 'MM-dd HH:mm') : '—' }}
+            </span>
+          </div>
+        </div>
+
+        <div class="card-footer">
+          <span class="status-text" [class.online-text]="isOnline(device)" [class.offline-text]="!isOnline(device)">
+            {{ isOnline(device) ? '在线' : '离线' }}
+          </span>
+          <button mat-icon-button matTooltip="管理">
+            <mat-icon>settings</mat-icon>
+          </button>
+        </div>
+      </mat-card>
+    }
+  </div>
+}

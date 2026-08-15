@@ -1,0 +1,124 @@
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+
+  h2 {
+    margin: 0;
+    font-size: 1.4rem;
+  }
+}
+
+.loading-row {
+  display: flex;
+  justify-content: center;
+  padding: 48px;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 80px 0;
+  color: #aaa;
+
+  mat-icon {
+    font-size: 3rem;
+    width: auto;
+    height: auto;
+  }
+}
+
+/* 设备卡片网格 */
+.device-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.device-card {
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  }
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+
+  .device-name {
+    font-weight: 500;
+    font-size: 1rem;
+    color: #1a1a1a;
+  }
+}
+
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+
+  &.online {
+    background-color: #4caf50;
+    box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
+  }
+
+  &.offline {
+    background-color: #f44336;
+  }
+}
+
+.card-body {
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 0.85rem;
+  }
+
+  .info-label {
+    color: #888;
+  }
+
+  .info-value {
+    color: #333;
+  }
+}
+
+.battery-badge {
+  font-weight: 500;
+
+  &.low {
+    color: #f44336;
+  }
+}
+
+.card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #eee;
+}
+
+.online-text {
+  color: #4caf50;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.offline-text {
+  color: #f44336;
+  font-size: 0.85rem;
+  font-weight: 500;
+}

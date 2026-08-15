@@ -1,0 +1,44 @@
+<h2 mat-dialog-title>批量导入词条</h2>
+
+<mat-dialog-content>
+  <!-- 拖拽上传区 -->
+  <div
+    class="drop-zone"
+    [class.drag-over]="dragOver()"
+    (dragover)="onDragOver($event)"
+    (dragleave)="onDragLeave()"
+    (drop)="onDrop($event)"
+    (click)="fileInput.click()"
+  >
+    <input #fileInput type="file" accept=".csv" hidden (change)="onFileSelected($event)" />
+
+    @if (selectedFile(); as file) {
+      <mat-icon class="upload-icon">description</mat-icon>
+      <p class="file-name">{{ file.name }}</p>
+      <p class="file-size">{{ (file.size / 1024).toFixed(1) }} KB</p>
+    } @else {
+      <mat-icon class="upload-icon">cloud_upload</mat-icon>
+      <p>点击或拖拽 CSV 文件到此处</p>
+      <p class="hint">CSV 格式：text, phonetic, definition, example, tags, difficulty</p>
+    }
+  </div>
+
+  @if (uploading()) {
+    <div class="progress-section">
+      <mat-progress-bar mode="determinate" [value]="progress()"></mat-progress-bar>
+      <span class="progress-text">{{ progress() }}%</span>
+    </div>
+  }
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()" [disabled]="uploading()">取消</button>
+  <button
+    mat-raised-button
+    color="primary"
+    (click)="upload()"
+    [disabled]="!selectedFile() || uploading()"
+  >
+    开始导入
+  </button>
+</mat-dialog-actions>

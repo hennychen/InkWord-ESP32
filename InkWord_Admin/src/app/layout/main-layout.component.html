@@ -1,0 +1,45 @@
+<mat-sidenav-container class="layout-container">
+  <!-- 侧边导航 -->
+  <mat-sidenav mode="side" opened class="sidebar">
+    <div class="logo">
+      <mat-icon>auto_stories</mat-icon>
+      <span>InkWord</span>
+    </div>
+    <mat-nav-list>
+      @for (item of navItems; track item.route) {
+        <a
+          mat-list-item
+          [routerLink]="item.route"
+          routerLinkActive="active-nav"
+        >
+          <mat-icon matListItemIcon>{{ item.icon }}</mat-icon>
+          <span matListItemTitle>{{ item.label }}</span>
+        </a>
+      }
+    </mat-nav-list>
+  </mat-sidenav>
+
+  <!-- 主内容区 -->
+  <mat-sidenav-content class="content-area">
+    <mat-toolbar class="toolbar">
+      <span class="spacer"></span>
+
+      <!-- 主题切换 -->
+      <button mat-icon-button (click)="toggleTheme()" matTooltip="切换主题">
+        <mat-icon>{{ themeService.mode() === 'light' ? 'dark_mode' : 'light_mode' }}</mat-icon>
+      </button>
+
+      <span class="user-info">
+        <mat-icon>person</mat-icon>
+        {{ username }}
+      </span>
+      <button mat-icon-button (click)="logout()" matTooltip="登出">
+        <mat-icon>logout</mat-icon>
+      </button>
+    </mat-toolbar>
+
+    <div class="page-content">
+      <router-outlet></router-outlet>
+    </div>
+  </mat-sidenav-content>
+</mat-sidenav-container>

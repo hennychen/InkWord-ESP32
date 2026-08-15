@@ -1,0 +1,64 @@
+.drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 450px;
+  min-height: 180px;
+  border: 2px dashed #bbb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+  margin-bottom: 16px;
+
+  &:hover {
+    border-color: #1a1a1a;
+    background-color: #fafafa;
+  }
+
+  &.drag-over {
+    border-color: #1a1a1a;
+    background-color: #f0f0f0;
+  }
+}
+
+.upload-icon {
+  font-size: 3rem;
+  width: auto;
+  height: auto;
+  color: #888;
+}
+
+.file-name {
+  font-weight: 500;
+  color: #1a1a1a;
+}
+
+.file-size {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: #aaa;
+  text-align: center;
+}
+
+.progress-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  mat-progress-bar {
+    flex: 1;
+  }
+
+  .progress-text {
+    font-size: 0.85rem;
+    color: #555;
+    min-width: 40px;
+    text-align: right;
+  }
+}

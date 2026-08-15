@@ -1,0 +1,188 @@
+import { Component, OnInit, AfterViewInit, ViewChild, inject, signal } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { MatTableDataSource, MatTableModule } from '@angular/material/table';
+import { MatPaginator, MatPaginatorModule, PageEvent } from '@angular/material/paginator';
+import { MatSort, MatSortModule } from '@angular/material/sort';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatSelectModule } from '@angular/material/select';
+import { MatChipsModule } from '@angular/material/chips';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { Router, ActivatedRoute } from '@angular/router';
+import { debounceTime, distinctUntilChanged, Subject } from 'rxjs';
+import { WordApiService } from '../../core/api/word-api.service';
+import { Word } from '../../core/models/models';
+import { WordEditComponent } from './word-edit.component';
+import { WordImportComponent } from './word-import.component';
+
+/**
+ * 词库列表页 (A-06)：
+ * MatTable + 分页 + 搜索框 + 标签过滤。
+ * 搜索后 URL Query 参数变化（可分享链接）。
+ */
+@Component({
+  selector: 'app-word-list',
+  standalone: true,
+  imports: [
+    CommonModule,
+    MatTableModule,
+    MatPaginatorModule,
+    MatSortModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatButtonModule,
+    MatIconModule,
+    MatSelectModule,
+    MatChipsModule,
+    MatProgressSpinnerModule,
+    MatDialogModule,
+  ],
+  templateUrl: './word-list.component.html',
+  styleUrl: './word-list.component.scss',
+})
+export class WordListComponent implements OnInit, AfterViewInit {
+  private readonly wordApi = inject(WordApiService);
+  private readonly dialog = inject(MatDialog);
+  private readonly snackBar = inject(MatSnackBar);
+  private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+
+  readonly loading = signal(true);
+  readonly displayedColumns = ['text', 'phonetic', 'definition', 'tags', 'difficulty', 'actions'];
+
+  dataSource = new MatTableDataSource<Word>([]);
+  total = 0;
+  pageSize = 20;
+  currentPage = 0;
+
+  @ViewChild(MatPaginator) paginator!: MatPaginator;
+  @ViewChild(MatSort) sort!: MatSort;
+
+  /** 搜索防抖 */
+  private readonly searchSubject = new Subject<string>();
+  keyword = '';
+  tagFilter = '';
+  difficultyFilter: number | null = null;
+
+  readonly difficultyOptions = [
+    { value: 1, label: '简单' },
+    { value: 2, label: '中等' },
+    { value: 3, label: '困难' },
+  ];
+
+  ngAfterViewInit(): void {
+    this.dataSource.sort = this.sort;
+
+    // 搜索输入防抖
+    this.searchSubject
+      .pipe(debounceTime(400), distinctUntilChanged())
+      .subscribe((term) => {
+        this.keyword = term;
+        this.currentPage = 0;
+        this.updateQueryParams();
+        this.loadData();
+      });
+  }
+
+  ngOnInit(): void {
+    // 从 URL Query 参数恢复状态
+    this.route.queryParams.subscribe((params) => {
+      if (params['keyword']) this.keyword = params['keyword'];
+      if (params['tag']) this.tagFilter = params['tag'];
+      if (params['page']) this.currentPage = +params['page'] - 1;
+      this.loadData();
+    });
+  }
+
+  onSearch(term: string): void {
+    this.searchSubject.next(term);
+  }
+
+  onTagFilterChange(tag: string): void {
+    this.tagFilter = tag;
+    this.currentPage = 0;
+    this.updateQueryParams();
+    this.loadData();
+  }
+
+  onPageChange(e: PageEvent): void {
+    this.currentPage = e.pageIndex;
+    this.pageSize = e.pageSize;
+    this.updateQueryParams();
+    this.loadData();
+  }
+
+  private updateQueryParams(): void {
+    const params: Record<string, string> = {};
+    if (this.keyword) params['keyword'] = this.keyword;
+    if (this.tagFilter) params['tag'] = this.tagFilter;
+    params['page'] = String(this.currentPage + 1);
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: params,
+      replaceUrl: true,
+    });
+  }
+
+  private loadData(): void {
+    this.loading.set(true);
+    this.wordApi
+      .query({
+        page: this.currentPage + 1,
+        size: this.pageSize,
+        keyword: this.keyword || undefined,
+        tag: this.tagFilter || undefined,
+        difficulty: this.difficultyFilter ?? undefined,
+      })
+      .subscribe({
+        next: (res) => {
+          const result = res.data;
+          if (result) {
+            this.dataSource.data = result.items;
+            this.total = result.total;
+          }
+          this.loading.set(false);
+        },
+        error: () => this.loading.set(false),
+      });
+  }
+
+  /** 打开新增弹窗 */
+  openCreate(): void {
+    const ref = this.dialog.open(WordEditComponent, { width: '600px', data: null });
+    ref.afterClosed().subscribe((result) => {
+      if (result) this.loadData();
+    });
+  }
+
+  /** 打开编辑弹窗 */
+  openEdit(word: Word): void {
+    const ref = this.dialog.open(WordEditComponent, { width: '600px', data: word });
+    ref.afterClosed().subscribe((result) => {
+      if (result) this.loadData();
+    });
+  }
+
+  /** 删除确认 */
+  delete(word: Word): void {
+    if (!confirm(`确认删除单词 "${word.text}" 吗？`)) return;
+    this.wordApi.delete(word.id).subscribe({
+      next: () => {
+        this.snackBar.open('删除成功', '关闭', { duration: 2000 });
+        this.loadData();
+      },
+    });
+  }
+
+  /** 打开导入弹窗 */
+  openImport(): void {
+    const ref = this.dialog.open(WordImportComponent, { width: '600px' });
+    ref.afterClosed().subscribe((result) => {
+      if (result) this.loadData();
+    });
+  }
+}

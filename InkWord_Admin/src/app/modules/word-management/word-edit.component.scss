@@ -1,0 +1,16 @@
+.edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 400px;
+  padding-top: 8px;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+
+  mat-form-field {
+    flex: 1;
+  }
+}

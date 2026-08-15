@@ -1,0 +1,74 @@
+<h2 mat-dialog-title>{{ isEdit() ? '编辑词条' : '新增词条' }}</h2>
+
+<mat-dialog-content>
+  <form [formGroup]="form" class="edit-form">
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>单词 *</mat-label>
+      <input matInput formControlName="text" placeholder="如 apple" />
+      @if (form.controls.text.hasError('required') && form.controls.text.touched) {
+        <mat-error>请输入单词</mat-error>
+      }
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>音标</mat-label>
+      <input matInput formControlName="phonetic" placeholder="/ˈæp.əl/" />
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>释义 *</mat-label>
+      <textarea matInput formControlName="definition" rows="2" placeholder="n. 苹果"></textarea>
+      @if (form.controls.definition.hasError('required') && form.controls.definition.touched) {
+        <mat-error>请输入释义</mat-error>
+      }
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>例句</mat-label>
+      <textarea matInput formControlName="example" rows="2" placeholder="I eat an apple every day."></textarea>
+    </mat-form-field>
+
+    <!-- 标签输入 -->
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>标签</mat-label>
+      <mat-chip-grid #chipGrid>
+        @for (tag of tags(); track tag) {
+          <mat-chip-row (removed)="removeTag(tag)">
+            {{ tag }}
+            <button matChipRemove>
+              <mat-icon>cancel</mat-icon>
+            </button>
+          </mat-chip-row>
+        }
+        <input
+          placeholder="输入后回车添加..."
+          [matChipInputFor]="chipGrid"
+          (matChipInputTokenEnd)="addTag($event)"
+        />
+      </mat-chip-grid>
+    </mat-form-field>
+
+    <div class="form-row">
+      <mat-form-field appearance="outline">
+        <mat-label>难度</mat-label>
+        <mat-select formControlName="difficulty">
+          <mat-option [value]="1">简单</mat-option>
+          <mat-option [value]="2">中等</mat-option>
+          <mat-option [value]="3">困难</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>来源</mat-label>
+        <input matInput formControlName="source" placeholder="如 grade7" />
+      </mat-form-field>
+    </div>
+  </form>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()">取消</button>
+  <button mat-raised-button color="primary" (click)="save()" [disabled]="saving()">
+    {{ saving() ? '保存中...' : '保存' }}
+  </button>
+</mat-dialog-actions>

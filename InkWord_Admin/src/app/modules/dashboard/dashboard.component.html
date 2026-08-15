@@ -1,0 +1,69 @@
+<!-- Loading 骨架屏 -->
+@if (loading()) {
+  <div class="loading-overlay">
+    <mat-spinner diameter="48"></mat-spinner>
+    <p>加载中...</p>
+  </div>
+} @else {
+  <!-- 统计卡片 -->
+  <div class="stats-grid">
+    @if (stats(); as s) {
+      <mat-card class="stat-card">
+        <mat-icon class="stat-icon">menu_book</mat-icon>
+        <div class="stat-body">
+          <span class="stat-value">{{ s.totalWords }}</span>
+          <span class="stat-label">总词数</span>
+        </div>
+      </mat-card>
+
+      <mat-card class="stat-card">
+        <mat-icon class="stat-icon">devices</mat-icon>
+        <div class="stat-body">
+          <span class="stat-value">{{ s.totalDevices }}</span>
+          <span class="stat-label">总设备数</span>
+        </div>
+      </mat-card>
+
+      <mat-card class="stat-card">
+        <mat-icon class="stat-icon">wifi_on</mat-icon>
+        <div class="stat-body">
+          <span class="stat-value">{{ s.activeDevicesToday }}</span>
+          <span class="stat-label">今日活跃设备</span>
+        </div>
+      </mat-card>
+
+      <mat-card class="stat-card">
+        <mat-icon class="stat-icon">school</mat-icon>
+        <div class="stat-body">
+          <span class="stat-value">{{ s.learningUsersToday }}</span>
+          <span class="stat-label">今日学习用户</span>
+        </div>
+      </mat-card>
+
+      <mat-card class="stat-card">
+        <mat-icon class="stat-icon">schedule</mat-icon>
+        <div class="stat-body">
+          <span class="stat-value">{{ s.avgStudyMinutes }}</span>
+          <span class="stat-label">平均学习(分钟)</span>
+        </div>
+      </mat-card>
+    }
+  </div>
+
+  <!-- 图表区 -->
+  <div class="charts-grid">
+    <mat-card class="chart-card">
+      <mat-card-header>
+        <mat-card-title>日活趋势（30 天）</mat-card-title>
+      </mat-card-header>
+      <div echarts [options]="lineChartOption()" class="chart-canvas"></div>
+    </mat-card>
+
+    <mat-card class="chart-card">
+      <mat-card-header>
+        <mat-card-title>SRS 间隔分布</mat-card-title>
+      </mat-card-header>
+      <div echarts [options]="pieChartOption()" class="chart-canvas"></div>
+    </mat-card>
+  </div>
+}

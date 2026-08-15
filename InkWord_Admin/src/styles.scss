@@ -1,0 +1,80 @@
+// Custom Theming for an E-Ink Black & White Aesthetic
+// For more information: https://material.angular.io/guide/theming
+@use '@angular/material' as mat;
+@include mat.core();
+
+// Ink-screen palette: near-black ink (#1a1a1a) on paper (#f5f5f5)
+$ink-primary: mat.define-palette(mat.$grey-palette, 900, 800, 700);
+$ink-accent: mat.define-palette(mat.$blue-grey-palette, 500, 300, 700);
+$ink-warn: mat.define-palette(mat.$red-palette);
+
+// ===== Light Theme =====
+$ink-light-theme: mat.define-light-theme((
+  color: (
+    primary: $ink-primary,
+    accent: $ink-accent,
+    warn: $ink-warn,
+  ),
+  typography: mat.define-typography-config(),
+  density: 0,
+));
+
+// ===== Dark Theme =====
+$ink-dark-theme: mat.define-dark-theme((
+  color: (
+    primary: $ink-primary,
+    accent: $ink-accent,
+    warn: $ink-warn,
+  ),
+  typography: mat.define-typography-config(),
+  density: 0,
+));
+
+// Default: Light theme
+@include mat.all-component-themes($ink-light-theme);
+
+/* CSS 变量 — 亮色（墨水纸）*/
+body.light-theme {
+  --bg-page: #f5f5f5;
+  --bg-card: #ffffff;
+  --bg-sidebar: #1a1a1a;
+  --text-primary: #1a1a1a;
+  --text-secondary: #666666;
+  --border-color: #e0e0e0;
+}
+
+/* CSS 变量 — 暗色（墨水屏黑底）*/
+body.dark-theme {
+  --bg-page: #121212;
+  --bg-card: #1e1e1e;
+  --bg-sidebar: #0a0a0a;
+  --text-primary: #f5f5f5;
+  --text-secondary: #aaaaaa;
+  --border-color: #333333;
+}
+
+/* 暗黑模式覆盖 Material 主题 */
+body.dark-theme {
+  @include mat.all-component-colors($ink-dark-theme);
+}
+
+/* Global Styles */
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: Roboto, "Helvetica Neue", sans-serif;
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Utility */
+.spacer { flex: 1 1 auto; }
+.full-width { width: 100%; }
+.text-center { text-align: center; }
+
+/* Error snackbar */
+.error-snackbar {
+  --mdc-snackbar-container-color: #d32f2f;
+  --mdc-snackbar-supporting-text-color: #fff;
+}

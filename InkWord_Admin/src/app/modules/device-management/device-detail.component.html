@@ -1,0 +1,93 @@
+<h2 mat-dialog-title>
+  <span class="status-dot" [class.online]="isOnline" [class.offline]="!isOnline"></span>
+  {{ device.name || device.deviceCode }}
+</h2>
+
+<mat-dialog-content>
+  <!-- 设备信息 -->
+  <div class="info-grid">
+    <div class="info-item">
+      <span class="label">设备编码</span>
+      <span class="value">{{ device.deviceCode }}</span>
+    </div>
+    <div class="info-item">
+      <span class="label">MAC 地址</span>
+      <span class="value">{{ device.macAddress }}</span>
+    </div>
+    <div class="info-item">
+      <span class="label">固件版本</span>
+      <span class="value">{{ device.firmwareVersion }}</span>
+    </div>
+    <div class="info-item">
+      <span class="label">电池电量</span>
+      <span class="value">
+        <mat-icon>battery_{{ device.batteryLevel > 80 ? 'full' : device.batteryLevel > 50 ? '6_bar' : device.batteryLevel > 25 ? '4_bar' : '2_bar' }}</mat-icon>
+        {{ device.batteryLevel }}%
+      </span>
+    </div>
+    <div class="info-item">
+      <span class="label">在线状态</span>
+      <span class="value" [class.online-text]="isOnline" [class.offline-text]="!isOnline">
+        {{ isOnline ? '在线' : '离线' }}
+      </span>
+    </div>
+    <div class="info-item">
+      <span class="label">最后活跃</span>
+      <span class="value">{{ device.lastHeartbeat ? (device.lastHeartbeat | date: 'MM-dd HH:mm') : '—' }}</span>
+    </div>
+  </div>
+
+  <!-- 电量曲线（模拟数据） -->
+  <mat-card class="battery-card">
+    <mat-card-header>
+      <mat-card-title>电量趋势</mat-card-title>
+    </mat-card-header>
+    <div class="battery-chart">
+      @for (item of batteryHistory; track item.time) {
+        <div class="bar-item">
+          <div class="bar-fill" [style.height.%]="item.battery"></div>
+          <span class="bar-value">{{ item.battery }}%</span>
+          <span class="bar-time">{{ item.time }}</span>
+        </div>
+      }
+    </div>
+  </mat-card>
+
+  <!-- 远程命令面板 -->
+  <div class="command-panel">
+    <h3>远程命令</h3>
+    <div class="command-buttons">
+      <button
+        mat-raised-button
+        color="primary"
+        (click)="sendCommand('force_sync')"
+        [disabled]="sending()"
+      >
+        <mat-icon>sync</mat-icon>
+        强制同步
+      </button>
+      <button
+        mat-raised-button
+        color="accent"
+        (click)="sendCommand('force_refresh')"
+        [disabled]="sending()"
+      >
+        <mat-icon>refresh</mat-icon>
+        强制全刷
+      </button>
+      <button
+        mat-raised-button
+        color="warn"
+        (click)="sendCommand('push_ota')"
+        [disabled]="sending()"
+      >
+        <mat-icon>system_update</mat-icon>
+        推送 OTA
+      </button>
+    </div>
+  </div>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()">关闭</button>
+</mat-dialog-actions>

@@ -1,0 +1,41 @@
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+
+  h2 {
+    margin: 0;
+    font-size: 1.4rem;
+  }
+}
+
+.loading-row {
+  display: flex;
+  justify-content: center;
+  padding: 48px;
+}
+
+.ota-table {
+  width: 100%;
+
+  .mono {
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+  }
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 64px 0;
+  color: #aaa;
+
+  mat-icon {
+    font-size: 3rem;
+    width: auto;
+    height: auto;
+  }
+}

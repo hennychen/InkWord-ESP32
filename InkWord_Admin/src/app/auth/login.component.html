@@ -1,0 +1,55 @@
+<div class="login-container">
+  <mat-card class="login-card">
+    <mat-card-header class="login-header">
+      <mat-card-title>InkWord 管理后台</mat-card-title>
+      <mat-card-subtitle>墨水屏单词学习系统</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      <form [formGroup]="form" (ngSubmit)="submit()" class="login-form">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>用户名</mat-label>
+          <input matInput formControlName="username" placeholder="请输入用户名" autocomplete="username" />
+          @if (form.controls.username.hasError('required') && form.controls.username.touched) {
+            <mat-error>请输入用户名</mat-error>
+          }
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>密码</mat-label>
+          <input
+            matInput
+            type="password"
+            formControlName="password"
+            placeholder="请输入密码"
+            autocomplete="current-password"
+          />
+          @if (form.controls.password.hasError('required') && form.controls.password.touched) {
+            <mat-error>请输入密码</mat-error>
+          }
+          @if (form.controls.password.hasError('minlength') && form.controls.password.touched) {
+            <mat-error>密码至少 6 位</mat-error>
+          }
+        </mat-form-field>
+
+        @if (errorMsg()) {
+          <div class="error-msg">{{ errorMsg() }}</div>
+        }
+
+        <button
+          mat-raised-button
+          color="primary"
+          type="submit"
+          class="full-width login-btn"
+          [disabled]="loading()"
+        >
+          @if (loading()) {
+            <mat-spinner diameter="20"></mat-spinner>
+          } @else {
+            登录
+          }
+        </button>
+      </form>
+    </mat-card-content>
+  </mat-card>
+</div>
