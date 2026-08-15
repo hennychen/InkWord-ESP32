@@ -2,8 +2,9 @@
 
 > 依据 [gpio_config.h](../InkWord_Firmware/src/gpio_config.h) 引脚定义 + 上板实测整理。
 > 芯片: ESP32-S3-DevKitC-1 (16MB Flash, 8MB PSRAM)
-> 实测状态：**EPD 屏幕已验证**（横屏 UI + 全刷/局刷 + Wi-Fi 配置页，8 线方案）；
+> 实测状态：**EPD 屏幕已验证**（横屏 UI + 全刷/局刷 + Wi-Fi 配置页，9 线方案，经 GPIO 扩展板中继）；
 > SD 卡模块**未接线**；音频/按键**待验证**（引脚已定义）。
+> 2026-08 演变：9 线 → 省线 8 线（BS 板侧短接 GND）→ 重接扩展板后**恢复 9 线（BS=GPIO11 固件驱动）**。
 
 ---
 
@@ -31,7 +32,7 @@
   │           │    │ (待验证)    │ │ (未接线)    │  │ (待验证)      │
   └─────┬─────┘    └────────────┘ └────────────┘  └───────────────┘
         │
-        │ 8 根线
+        │ 9 根线（经 GPIO 扩展板转接）
   ┌─────▼─────────────────────┐
   │   EVK011 升压转接板         │
   │  ┌─────────────────────┐  │
@@ -48,28 +49,33 @@
 
 ## 二、逐模块详细接线
 
-### 2.1 EPD 墨水屏（EVK011 转接板 + DEPG0370）—— 8 根线，已实测 ✅
+### 2.1 EPD 墨水屏（EVK011 转接板 + DEPG0370）—— 9 根线，已实测 ✅
 
 > 驱动：GxEPD2（`GxEPD2_374_DEPG0370`，UC8253 类 COG，硬件 SPI 4MHz）。
 > EVK011 板上分立升压电路由**屏幕 COG 从 FPC pin2(GDR) 自主驱动**，
 > MCU 不输出 GDR/RESE 信号，仅需向 J2-16 供 3.3V。
 >
-> **2026-08 省线实测**：BS 线已去掉（原 GPIO11→J2-10），板侧 J2-10 短接
-> GND，固件 `EPD_BS_PIN=-1`。9 根 → **8 根**。
+> **BS 线演变（2026-08）**：省线阶段曾去 BS 线（板侧 J2-10 短接 GND，
+> `EPD_BS_PIN=-1`）；重接扩展板后恢复 **GPIO11 → J2-10**，
+> 固件 `EPD_BS_PIN=11` 上电驱动 LOW 选 4 线 SPI（当前状态）。
+>
+> **⚠️ BS 线铁律**：J2-10 只允许两种状态 —— 接 GPIO11（固件驱动）或板侧短接 GND；
+> **绝不可悬空**：BS 漂高会进 3 线 SPI 模式，DC 失效、帧数据错乱、屏显条状（实测）。
+>
+> **扩展板中继**：当前经 GPIO 扩展板转接，必须按**主板原生 GPIO 丝印**核对
+>（扩展板脚位编号≠GPIO 编号的情况常见）；接触不良时 SPI 采样错位同样导致条状。
 
 ```
   ESP32-S3           EVK011 转接板              DEPG0370 屏幕
   ┌────────┐         ┌───────────────┐         ┌────────────┐
   │        │         │           J1  ├─FPC 24p─┤ COG UC8253 │
   │ GPIO7  ├─SCK────►│ J2-3 SCK      │         │ 240x416    │
-  │ GPIO8  ├─MOSI───►│ J2-5 SDO      │         │ GDR→板上Q1 │
+  │ GPIO8  ├─SDO────►│ J2-5 SDO      │         │ GDR→板上Q1 │
   │ GPIO9  ├─D/C────►│ J2-7 D/C#     │         │ 自主升压    │
   │ GPIO10 ├─CS─────►│ J2-6 CS       │         │ VGH +15V   │
-  │ GPIO13 ├─RST────►│ J2-8 RES      │         │ VGL -15V   │
-  │ GPIO12 │◄─BUSY───│ J2-9 BUSY     │         │ VCOM       │
-  │ (GPIO11)          │ J2-10 BS ──┐  │         │            │
-  │   已去线，GPIO11  │            └─► 板侧短接 GND          │
-  │   现已释放        │               │         │            │
+  │ GPIO11 ├─BS─────►│ J2-10 BS      │         │ VGL -15V   │
+  │ GPIO13 ├─RST────►│ J2-8 RES      │         │ VCOM       │
+  │ GPIO12 │◄─BUSY───│ J2-9 BUSY     │         │            │
   │ 3V3    ├─VCI────►│ J2-16 EPAPER_VCI（唯一供电脚！）│   │
   │ GND    ├────────►│ J2-1 GND      │         │            │
   └────────┘         └───────────────┘         └────────────┘
@@ -78,14 +84,30 @@
 | ESP32-S3 引脚 | EVK011 J2 | 说明 |
 |:---:|:---:|:---|
 | GPIO7 | J2-3 SCK | SPI 时钟（硬件 SPI，GxEPD2 管理） |
-| GPIO8 | J2-5 SDO | SPI MOSI |
+| GPIO8 | J2-5 SDO | SPI 数据（MCU 侧 MOSI，丝印 SDO） |
 | GPIO9 | J2-7 D/C# | 命令/数据 |
 | GPIO10 | J2-6 CS | 片选 |
 | GPIO13 | J2-8 RES | 硬复位（低有效，深睡唯一唤醒途径） |
 | GPIO12 | J2-9 BUSY | 忙信号（LOW=忙） |
 | 3V3 | J2-16 VCI | 屏幕唯一供电 3.3V |
 | **GND** | **J2-1（必须接！）** | 共地 —— J2 无标签脚 pin1/2/12/13/14/15 均为 GND/NC，任选其一 |
-| ~~GPIO11~~ | ~~J2-10 BS~~ | **已去线**：板侧短接 GND，固件 `EPD_BS_PIN=-1`；GPIO11 已释放可复用 |
+| GPIO11 | J2-10 BS | 接口模式选择：固件驱动 LOW=4 线 SPI（`EPD_BS_PIN=11`） |
+
+#### 丝印别名对照（板卡 / 屏 FPC / demo 三套命名）
+
+| 信号本质 | J2 丝印 | 屏 FPC(J1) 规格 | demo 代码 | ESP32-S3 |
+|:---|:---:|:---:|:---:|:---:|
+| SPI 时钟 | SCK (J2-3) | SCL (J1-13) | SPI_CLK | GPIO7 |
+| 数据线（单根双向） | SDO (J2-5) | SDA (J1-14) | SDI（读时切输入） | GPIO8 (MOSI) |
+| 片选 | CS (J2-6) | CS# (J1-12) | Epaper_CS | GPIO10 |
+| 命令/数据 | D/C# (J2-7) | D/C# (J1-11) | Epaper_DC | GPIO9 |
+| 硬复位 | RES (J2-8) | RES# (J1-10) | Epaper_RESET | GPIO13 |
+| 忙信号 | BUSY (J2-9) | BUSY (J1-9) | Epaper_BUSY | GPIO12 |
+| 接口模式选择 | BS (J2-10) | BS1 (J1-8) | Epaper_BS | GPIO11（LOW=4线 SPI） |
+
+> SDA / SDI / SDO 是同一根双向数据线的三种命名（屏厂 I2C 风格 / demo 读视角 /
+> 板厂输出视角），本固件只写不读，恒接 GPIO8（MOSI）；若板卡另有独立 SDO
+> 读回脚则悬空（状态查询走 BUSY 引脚）。
 
 > **共地警告（实测教训）**: 未接 GND 时 EVK011/屏幕 COG 完全无电，
 > 症状为 BUSY 悬空恒读 0、VGH 仅剩感应电压（实测 2.6V，正常 +15V）、屏幕无任何反应。
@@ -96,13 +118,13 @@
 > **严禁将 J1 侧任何高压引脚（pin21/23/24）接入 ESP32**。
 > J2 排针上无高压引脚，安全。
 
-#### 接线精简分析记录（2026-08，9 → 8 根，已实施）
+#### 接线精简分析记录（2026-08，结论：CS/RST/BUSY 保留，BS 两案可切换）
 
 | 线 | 结论 | 分析 |
 |:---|:---:|:---|
-| SCK / MOSI / D/C# | ❌ 不可去 | SPI 通信本质线 |
+| SCK / SDO / D/C# | ❌ 不可去 | SPI 通信本质线 |
 | 3V3(VCI) / GND | ❌ 不可去 | 供电与共地（漏接 GND 教训见上） |
-| **BS (原 GPIO11→J2-10)** | ✅ **已去** | 固件只用 4 线 SPI，BS 恒为 L；板侧短接 GND 比 GPIO 驱动更稳（消除 ESP32 启动前 ~100ms 高阻悬空窗口）。实测标准：无 "Busy Timeout!"、BUSY 诊断 idle HIGH |
+| **BS (GPIO11→J2-10)** | 🔁 **当前已接**（可去） | 固件只用 4 线 SPI，BS 恒为 L。两种等价方案：①接 GPIO11 固件驱动（当前，重接扩展板后恢复）；②去线板侧短接 GND（曾实测稳定，更省一脚，但注意 GPIO11 不可再作他用且拆短接线时序风险见下） ⚠️ 切换方案时必须同步改 `EPD_BS_PIN` 并重烧，两状态不一致 = BS 悬空 = 屏显条状（实测） |
 | CS (GPIO10→J2-6) | ⚠️ 不建议去 | EPD 独占总线理论可常拉低；但 ESP32 启动期 SCK/MOSI 高阻，噪声时钟可能向 COG 移入乱码命令，CS 高电平是上电窗口防误触发隔离 |
 | RST (GPIO13→J2-8) | ❌ 保留 | 深睡(0x07/0xA5)唯一唤醒途径 + COG 挂死唯一恢复手段（电池设备功耗优化必需） |
 | BUSY (GPIO12→J2-9) | ⚠️ 不建议去 | GxEPD2 无 BUSY 时降级固定延时（全刷1500ms/局刷350ms），变慢且低温下 COG 实际忙时长超固定值会截断波形撕裂画面；也是三态诊断排障载体 |
@@ -152,7 +174,7 @@
 
   GPIO0 ──[KEY_A]── GND    上一条 / 确认
   GPIO1 ──[KEY_B]── GND    下一条
-  GPIO2 ──[KEY_C]── GND    发音 / 长按进入 Wi-Fi 配置   ⚠️ Boot strapping
+  GPIO2 ──[KEY_C]── GND    发音 / 长按进入 Wi-Fi 配置   （S3 非 strapping）
   GPIO3 ──[KEY_D]── GND    模式切换 / 长按清残影全刷     ⚠️ Boot strapping
   GPIO14 ──[KEY_E]── GND   左方向（Wi-Fi 配置页）
   GPIO15 ──[KEY_F]── GND   右方向（Wi-Fi 配置页）
@@ -170,7 +192,8 @@
 > **去抖**: 软件去抖 50ms，长按判定 1500ms，扫描周期 20ms。
 > **无需外部电阻**：使用 ESP32 内部 pull-up。
 > **KEY_E 与 LED 冲突**：`LED_STATUS_PIN`(14) 与 `BUTTON_E_PIN`(14) 重叠，
-> KEY_E 已启用 → 状态灯禁用；如需状态灯建议用 EPD 省线释放出的 **GPIO11**。
+> KEY_E 已启用 → 状态灯禁用；如需状态灯推荐 **GPIO48 板载 RGB**（零接线，见 §4.2）。
+> （GPIO11 已回归 EPD_BS 占用，不可作状态灯）
 
 ---
 
@@ -239,19 +262,19 @@
 |:---:|:---|:---|:---:|:---|
 | GPIO0 | KEY_A | 按键 | Input | 内部上拉，低有效；⚠️ Boot strapping（上电低=下载模式） |
 | GPIO1 | KEY_B | 按键 | Input | 内部上拉，低有效 |
-| GPIO2 | KEY_C | 按键 | Input | 内部上拉，低有效；⚠️ Boot strapping（Flash 电压选择） |
+| GPIO2 | KEY_C | 按键 | Input | 内部上拉，低有效；~~Boot strapping（Flash 电压选择）~~ 已修正：S3 非 strapping（见下注） |
 | GPIO3 | KEY_D | 按键 | Input | 内部上拉，低有效；⚠️ Boot strapping（JTAG 模式） |
 | GPIO4 | I2S_BCLK | MAX98357A | Output | I2S 位时钟 |
 | GPIO5 | I2S_WS | MAX98357A | Output | I2S 字选择 |
 | GPIO6 | I2S_DOUT | MAX98357A | Output | I2S 数据 |
-| GPIO7 | EPD_SCK | EVK011 J2-3 | Output | EPD SPI 时钟 |
-| GPIO8 | EPD_MOSI | EVK011 J2-5 | Output | EPD SPI 数据 |
+| GPIO7 | EPD_SCK | EVK011 J2-3 SCK | Output | EPD SPI 时钟 |
+| GPIO8 | EPD_MOSI | EVK011 J2-5 SDO | Output | EPD SPI 数据（丝印 SDO） |
 | GPIO9 | EPD_DC | EVK011 J2-7 | Output | EPD 命令/数据 |
 | GPIO10 | EPD_CS | EVK011 J2-6 | Output | EPD 片选 |
-| **GPIO11** | **（已释放）** | — | — | 原 EPD_BS，2026-08 去线后空闲，可作状态灯等 |
+| GPIO11 | EPD_BS | EVK011 J2-10 | Output | 接口模式选择：固件驱动 LOW=4 线 SPI（不可悬空，见 §2.1） |
 | GPIO12 | EPD_BUSY | EVK011 J2-9 | Input | EPD 忙信号（LOW=忙） |
 | GPIO13 | EPD_RESET | EVK011 J2-8 | Output | EPD 硬复位（低有效） |
-| GPIO14 | KEY_E | 按键 | Input | 左方向键；⚠️ 与 LED_STATUS_PIN 重叠 → LED 禁用 |
+| GPIO14 | KEY_E | 按键 | Input | 左方向键；⚠️ 与 LED_STATUS_PIN 重叠 → LED 禁用（状态灯改用 GPIO48 板载 RGB，见 §4.2） |
 | GPIO15 | KEY_F | 按键 | Input | 右方向键 |
 | GPIO16 | SD_MISO | SD 卡 | Input | SPI3 主入从出 |
 | GPIO17 | SD_MOSI | SD 卡 | Output | SPI3 主出从入 |
@@ -262,17 +285,76 @@
 | GPIO44 | UART0_RX | — | Input | 串口 RX (115200) |
 | GPIO47 | SD_CS | SD 卡 | Output | SPI3 片选 |
 
-> **Boot Strapping 引脚注意**（GPIO0/2/3 作按键时）:
-> 上电瞬间必须为高电平（内部上拉保证），启动后可安全用作按键输入。
+> **Boot Strapping 引脚注意**（ESP32-S3 实际 strapping 引脚为 **GPIO0/3/45/46**，
+> 本项目按键仅涉及 GPIO0/3；GPIO2 为普通 IO，旧「Flash 电压选择」标注系原版
+> ESP32 认知，已修正）:
+> 作按键的 strapping 脚上电瞬间必须为高电平（内部上拉保证），启动后可安全用作按键输入。
+> 运行期注意：**按住 KEY_D(GPIO3) 的同时复位/上电**会把 JTAG 路由到 GPIO39-42
+> （外部 JTAG 模式），USB-JTAG 烧录将失联 —— 松开按键复位即恢复。
 >
 > **双 SPI 总线**: EPD 用 Arduino SPI（SPI2_HOST，GxEPD2 管理，4MHz），
 > SD 用 SPI3_HOST（ESP-IDF sdspi，≤20MHz），互不干扰。
 
 ---
 
-## 四、PCB 布局注意事项
+## 四、剩余空闲 GPIO 池（2026-08 分析）
 
-### 4.1 高压隔离
+> 在第三章占用表基础上，扣除系统占用（USB 19/20、嵌入 Flash 26–32、
+> Octal PSRAM 33–37、UART0 43/44）后的空闲资源盘点。
+> 结论：**6 个完全自由 GPIO + 1 个板载 RGB LED，扩展余量充足，当前无冲突。**
+> （GPIO11 已随 BS 线恢复被 EPD 占用，不在空闲池）
+
+### 4.1 完全自由引脚（6 个：21/38/39/40/41/42）
+
+| GPIO | 来源 | 说明 |
+|:---:|:---|:---|
+| **21** | 一直未占用 | 无任何限制 |
+| **38** | 一直未占用 | 无限制，可作 I2C SDA/SCL |
+| **39** | 历史预留 GDR 已废弃（升压由屏 COG 自驱，见 §2.1） | 兼具外部 JTAG TCK 复用 |
+| **40** | 历史预留 RESE 已废弃 | 兼具外部 JTAG TMS 复用 |
+| **41** | 一直未占用 | 兼具外部 JTAG TDI 复用 |
+| **42** | 一直未占用 | 兼具外部 JTAG TDO 复用 |
+
+扩展需求评估：状态灯(1) + 电池电量(1–2) + TP4056 充电状态输入(1–2) +
+I2C 总线(2) ≈ 5–7 个，空闲池可完整覆盖。
+
+### 4.2 状态灯建议：GPIO48 板载 WS2812 RGB（零接线）
+
+DevKitC-1 **板载 WS2812 RGB LED 接 GPIO48**，无需任何接线即可用作状态灯
+（Arduino 核心已内置 `RGB_BUILTIN` 宏，`neopixelWrite()` 直接驱动）。
+建议优先启用 GPIO48 做状态灯，**彻底解除 GPIO14 的 LED/KEY_E 历史冲突**
+（见 §2.3），且不占用 4.1 空闲池。
+
+### 4.3 永久闲置：GPIO45 / GPIO46（strapping）
+
+| GPIO | strapping 功能 | 闲置原因 |
+|:---:|:---|:---|
+| **45** | VDD_SPI 电压选择 | 上电采样须为低（高=1.8V flash 供电模式），外接上拉可致无法启动 |
+| **46** | 启动模式 / ROM 日志控制 | 上电采样须为低，外接上拉/按键可致启动异常 |
+
+> 这两脚的上电采样值直接决定启动配置，**禁止外接上拉、按键或强驱动器件**，
+> 建议在接线与 PCB 层面永久闲置。
+
+### 4.4 ADC 限制与电池电压检测方案
+
+ESP32-S3 ADC 通道分布 × 本项目占用情况：
+
+- **ADC1 = GPIO1–10**：已被按键 / I2S / EPD 占满，无可用通道；
+- **ADC2 = GPIO11–20**：GPIO11 被 EPD_BS 占、12/13 EPD、14/15 按键、
+  16–18 SD、19/20 USB —— **同样无空闲通道**（且 Wi-Fi 开启期间 ADC2 采样被禁用）。
+
+结论：本项目已无现成可用的 ADC 引脚，电池电压检测推荐走 I2C：
+
+| 方案 | 引脚 | 原理 | 优缺点 |
+|:---|:---|:---|:---|
+| ① I2C 电量计（推荐） | GPIO38/39 作 SDA/SCL | 外置电量计 IC（如 MAX17048）直接读电压/百分比 | 无 Wi-Fi 限制、精度高；增加 1 颗 IC 成本 |
+| ② 复用 BS 脚分时采样 | GPIO11 + 分压电阻 | 深睡前屏已静止时将 BS 脚短暂切 ADC 采样一次，读毕恢复输出 LOW | 零成本；属复用 hack（BS 脚兼 4 线模式选择与 ADC），需验证 COG 静止期 BS 悬空无副作用 |
+
+---
+
+## 五、PCB 布局注意事项
+
+### 5.1 高压隔离
 
 ```
   ┌─────────────────────────────────┐
@@ -293,7 +375,7 @@
   └─────────────────────────────────┘
 ```
 
-### 4.2 去耦电容
+### 5.2 去耦电容
 
 | 器件 | 电容规格 | 位置 |
 |:---|:---|:---|
@@ -304,7 +386,7 @@
 
 > 注：VGH/VGL/VCOM 高压电容组在 EVK011 板上已集成（Q1+L1+MBR0503 boost），PCB 侧无需重复。
 
-### 4.3 走线建议
+### 5.3 走线建议
 
 | 信号 | 线宽 | 注意 |
 |:---|:---|:---|
@@ -315,7 +397,7 @@
 
 ---
 
-## 五、线色规范
+## 六、线色规范
 
 | 线色 | 用途 |
 |:---:|:---|
