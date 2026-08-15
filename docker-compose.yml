@@ -1,0 +1,79 @@
+# =========================================================
+# InkWord 全栈编排 — docker-compose.yml
+# 启动：docker compose up -d --build
+# 访问：http://localhost (前端) / http://localhost:8080 (后端 API)
+# =========================================================
+
+services:
+  # ── PostgreSQL 数据库 ──────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: inkword-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: inkword
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis 缓存 ─────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: inkword-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── 后端 API (.NET 8) ──────────────────────────
+  backend:
+    build:
+      context: ./InkWord_Backend
+      dockerfile: Dockerfile
+    container_name: inkword-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # 双下划线 __ 映射 appsettings.json 的层级分隔符 :
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=inkword;Username=postgres;Password=${DB_PASSWORD:-postgres}"
+      ConnectionStrings__Redis: "redis:6379"
+      Jwt__Issuer: "InkWord"
+      Jwt__Audience: "InkWordAdmin"
+      Jwt__Secret: "${JWT_SECRET:-InkWord_Super_Secret_Key_2024_ChangeMe_Please_32+}"
+    ports:
+      - "8080:8080"
+
+  # ── 前端管理后台 (Nginx + Angular SPA) ─────────
+  frontend:
+    build:
+      context: ./InkWord_Admin
+      dockerfile: Dockerfile
+    container_name: inkword-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  pgdata:
+  redisdata:
