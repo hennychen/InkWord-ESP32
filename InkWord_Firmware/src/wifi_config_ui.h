@@ -2,8 +2,9 @@
  * @file wifi_config_ui.h
  * @brief Wi-Fi 配置页面 UI（扫描 / 选择 / 密码输入 / 连接）
  *
- * 全屏向导式 UI，通过 6 个实体按键操作：
- *   A/B = 上下导航, E/F = 左右导航, C = 输入/确认, D = 删除/长按返回
+ * 全屏向导式 UI，通过五向导航按键操作：
+ *   上/下 = 上下导航, 左/右 = 左右导航, 中 = 输入/确认,
+ *   左短按 = 列表页退出, 中长按 = 返回, 左长按 = 密码快删
  *
  * 交互流程：
  *   列表页(扫描结果) → 选 AP → 密码页(软键盘) → 连接 → 结果 → 自动退出
@@ -33,7 +34,7 @@ bool wifi_config_ui_is_active(void);
 
 /**
  * @brief 进入 Wi-Fi 配置页（触发首次扫描）。
- *        可在无凭据时自动调用，或长按 C 键手动调用。
+ *        可在无凭据时自动调用，或长按中键手动调用。
  */
 void wifi_config_ui_enter(void);
 
@@ -41,7 +42,7 @@ void wifi_config_ui_enter(void);
  * @brief 按键转发接口。配置页激活时，由 main 按键回调调用。
  *        非阻塞（仅入队），绝不卡住按键扫描任务。
  */
-void wifi_config_ui_on_button(button_id_t id, button_event_t event);
+void wifi_config_ui_on_button(nav_key_t id, button_event_t event);
 
 #ifdef __cplusplus
 }

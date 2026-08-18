@@ -7,13 +7,17 @@
 
 #include "esp_wifi.h"
 #include "esp_event.h"
+#include "esp_netif.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "freertos/event_groups.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 static const char *TAG = "WIFI";
 
@@ -25,6 +29,22 @@ static EventGroupHandle_t s_wifi_events;
 static int s_retry = 0;
 static bool s_connected = false;
 static bool s_init_done = false;
+
+/* SoftAP 配网门户与异步连接状态 */
+static bool s_ap_active = false;
+static esp_netif_t *s_ap_netif = NULL;
+static volatile wconn_state_t s_wconn = WCONN_IDLE;
+
+/* 断线慢速重连定时器（5 次快速重试失败后启用） */
+static esp_timer_handle_t s_recon_timer = NULL;
+
+static void recon_timer_cb(void *arg)
+{
+    (void)arg;
+    LOG_W("wifi slow-reconnect: retrying");
+    s_retry = 0;
+    esp_wifi_connect();
+}
 
 static void event_handler(void *arg, esp_event_base_t base,
                           int32_t id, void *data)
@@ -38,8 +58,19 @@ static void event_handler(void *arg, esp_event_base_t base,
             s_retry++;
             LOG_W("retry connect to AP (%d/%d)", s_retry, MAX_RETRY);
         } else {
+            /* 快速重试用尽：转 30s 慢速重连（路由器重启/临时断网恢复后自动回网，
+             * 不再永久离线）；回调运行于 esp_timer 任务，不阻塞事件循环 */
+            if (!s_recon_timer) {
+                const esp_timer_create_args_t t = {
+                    .callback = recon_timer_cb,
+                    .name = "wifi_recon",
+                };
+                esp_timer_create(&t, &s_recon_timer);
+            }
+            esp_timer_stop(s_recon_timer); /* 防重复叠加 */
+            esp_timer_start_once(s_recon_timer, 30 * 1000000ULL);
             xEventGroupSetBits(s_wifi_events, WIFI_FAIL_BIT);
-            LOG_E("connect to AP failed");
+            LOG_E("connect failed, slow-reconnect in 30s");
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
@@ -66,6 +97,15 @@ int wifi_manager_init(void)
 {
     if (s_init_done) return 0;
 
+    /* 网络栈前置初始化：esp_netif 系列与 esp_http_server(socket) 均依赖
+     * tcpip 线程；纯 IDF 调用路径下 Arduino 框架不会代劳。
+     * 两者均幂等（重复调用返回 ESP_ERR_INVALID_STATE，安全忽略） */
+    ESP_ERROR_CHECK(esp_netif_init());
+    esp_err_t lo = esp_event_loop_create_default();
+    if (lo != ESP_OK && lo != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(lo);
+    }
+
     s_wifi_events = xEventGroupCreate();
 
     esp_netif_create_default_wifi_sta();
@@ -80,6 +120,12 @@ int wifi_manager_init(void)
     bool have_cred = (load_credentials(&wifi_cfg) == ESP_OK);
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+    /* 关闭 Wi-Fi Modem Sleep：本机作为 HTTP/mDNS 服务端需随时响应 ARP 与 TCP。
+     * 默认 WIFI_PS_MIN_MODEM 下设备间歇休眠，ARP 请求无应答、局域网单播
+     * 完全不可达（mDNS 组播因设备主动发包仍通，极具迷惑性）。
+     * 代价：STA 功耗升高（测试版可接受，量产可换回并配合保活策略） */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     if (have_cred) {
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
@@ -180,4 +226,107 @@ int wifi_scan(wifi_ap_record_t *results, int max)
 
     LOG_I("wifi scan found %d networks", ap_num);
     return (int)ap_num;
+}
+
+/* ============================================================
+ * SoftAP 配网门户 + 异步连接 (captive portal)
+ * ============================================================ */
+
+int wifi_start_softap(void)
+{
+    if (!s_init_done) wifi_manager_init();
+    if (s_ap_active) return 0;
+
+    /* STA netif 已在 wifi_manager_init 创建；AP netif 仅创建一次 */
+    if (!s_ap_netif) s_ap_netif = esp_netif_create_default_wifi_ap();
+
+    /* 运行中切换模式需先 stop（重新 start 后 STA 自动重连已保存网络） */
+    esp_wifi_stop();
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+
+    wifi_config_t ap = { 0 };
+    strlcpy((char *)ap.ap.ssid, "InkWord-Setup", sizeof(ap.ap.ssid));
+    ap.ap.ssid_len = strlen("InkWord-Setup");
+    ap.ap.channel = 1;
+    ap.ap.authmode = WIFI_AUTH_OPEN;   /* 开放网络：连上即可弹出门户 */
+    ap.ap.max_connection = 2;
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
+
+    ESP_ERROR_CHECK(esp_wifi_start());
+    s_ap_active = true;
+    s_retry = 0;
+    LOG_I("SoftAP 'InkWord-Setup' started (APSTA mode)");
+    return 0;
+}
+
+void wifi_stop_softap(void)
+{
+    if (!s_ap_active) return;
+    s_ap_active = false;
+
+    esp_wifi_stop();
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    /* WIFI_EVENT_STA_START 回调自动 esp_wifi_connect()，
+     * 沿用 RAM 中 STA config（异步连接成功前已 set_config）重连 */
+    LOG_I("SoftAP stopped, back to STA mode");
+}
+
+bool wifi_softap_active(void)
+{
+    return s_ap_active;
+}
+
+/* 异步连接任务：参数为堆上 strdup 的 [ssid, pass] 二维指针 */
+static void connect_task(void *arg)
+{
+    char **creds = (char **)arg;
+    s_wconn = WCONN_CONNECTING;
+    int r = wifi_connect(creds[0], creds[1]);
+    free(creds[0]);
+    free(creds[1]);
+    free(creds);
+    s_wconn = (r == 0) ? WCONN_OK : WCONN_FAIL;
+    LOG_I("async connect %s (state=%d)", r == 0 ? "OK" : "FAIL", s_wconn);
+    vTaskDelete(NULL);
+}
+
+int wifi_connect_async(const char *ssid, const char *password)
+{
+    if (!ssid || !*ssid || strlen(ssid) > 32) return -1;
+    if (password && strlen(password) > 64) return -1;
+
+    char **creds = calloc(2, sizeof(char *));
+    if (!creds) return -1;
+    creds[0] = strdup(ssid);
+    creds[1] = password ? strdup(password) : strdup("");
+    if (!creds[0] || !creds[1]) {
+        free(creds[0]); free(creds[1]); free(creds);
+        return -1;
+    }
+
+    if (xTaskCreate(connect_task, "wconn", 4096, creds, 5, NULL) != pdPASS) {
+        free(creds[0]); free(creds[1]); free(creds);
+        return -1;
+    }
+    return 0;
+}
+
+wconn_state_t wifi_connect_state(void)
+{
+    return s_wconn;
+}
+
+bool wifi_get_sta_ip(char *buf, size_t len)
+{
+    if (!buf || len == 0) return false;
+    buf[0] = '\0';
+    if (!s_connected) return false;
+
+    esp_netif_t *nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!nif) return false;
+    esp_netif_ip_info_t ip;
+    if (esp_netif_get_ip_info(nif, &ip) != ESP_OK) return false;
+    snprintf(buf, len, IPSTR, IP2STR(&ip.ip));
+    return true;
 }

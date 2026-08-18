@@ -79,11 +79,11 @@ static const int kb_row_lens[4] = { 10, 9, 9, 3 };
 
 /* ---- 模块状态 ---- */
 typedef struct {
-    button_id_t    id;
+    nav_key_t      id;
     button_event_t event;
 } ui_event_t;
 
-#define IS_ENTER_EVT(e)  ((e).id == BUTTON_COUNT)
+#define IS_ENTER_EVT(e)  ((e).id == NAV_KEY_COUNT)
 
 typedef enum {
     WUI_IDLE = 0,
@@ -279,7 +279,7 @@ static void draw_list_page(void)
 
     if (s_ap_count == 0) {
         ui_text_center(0, 160, SCR_W, 30, "No networks", FONT_LG, true);
-        ui_text_center(0, 195, SCR_W, 20, "Press C to rescan", FONT_SM, true);
+        ui_text_center(0, 195, SCR_W, 20, "Press OK to rescan", FONT_SM, true);
     } else {
         int visible = s_ap_count < LIST_MAX_VISIBLE ? s_ap_count : LIST_MAX_VISIBLE;
         for (int i = 0; i < visible; i++) {
@@ -319,7 +319,7 @@ static void draw_list_page(void)
     int bottom_y = SCR_H - 22;
     epd_gfx_draw_hline(0, bottom_y, SCR_W, C_BLACK);
     ui_text_center(0, bottom_y + 2, SCR_W, 18,
-                   "A/B Sel C Ok D(Long) Exit", FONT_SM, true);
+                   "U/D Move OK Sel LEFT Exit", FONT_SM, true);
 
     ui_flush();
 }
@@ -374,7 +374,7 @@ static void draw_password_page(void)
     int bottom_y = SCR_H - 22;
     epd_gfx_draw_hline(0, bottom_y, SCR_W, C_BLACK);
     ui_text_center(0, bottom_y + 2, SCR_W, 18,
-                   "Move C In D Del D(L) Back", FONT_SM, true);
+                   "Move OK In L(L) Del OK(L) Back", FONT_SM, true);
 
     ui_flush();
 }
@@ -399,7 +399,7 @@ static void draw_result_page(void)
         ui_text_center(0, SCR_H / 2 - 30, SCR_W, 40,
                        "Connection Failed", FONT_XL, true);
         ui_text_center(0, SCR_H / 2 + 20, SCR_W, 30,
-                       "C: Retry   D: Back", FONT_LG, true);
+                       "OK: Retry   LEFT: Back", FONT_LG, true);
     }
     ui_flush();
 }
@@ -428,27 +428,28 @@ static void exit_config(void)
     LOG_I("wifi config UI exited");
 }
 
-static void handle_list(button_id_t id, button_event_t evt)
+static void handle_list(nav_key_t id, button_event_t evt)
 {
-    if (evt == BUTTON_EVENT_LONG_PRESS && id == BUTTON_D) {
+    /* 中长按 / 左短按退出（沿用旧 D 双出口设计，容错） */
+    if (evt == BUTTON_EVENT_LONG_PRESS && id == NAV_CENTER) {
         exit_config();
         return;
     }
     if (evt != BUTTON_EVENT_SHORT_PRESS) return;
 
     switch (id) {
-    case BUTTON_A:
+    case NAV_UP:
         if (s_selected > 0) s_selected--;
         if (s_selected < s_list_off) s_list_off = s_selected;
         draw_list_page();
         break;
-    case BUTTON_B:
+    case NAV_DOWN:
         if (s_selected < s_ap_count - 1) s_selected++;
         if (s_selected >= s_list_off + LIST_MAX_VISIBLE)
             s_list_off = s_selected - LIST_MAX_VISIBLE + 1;
         draw_list_page();
         break;
-    case BUTTON_C:
+    case NAV_CENTER:
         if (s_ap_count == 0) {
             do_scan();
             draw_list_page();
@@ -464,7 +465,7 @@ static void handle_list(button_id_t id, button_event_t evt)
             draw_password_page();
         }
         break;
-    case BUTTON_D:
+    case NAV_LEFT:
         exit_config();
         break;
     default:
@@ -472,11 +473,17 @@ static void handle_list(button_id_t id, button_event_t evt)
     }
 }
 
-static void handle_password(button_id_t id, button_event_t evt)
+static void handle_password(nav_key_t id, button_event_t evt)
 {
-    if (evt == BUTTON_EVENT_LONG_PRESS && id == BUTTON_D) {
+    /* 中长按返回列表；左长按快删（替代旧 D 双功能） */
+    if (evt == BUTTON_EVENT_LONG_PRESS && id == NAV_CENTER) {
         s_state = WUI_LIST;
         draw_list_page();
+        return;
+    }
+    if (evt == BUTTON_EVENT_LONG_PRESS && id == NAV_LEFT) {
+        if (s_pwd_len > 0) s_password[--s_pwd_len] = 0;
+        draw_password_page();
         return;
     }
     if (evt != BUTTON_EVENT_SHORT_PRESS) return;
@@ -484,21 +491,21 @@ static void handle_password(button_id_t id, button_event_t evt)
     int row = s_kb_row, col = s_kb_col;
 
     switch (id) {
-    case BUTTON_A:
+    case NAV_UP:
         if (row > 0) row--;
         if (col >= kb_row_lens[row]) col = kb_row_lens[row] - 1;
         break;
-    case BUTTON_B:
+    case NAV_DOWN:
         if (row < 3) row++;
         if (col >= kb_row_lens[row]) col = kb_row_lens[row] - 1;
         break;
-    case BUTTON_E:
+    case NAV_LEFT:
         if (col > 0) col--;
         break;
-    case BUTTON_F:
+    case NAV_RIGHT:
         if (col < kb_row_lens[row] - 1) col++;
         break;
-    case BUTTON_C: {
+    case NAV_CENTER: {
         int func = kb_func_at(row, col);
         if (func == KBF_NONE) {
             char ch = kb_char_at(row, col);
@@ -544,9 +551,6 @@ static void handle_password(button_id_t id, button_event_t evt)
         }
         break;
     }
-    case BUTTON_D:
-        if (s_pwd_len > 0) s_password[--s_pwd_len] = 0;
-        break;
     default:
         break;
     }
@@ -556,17 +560,17 @@ static void handle_password(button_id_t id, button_event_t evt)
     draw_password_page();
 }
 
-static void handle_result(button_id_t id, button_event_t evt)
+static void handle_result(nav_key_t id, button_event_t evt)
 {
     if (evt != BUTTON_EVENT_SHORT_PRESS) return;
     if (s_connect_ok) return;
 
     switch (id) {
-    case BUTTON_C:
+    case NAV_CENTER:
         s_state = WUI_PASSWORD;
         draw_password_page();
         break;
-    case BUTTON_D:
+    case NAV_LEFT:
         s_state = WUI_LIST;
         draw_list_page();
         break;
@@ -637,12 +641,12 @@ void wifi_config_ui_enter(void)
 {
     if (!s_inited) wifi_config_ui_init();
     s_active = true;
-    ui_event_t evt = { .id = BUTTON_COUNT, .event = BUTTON_EVENT_NONE };
+    ui_event_t evt = { .id = NAV_KEY_COUNT, .event = BUTTON_EVENT_NONE };
     xQueueSend(s_queue, &evt, 0);
     LOG_I("wifi config UI enter requested");
 }
 
-void wifi_config_ui_on_button(button_id_t id, button_event_t event)
+void wifi_config_ui_on_button(nav_key_t id, button_event_t event)
 {
     if (!s_active || !s_queue) return;
     ui_event_t evt = { .id = id, .event = event };

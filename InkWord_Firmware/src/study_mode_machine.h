@@ -3,7 +3,8 @@
  * @brief 三种学习模式状态机 (Task F-16)
  *
  * 模式：闪卡(FLASH) / 听写(DICTATION) / 复习(REVIEW)。
- * 按键映射随模式动态变更；D 键循环切换模式。
+ * 语义动作由五向导航键映射：上下=翻词，中=发音，SET=揭晓/确认，
+ * RST=回第一条；长按下=循环切换模式。
  */
 #ifndef INKWORD_STUDY_MODE_MACHINE_H
 #define INKWORD_STUDY_MODE_MACHINE_H
@@ -51,9 +52,20 @@ const char *study_mode_name(study_mode_t mode);
 /**
  * @brief 在当前模式下处理“上一条/下一条/确认/发音”等语义动作。
  *        由按键事件经模式映射后调用。
- * @param action 0=prev 1=next 2=confirm 3=speak
+ * @param action 0=prev 1=next 2=confirm(闪卡翻义/听写提交) 3=speak
  */
 void study_mode_handle_action(int action);
+
+/**
+ * @brief 释义当前是否显示（默认 true；SET 翻义切换遮蔽/揭晓自测）。
+ *        翻页/切模式后自动回到显示状态。
+ */
+bool study_mode_is_revealed(void);
+
+/**
+ * @brief 光标重置到当前模式第一条并重绘（RST 侧键）。
+ */
+void study_mode_reset_cursor(void);
 
 #ifdef __cplusplus
 }

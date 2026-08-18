@@ -184,3 +184,152 @@ int sync_heartbeat(int battery, const char *fw_ver)
 
     return (err == ESP_OK && status == 200) ? 0 : -1;
 }
+
+/* 天气：GET /api/device/weather（后端聚合上游并缓存，附带服务器时间） */
+static char s_wx_buf[1024];
+
+int sync_fetch_weather(weather_info_t *out)
+{
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device/weather", s_base_url);
+
+    recv_ctx_t ctx = { .buf = s_wx_buf, .buf_size = sizeof(s_wx_buf), .offset = 0 };
+    s_pull_ctx = &ctx;
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
+        .event_handler = pull_event_handler,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .timeout_ms = 10000,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_set_method(client, HTTP_METHOD_GET);
+    set_common_headers(client);
+
+    esp_err_t err = esp_http_client_perform(client);
+    s_pull_ctx = NULL;
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || status != 200 || ctx.offset <= 0) {
+        LOG_E("fetch weather failed: err=%s status=%d", esp_err_to_name(err), status);
+        return -1;
+    }
+    s_wx_buf[ctx.offset] = '\0';
+
+    /* 解析信封 { code, message, data:{ icon, tempC, desc, serverTime, tzOffsetMin } } */
+    int ret = -1;
+    cJSON *root = cJSON_Parse(s_wx_buf);
+    if (!root) {
+        LOG_E("weather json parse failed");
+        return -1;
+    }
+
+    cJSON *code = cJSON_GetObjectItem(root, "code");
+    cJSON *data = cJSON_GetObjectItem(root, "data");
+    if (cJSON_IsNumber(code) && code->valueint == 0 && data) {
+        cJSON *jicon = cJSON_GetObjectItem(data, "icon");
+        cJSON *jtemp = cJSON_GetObjectItem(data, "tempC");
+        cJSON *jdesc = cJSON_GetObjectItem(data, "desc");
+        cJSON *jtime = cJSON_GetObjectItem(data, "serverTime");
+        cJSON *jtz   = cJSON_GetObjectItem(data, "tzOffsetMin");
+
+        if (cJSON_IsNumber(jicon) && cJSON_IsNumber(jtemp)) {
+            out->icon   = (uint8_t)jicon->valueint;
+            out->temp_c = (int8_t)jtemp->valueint;
+            if (cJSON_IsString(jdesc) && jdesc->valuestring)
+                strncpy(out->desc, jdesc->valuestring, sizeof(out->desc) - 1);
+            if (cJSON_IsNumber(jtime)) out->server_time = (int64_t)jtime->valuedouble;
+            if (cJSON_IsNumber(jtz))   out->tz_offset_min = (int16_t)jtz->valueint;
+            ret = 0;
+            LOG_I("weather: %dC icon=%u '%s'", out->temp_c, out->icon, out->desc);
+        }
+    }
+
+    cJSON_Delete(root);
+    if (ret != 0) LOG_E("weather payload invalid");
+    return ret;
+}
+
+/* ============================================================
+ * HTTP Date 头校时（设备主时间源，替代被运营商 UDP 123 劫持废掉的 SNTP）
+ * ============================================================ */
+
+#define SYNC_HTTP_TIME_URL    "http://connect.rom.miui.com/generate_204"
+#define SYNC_HTTP_TIME_TIMEOUT_MS 5000
+#define SYNC_TIME_MIN_EPOCH   1735689600LL /* 2025-01-01，早于此视为异常 */
+#define SYNC_TIME_MAX_EPOCH   4102444800LL /* 2100-01-01，晚于此视为异常 */
+
+/* 公历转自 1970-01-01 的天数（Howard Hinnant 算法，免 timegm 依赖） */
+static long http_time_days_from_civil(long y, long m, long d)
+{
+    y -= m <= 2;
+    long era = (y >= 0 ? y : y - 399) / 400;
+    long yoe = y - era * 400;                                   /* [0,399] */
+    long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+/* 解析 RFC1123 Date 头："Mon, 17 Aug 2026 09:05:03 GMT" → Unix 秒 */
+static int64_t http_time_parse_date(const char *v)
+{
+    static const char *k_months[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const char *p = v ? strchr(v, ',') : NULL;
+    int day = 0, year = 0, hh = 0, mm = 0, ss = 0;
+    char mon[8] = { 0 };
+
+    if (!p) return 0;
+    if (sscanf(p + 1, " %d %3s %d %d:%d:%d",
+               &day, mon, &year, &hh, &mm, &ss) != 6) return 0;
+
+    int mi = 0;
+    for (int i = 0; i < 12; i++)
+        if (strcmp(mon, k_months[i]) == 0) { mi = i + 1; break; }
+    if (mi < 1 || day < 1 || day > 31 || hh > 23 || mm > 59 || ss > 60) return 0;
+
+    long days = http_time_days_from_civil(year, mi, day);
+    int64_t t = (int64_t)days * 86400 + hh * 3600 + mm * 60 + ss;  /* GMT */
+    return (t >= SYNC_TIME_MIN_EPOCH && t <= SYNC_TIME_MAX_EPOCH) ? t : 0;
+}
+
+static int64_t s_http_time;  /* 事件回调收集的 Date 头时间 */
+
+static esp_err_t http_time_evt(esp_http_client_event_t *evt)
+{
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && evt->header_key &&
+        evt->header_value && strcasecmp(evt->header_key, "Date") == 0) {
+        s_http_time = http_time_parse_date(evt->header_value);
+    }
+    return ESP_OK;
+}
+
+int64_t sync_fetch_http_time(void)
+{
+    s_http_time = 0;
+    esp_http_client_config_t cfg = {
+        .url = SYNC_HTTP_TIME_URL,
+        .timeout_ms = SYNC_HTTP_TIME_TIMEOUT_MS,
+        .event_handler = http_time_evt,
+        .method = HTTP_METHOD_HEAD,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) return 0;
+
+    esp_err_t err = esp_http_client_perform(c);
+    int code = esp_http_client_get_status_code(c);
+    esp_http_client_cleanup(c);
+
+    if (err == ESP_OK && s_http_time > 0 && code >= 200 && code < 400) {
+        LOG_I("http time ok: %lld", (long long)s_http_time);
+        return s_http_time;
+    }
+    LOG_W("http time failed (err=%d code=%d)", err, code);
+    return 0;
+}

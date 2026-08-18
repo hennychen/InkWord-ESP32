@@ -49,15 +49,21 @@ extern "C" {
 #define I2S_SAMPLE_BITS     (16)    /**< 每采样位数 */
 
 /* ============================================================
- * 独立按键
- * 上拉输入，按下接地（低电平有效）
+ * 五向导航按键（无源开关，2026-08 取代 6 独立按键方案）
+ * 上拉输入，COM 接 GND，按下接地（低电平有效）
+ * 选脚原则：避开 strapping（GPIO0/3），五脚全落 RTC 域，
+ *          支持 ext1 深睡唤醒；模块丝印变体 MID/OK 同义
+ * SET/RST 为模块上两个额外侧键（与五向共用 COM，同为无源触点，
+ * PDF 明示无固定功能由程序自定义）；接 IO 域 41/42，
+ * 保住 38/39（I2C 电量计/RTC 预留）与 40（振动马达预留）
  * ============================================================ */
-#define BUTTON_A_PIN        (0)     /**< KEY_A：上 / 确认 */
-#define BUTTON_B_PIN        (1)     /**< KEY_B：下 */
-#define BUTTON_C_PIN        (2)     /**< KEY_C：发音 / 长按进入 Wi-Fi 配置 */
-#define BUTTON_D_PIN        (3)     /**< KEY_D：模式切换 / 长按清残影 */
-#define BUTTON_E_PIN        (14)    /**< KEY_E：左（Wi-Fi 配置方向键） */
-#define BUTTON_F_PIN        (15)    /**< KEY_F：右（Wi-Fi 配置方向键） */
+#define NAV_UP_PIN          (1)     /**< 上：模块丝印 UP */
+#define NAV_DOWN_PIN        (2)     /**< 下：模块丝印 DOWN */
+#define NAV_LEFT_PIN        (14)    /**< 左：模块丝印 LEFT */
+#define NAV_RIGHT_PIN       (15)    /**< 右：模块丝印 RIGHT */
+#define NAV_CENTER_PIN      (21)    /**< 中：模块丝印 CENTER/MID，兼深睡唤醒 */
+#define NAV_SET_PIN         (41)    /**< SET 侧键：确认/翻义（待机页=轮换引文） */
+#define NAV_RST_PIN         (42)    /**< RST 侧键：回到第一条 */
 
 #define BUTTON_DEBOUNCE_MS  (50)    /**< 去抖时间 */
 #define BUTTON_LONG_PRESS_MS (1500) /**< 长按判定阈值 */
@@ -76,8 +82,8 @@ extern "C" {
 /* ============================================================
  * LED / 其他
  * ============================================================ */
-/* 注意：LED_STATUS_PIN(14) 与 BUTTON_E_PIN 重叠，KEY_E 已启用 —— 禁止使用，
- * 仅历史兼容保留定义；状态灯如需启用应另选空闲 GPIO */
+/* 注意：LED_STATUS_PIN(14) 与 NAV_LEFT_PIN 重叠 —— 禁止使用，
+ * 仅历史兼容保留定义；状态灯应使用 GPIO48 板载 WS2812 */
 #define LED_STATUS_PIN      (14)
 
 /* 挂载点与音频目录 */

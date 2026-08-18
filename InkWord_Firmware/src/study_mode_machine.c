@@ -2,7 +2,7 @@
  * @file study_mode_machine.c
  * @brief 学习模式状态机实现 (Task F-16)
  *
- * 不同模式下，A/B/C/D 四键映射到不同语义动作；
+ * 语义动作由五向导航键映射（上下翻词/中发音/SET 揭晓/RST 回首）；
  * 切换模式时记录到 NVS 以便下次开机恢复。
  */
 #include "study_mode_machine.h"
@@ -21,6 +21,10 @@ static study_mode_t s_current = MODE_FLASH;
 
 /* 当前词索引（各模式独立游标演示，实际可扩展为独立游标） */
 static int s_cursor = 0;
+
+/* 释义显示状态：true=显示（默认，与历史行为一致），false=遮蔽（自测）；
+ * SET 翻义切换；翻页/切模式自动回显示（新词全显，按 SET 开始遮蔽自测） */
+static bool s_reveal = true;
 
 static const char *s_names[MODE_COUNT] = { "Flash", "Dictation", "Review" };
 
@@ -48,6 +52,7 @@ study_mode_t study_mode_switch_next(void)
 {
     s_current = (study_mode_t)((s_current + 1) % MODE_COUNT);
     s_cursor = 0;
+    s_reveal = true;
 
     /* 持久化 */
     nvs_handle_t h;
@@ -83,12 +88,16 @@ void study_mode_handle_action(int action)
     switch (action) {
     case 0: /* prev */
         if (--s_cursor < 0) s_cursor = total - 1;
+        s_reveal = true;
         break;
     case 1: /* next */
         if (++s_cursor >= total) s_cursor = 0;
+        s_reveal = true;
         break;
     case 2: /* confirm：闪卡模式翻转释义，听写模式提交拼写 */
-        LOG_D("confirm action in %s mode", s_names[s_current]);
+        s_reveal = !s_reveal;
+        LOG_D("confirm action in %s mode (reveal=%d)",
+              s_names[s_current], s_reveal);
         break;
     case 3: { /* speak：播放当前词音频 */
         const WordEntry *w = word_parser_get(s_cursor);
@@ -103,9 +112,22 @@ void study_mode_handle_action(int action)
         break;
     }
 
-    /* 仅画面变化的动作触发重绘：翻页(prev/next)局刷内容区；
-     * confirm(2) 暂无画面变化、speak(3) 只播放音频，不浪费刷新次数 */
-    if (action == 0 || action == 1) {
+    /* 仅画面变化的动作触发重绘：翻页(prev/next)与翻义(confirm) 局刷内容区；
+     * speak(3) 只播放音频，不浪费刷新次数 */
+    if (action == 0 || action == 1 || action == 2) {
         ui_render_word(s_current, s_cursor);
     }
+}
+
+bool study_mode_is_revealed(void)
+{
+    return s_reveal;
+}
+
+void study_mode_reset_cursor(void)
+{
+    s_cursor = 0;
+    s_reveal = true;
+    LOG_D("cursor reset to #0");
+    ui_render_word(s_current, s_cursor);
 }

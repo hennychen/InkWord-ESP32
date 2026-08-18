@@ -10,6 +10,23 @@
 
 #include "esp_log.h"
 
+/* 还原 ESP_LOGx 的 SDK 原生语义：本机预编译 sdkconfig 开了
+ * CONFIG_ARDUHAL_ESP_LOG，Arduino 的 esp32-hal-log.h 会把 ESP_LOGx
+ * 劫持为 log_x，而 CORE_DEBUG_LEVEL 默认 NONE → 所有经 Arduino.h
+ * 的 C++ 单元日志被编译期裁剪成空（2026-08 实测 main.cpp /
+ * ble_provision.cpp 等全静默，并连带 TAG/实参 unused 警告）。
+ * 注意：本文件必须放在 <Arduino.h> 及任何会拉入它的头之后 include。 */
+#undef ESP_LOGE
+#undef ESP_LOGW
+#undef ESP_LOGI
+#undef ESP_LOGD
+#undef ESP_LOGV
+#define ESP_LOGE(tag, format, ...) ESP_LOG_LEVEL_LOCAL(ESP_LOG_ERROR,   tag, format, ##__VA_ARGS__)
+#define ESP_LOGW(tag, format, ...) ESP_LOG_LEVEL_LOCAL(ESP_LOG_WARN,    tag, format, ##__VA_ARGS__)
+#define ESP_LOGI(tag, format, ...) ESP_LOG_LEVEL_LOCAL(ESP_LOG_INFO,    tag, format, ##__VA_ARGS__)
+#define ESP_LOGD(tag, format, ...) ESP_LOG_LEVEL_LOCAL(ESP_LOG_DEBUG,   tag, format, ##__VA_ARGS__)
+#define ESP_LOGV(tag, format, ...) ESP_LOG_LEVEL_LOCAL(ESP_LOG_VERBOSE, tag, format, ##__VA_ARGS__)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
