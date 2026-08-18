@@ -37,3 +37,6 @@ monitor_log*.txt
 # OS files
 .DS_Store
 Thumbs.db
+# clangd/编译临时产物
+compile_commands.json
+mini_repro.d

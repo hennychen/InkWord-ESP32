@@ -29,8 +29,15 @@ yarn-error.log*
 
 # Backup & temp files
 *.bak
+*.bak2
+*.bak3
 *.orig
 InkWord_Firmware/1
+
+# IDE / clangd 生成物
+compile_commands.json
+InkWord_Firmware/compile_commands.json
+*.d
 
 # macOS Finder metadata
 Info/
