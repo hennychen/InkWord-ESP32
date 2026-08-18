@@ -53,6 +53,13 @@ static const char *TAG = "MAIN";
 #define FW_VERSION  "1.0.0"
 #define MAX_WORDS   64  /* 暂时减少，避免 DRAM 溢出 */
 
+/* 演示词库开关：inkword-s3-demo 环境置 1；无 SD 词库时加载内嵌 5 词，
+ * 用于学习页按键（翻词/SET 遮蔽/RST 回首）的整机验证；
+ * 正式构建保持 0，无词库仍走待机页（用户定稿行为） */
+#ifndef INKWORD_DEMO_WORDS
+#define INKWORD_DEMO_WORDS 0
+#endif
+
 /* BLE 配网服务默认禁用：Arduino 预编译库未编入 Wi-Fi/BLE coexistence
  * （CONFIG_ESP32_WIFI_SW_COEXIST_ENABLE 编译期固定关闭），Wi-Fi controller
  * 活动时 esp_bt_controller_enable 经 coex_enable() abort（真机崩溃循环）。
@@ -302,6 +309,10 @@ static void on_button(nav_key_t id, button_event_t event)
             /* 幂等启动服务器并显示访问 URL */
             lan_server_enter_receive_page();
             return;
+        /* SET/RST 长按预留 SRS「记得/忘了」评分（SM-2 闭环接入学习
+         * 记录上报后启用，见 srs_engine.h 质量分）；2026-08-18 残影
+         * 定位期间的临时 A/B 切换工具已移除（结论：partial window 波形
+         * 面板级缺陷，采用局刷+低阈值真全刷清洗策略，见 epd_driver） */
         default:
             return;
         }
@@ -410,8 +421,9 @@ void setup()
     button_handler_init();
     button_register_callback(on_button);
 
-    /* 3. 刷新调度器（局刷阈值=8） */
-    refresh_scheduler_init(8);
+    /* 3. 刷新调度器：局刷阈值=3（本面板 partial window 波形驱动力不足，
+     * 局刷攒 3 次残影后用真全刷洗掉；嫌闪可升，嫌脏可降） */
+    refresh_scheduler_init(3);
 
     /* 4. WiFi 联网（失败不阻塞主流程） */
     wifi_manager_init();
@@ -443,6 +455,12 @@ void setup()
     } else {
         LOG_W("words.json not found on SD card");
     }
+#if INKWORD_DEMO_WORDS
+    /* 测试构建：无 SD 词库时内嵌演示词，验证学习页按键 */
+    if (word_parser_get_count() == 0) {
+        word_parser_load_demo(s_word_pool, MAX_WORDS);
+    }
+#endif
 
     /* 7. 初始化待机页（恢复 NVS 天气缓存），进入上次学习模式；
      *    无词库时渲染待机页（时钟/日历/天气） */

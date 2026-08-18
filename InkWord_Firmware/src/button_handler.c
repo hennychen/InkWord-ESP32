@@ -118,7 +118,9 @@ void button_scan_task(void *arg)
                 if ((millis() - st->press_tick) >= long_threshold) {
                     st->long_fired = true;
                     if (s_callback) s_callback((nav_key_t)i, BUTTON_EVENT_LONG_PRESS);
-                    LOG_D("NAV_%s LONG", s_key_names[i]);
+                    /* INFO 级：串口默认 INFO（log_init），按键事件是接线
+                     * 验证的关键证据链，不用 DEBUG 级 */
+                    LOG_I("NAV_%s LONG", s_key_names[i]);
                 }
             }
 
@@ -127,7 +129,7 @@ void button_scan_task(void *arg)
                 if (st->press_tick != 0 && !st->long_fired) {
                     /* 释放且未曾触发长按 -> 短按 */
                     if (s_callback) s_callback((nav_key_t)i, BUTTON_EVENT_SHORT_PRESS);
-                    LOG_D("NAV_%s SHORT", s_key_names[i]);
+                    LOG_I("NAV_%s SHORT", s_key_names[i]);
                 }
                 st->press_tick = 0;
                 st->long_fired = false;

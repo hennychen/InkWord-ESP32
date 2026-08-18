@@ -102,6 +102,39 @@ int word_parser_get_count(void)
     return s_count;
 }
 
+int word_parser_load_demo(WordEntry *out_array, int max_count)
+{
+    /* 演示词：释义用 ASCII（学习页 FreeSans 字库无中文字形，
+     * 音标含 IPA 字符同样缺字形，故留空不画） */
+    static const struct {
+        const char *text;
+        const char *meaning;
+    } k_demo[] = {
+        { "serendipity", "n. the occurrence of events by chance in a happy or beneficial way" },
+        { "ephemeral",   "adj. lasting for a very short time" },
+        { "lucid",       "adj. easy to understand; clear and bright" },
+        { "zenith",      "n. the highest point reached; peak" },
+        { "quixotic",    "adj. extremely idealistic and unrealistic" },
+    };
+    int n = (int)(sizeof(k_demo) / sizeof(k_demo[0]));
+    if (n > max_count) n = max_count;
+
+    for (int i = 0; i < n; i++) {
+        WordEntry *e = &out_array[i];
+        memset(e, 0, sizeof(*e));
+        e->id = (uint32_t)(i + 1);
+        copy_str(e->text,    WORD_TEXT_MAX,    k_demo[i].text);
+        copy_str(e->meaning, WORD_MEANING_MAX, k_demo[i].meaning);
+        copy_str(e->tag,     WORD_TAG_MAX,     "demo");
+        e->difficulty = 1;
+    }
+
+    s_entries = out_array;
+    s_count = n;
+    LOG_I("loaded %d demo words (no SD word DB)", n);
+    return n;
+}
+
 const WordEntry *word_parser_get(int index)
 {
     if (index < 0 || index >= s_count || !s_entries) return NULL;

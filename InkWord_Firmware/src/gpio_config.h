@@ -54,16 +54,19 @@ extern "C" {
  * 选脚原则：避开 strapping（GPIO0/3），五脚全落 RTC 域，
  *          支持 ext1 深睡唤醒；模块丝印变体 MID/OK 同义
  * SET/RST 为模块上两个额外侧键（与五向共用 COM，同为无源触点，
- * PDF 明示无固定功能由程序自定义）；接 IO 域 41/42，
- * 保住 38/39（I2C 电量计/RTC 预留）与 40（振动马达预留）
+ * PDF 明示无固定功能由程序自定义）；实际接线（2026-08-18 确认）：
+ * SET→GPIO42，RST→GPIO40，振动马达预留从 40 改至 41，
+ * 保住 38/39（I2C 电量计/RTC 预留）
  * ============================================================ */
 #define NAV_UP_PIN          (1)     /**< 上：模块丝印 UP */
 #define NAV_DOWN_PIN        (2)     /**< 下：模块丝印 DOWN */
 #define NAV_LEFT_PIN        (14)    /**< 左：模块丝印 LEFT */
 #define NAV_RIGHT_PIN       (15)    /**< 右：模块丝印 RIGHT */
 #define NAV_CENTER_PIN      (21)    /**< 中：模块丝印 CENTER/MID，兼深睡唤醒 */
-#define NAV_SET_PIN         (41)    /**< SET 侧键：确认/翻义（待机页=轮换引文） */
-#define NAV_RST_PIN         (42)    /**< RST 侧键：回到第一条 */
+#define NAV_SET_PIN         (42)    /**< SET 侧键：确认/翻义（待机页=轮换引文；
+                                        长按=局刷波形参数 A/B 切换） */
+#define NAV_RST_PIN         (40)    /**< RST 侧键：回到第一条；
+                                        长按=局刷/全刷策略切换（残影定位工具） */
 
 #define BUTTON_DEBOUNCE_MS  (50)    /**< 去抖时间 */
 #define BUTTON_LONG_PRESS_MS (1500) /**< 长按判定阈值 */

@@ -44,6 +44,15 @@ typedef struct {
 int word_parser_load(const char *path, WordEntry *out_array, int max_count);
 
 /**
+ * @brief 加载内嵌演示词库（5 条，无 SD 卡时验证学习页按键用）。
+ *        仅测试构建（INKWORD_DEMO_WORDS=1）调用，正式构建不编入调用点。
+ * @param out_array  输出数组（调用方分配）。
+ * @param max_count  数组容量。
+ * @return 实际加载数。
+ */
+int word_parser_load_demo(WordEntry *out_array, int max_count);
+
+/**
  * @brief 已加载的词条总数。
  */
 int word_parser_get_count(void);
