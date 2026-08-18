@@ -27,21 +27,33 @@ void refresh_force_full(void)
     s_partial_cnt = 0;
 }
 
+void refresh_notify_full_done(void)
+{
+    /* 外部路径（LAN 直传）已做全刷，等价于残影清理，计数归零即可 */
+    s_partial_cnt = 0;
+}
+
 uint8_t refresh_partial_count(void)
 {
     return s_partial_cnt;
 }
 
-bool refresh_gfx_before_partial(void)
+bool refresh_gfx_before_partial_n(uint8_t threshold)
 {
-    if (s_partial_cnt >= s_threshold) {
-        LOG_I("partial count reached %u, auto full refresh", s_partial_cnt);
+    if (s_partial_cnt >= threshold) {
+        LOG_I("partial count reached %u (threshold %u), auto full refresh",
+              s_partial_cnt, threshold);
         epd_clear_screen();
         s_partial_cnt = 0;
         return true; /* 已清屏：调用方需整屏重绘后全刷 */
     }
     s_partial_cnt++;
     return false;
+}
+
+bool refresh_gfx_before_partial(void)
+{
+    return refresh_gfx_before_partial_n(s_threshold);
 }
 
 void refresh_submit(Rect area, const uint8_t *data)

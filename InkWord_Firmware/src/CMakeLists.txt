@@ -11,10 +11,14 @@ idf_component_register(
         "word_parser.c"
         "srs_engine.c"
         "study_mode_machine.c"
+        "standby_page.c"
+        "cjk_font.c"
         "wifi_manager.c"
         "wifi_config_ui.c"
         "sync_client.c"
         "ota_manager.c"
+        "lan_display_server.cpp"
+        "ble_provision.cpp"
         "main.cpp"
     INCLUDE_DIRS
         "."
@@ -23,6 +27,8 @@ idf_component_register(
         nvs_flash
         esp_wifi
         esp_http_client
+        esp_http_server
+        mdns
         esp_https_ota
         driver
         fatfs

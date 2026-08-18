@@ -47,7 +47,8 @@ void epd_power_on(void);
 void epd_power_off(void);
 
 /**
- * @brief 全屏清白（全刷）。
+ * @brief 全屏清白（黑白交替深清：先全黑全刷再回白，洗掉陈年残影；
+ *        开机白屏 / 清残影 / 局刷阈值等低频路径使用，多一次全刷）。
  */
 void epd_clear_screen(void);
 
@@ -110,6 +111,9 @@ void epd_gfx_draw_vline(int x, int y, int h, uint16_t color);
 void epd_gfx_draw_text(int x, int y, const char *text, uint16_t color, int font_size);
 /** @brief 测量文本宽高 */
 void epd_gfx_text_bounds(const char *text, int font_size, int *out_w, int *out_h);
+/** @brief 绘制单色位图（Adafruit GFX 行主序 MSB-first，bit=1 画 color，0 保持背景；
+ *         即 image2cpp "horizontal, MSB first" 导出格式，尺寸建议 8 对齐 */
+void epd_gfx_draw_bitmap(int x, int y, int w, int h, const uint8_t *bits, uint16_t color);
 /** @brief 将帧缓冲推送到屏幕（全刷） */
 void epd_gfx_flush(void);
 /** @brief 将指定区域推送到屏幕（局刷） */

@@ -16,10 +16,10 @@
 
 #include "epd_driver.h"
 #include "gpio_config.h"
-#include "debug_log.h"
 
 #include <Arduino.h>
 #include <SPI.h>
+#include "debug_log.h"   /* 必须在 Arduino.h 之后：还原被 esp32-hal-log 劫持的 ESP_LOGx */
 #include <GxEPD2_BW.h>
 #include "GxEPD2_374_DEPG0370.h"
 
@@ -153,10 +153,15 @@ void epd_power_off(void)
 void epd_clear_screen(void)
 {
     if (!s_inited) return;
-    /* 经 GFX 缓冲全刷，保证 MCU 帧缓冲与屏幕内容一致 */
+    /* 黑白交替一轮再回白：仅白帧全刷对长时间驻留的深色像素翻转不彻底
+     * （真机验证：旧布局时钟数小时局刷后，开机白屏全刷仍留残影），
+     * 先全黑全刷把陈年黑迹充分翻转再回白；调用点均为低频路径
+     * （开机白屏 / 长按清残影 / 局刷阈值），多一次全刷可接受 */
+    s_display.fillScreen(GxEPD_BLACK);
+    s_display.display(false);
     s_display.fillScreen(GxEPD_WHITE);
     s_display.display(false);
-    LOG_D("EPD clear screen done");
+    LOG_D("EPD deep clear done (black-white cycle)");
 }
 
 void epd_full_refresh(const uint8_t *data)
@@ -286,6 +291,13 @@ void epd_gfx_text_bounds(const char *text, int font_size, int *out_w, int *out_h
     s_display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
     *out_w = w;
     *out_h = h;
+}
+
+void epd_gfx_draw_bitmap(int x, int y, int w, int h, const uint8_t *bits, uint16_t color)
+{
+    if (!bits) return;
+    /* bits：行主序 MSB-first（每行 ceil(w/8) 字节），bit=1 画 color，0 透明 */
+    s_display.drawBitmap(x, y, bits, w, h, gfx_color(color));
 }
 
 void epd_gfx_flush(void)
