@@ -89,7 +89,7 @@ cd InkWord_Firmware
 /opt/homebrew/bin/python3.11 -m platformio device monitor --port /dev/cu.usbserial-0001 --baud 115200
 ```
 
-硬件接线（ESP32-S3 → EVK011 J2，9 根线，经 GPIO 扩展板转接，按转接板丝印命名，2026-08 实测）：SCK=GPIO7、SDO=GPIO8（MCU 侧 MOSI）、D/C=GPIO9、CS=GPIO10、BS=GPIO11、RES=GPIO13、BUSY=GPIO12、3V3→J2-16(VCI)、GND→J2-1（必须共地）。⚠️ BS 只能接 GPIO11（固件驱动 LOW）或板侧短接 GND，绝不可悬空（悬空屏显条状）。音频 I2S=GPIO4/5/6，五向导航开关（2026-08 取代 6 按键，已接入）UP/DOWN=GPIO1/2、LEFT/RIGHT=GPIO14/15、CENTER=GPIO21、SET/RST 侧键=GPIO41/42、COM→GND，SD（未接线）=SPI3 GPIO16/17/18/47。详见 `docs/WIRING_DIAGRAM.md`。
+硬件接线（ESP32-S3 → EVK011 J2，9 根线，经 GPIO 扩展板转接，按转接板丝印命名，2026-08 实测）：SCK=GPIO7、SDO=GPIO8（MCU 侧 MOSI）、D/C=GPIO9、CS=GPIO10、BS=GPIO11、RES=GPIO13、BUSY=GPIO12、3V3→J2-16(VCI)、GND→J2-1（必须共地）。⚠️ BS 只能接 GPIO11（固件驱动 LOW）或板侧短接 GND，绝不可悬空（悬空屏显条状）。音频 I2S=GPIO4/5/6，五向导航开关（2026-08 取代 6 按键，已接入）UP/DOWN=GPIO1/2、LEFT/RIGHT=GPIO14/15、CENTER=GPIO21、SET/RST 侧键=GPIO42/40（2026-08-18 实接确认，振动马达预留改 GPIO41）、COM→GND，SD（未接线）=SPI3 GPIO16/17/18/47。详见 `docs/WIRING_DIAGRAM.md`。
 
 > 已验证状态（2026-08）：屏幕点屏成功（横屏 UI + 镜像修正 + 全刷/局刷 + Wi-Fi 配置页；BS 演变：省线 8 线→重接扩展板后恢复 GPIO11 驱动，两种方案均实测稳定）。SD 卡模块未接线（挂载失败不影响其他模块）；五向导航开关已接入（SET/RST 侧键同接入）；音频待验证。
 
