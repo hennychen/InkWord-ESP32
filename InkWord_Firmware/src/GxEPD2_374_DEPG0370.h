@@ -6,7 +6,8 @@
  * OTP 波形），按 DEPG0370 官方 demo code 修正初始化差异：
  *   - PSR(0x00) 第一字节 0xDF（demo：x+ y+ 扫描方向）
  *   - 全刷 CDI(0x50) = 0x97（与 GxEPD2 一致）
- *   - 局刷 CDI(0x50) = 0x17（demo：VBD floating），温度 0xE5 = 100
+ *   - 局刷 CDI(0x50) = 0xD7、温度 0xE5 = 0x6E、刷后 _InitDisplay() 撤销 TSFIX
+ *     （2026-08-18 对齐官方 GDEY037T03，修 demo 参数导致的残影叠加）
  *
  * 硬件架构（EVK011 转接板）：
  *   升压电路在转接板上（Q1 SI1308EDL + L1 47uH + MBR0503），由屏幕 COG
@@ -65,6 +66,26 @@ class GxEPD2_374_DEPG0370 : public GxEPD2_EPD
     void refresh(int16_t x, int16_t y, int16_t w, int16_t h);
     void powerOff();
     void hibernate();
+    /* ---- demo 忠实版局刷支持（2026-08-18 残影修复）----
+     * demo 每次局刷：硬复位→partial 初始化→写双 RAM→0x04/0x12/0x02，
+     * 完全无状态；GxEPD2 增量路径（仅写 0x13、依赖 COG 0x10 跨刷新存活）
+     * 在本面板上旧帧不可靠，是残影叠加根因 */
+    void hwReset();          /**< 公开硬件复位（demo 每次刷新前必做） */
+    void initFullDemo();     /**< demo Epaper_Initial_full_mode：PSR+CDI=0x97（每次全刷
+                                 前必调，硬复位后重写，清局刷残留 E0/E5/PSR2） */
+    void initPartialDemo(); /**< demo partial 初始化（固定官方 GDEY037T03 参数：
+                                 CDI=0xD7/E5=0x6E/PSR2=0x1f；2026-08-18 实测两套
+                                 参数在本面板均留残影，属 partial window 波形面板级
+                                 缺陷，取官方标准值，残影由低阈值真全刷清洗） */
+    void demoWriteDual(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                       const uint8_t* prev_fb, const uint8_t* new_fb); /**< demo
+                                 EPD_Dis_Part_RAM 忠实版：单次 partial-in 会话内
+                                 连续写双平面（旧帧→0x10，新帧→0x13），无 0x92 */
+    void demoWriteFull(const uint8_t* new_fb); /**< demo Epaper_Load_image 忠实版：
+                                 真全刷写入 —— 不带 0x91/0x90 窗口指令，
+                                 直接整屏写 0x13（窗口化全屏刷驱动力不足，
+                                 真机验证窗口包裹的全刷仍留残影） */
+    void updateDemoPartial();/**< demo Epaper_Update_partial：0x04→0x12→0x02，含耗时日志 */
   private:
     void _writeScreenBuffer(uint8_t command, uint8_t value);
     void _writeImage(uint8_t command, const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm);

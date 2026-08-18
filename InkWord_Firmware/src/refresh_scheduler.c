@@ -43,9 +43,10 @@ bool refresh_gfx_before_partial_n(uint8_t threshold)
     if (s_partial_cnt >= threshold) {
         LOG_I("partial count reached %u (threshold %u), auto full refresh",
               s_partial_cnt, threshold);
-        epd_clear_screen();
+        /* 2026-08-18：不再预清屏（黑白深清 2x1.8s 太慢且无必要 ——
+         * 真全刷（无窗口直写）已能洗净残影；调用方整屏重绘走真全刷即可 */
         s_partial_cnt = 0;
-        return true; /* 已清屏：调用方需整屏重绘后全刷 */
+        return true; /* 调用方需整屏重绘后全刷 */
     }
     s_partial_cnt++;
     return false;

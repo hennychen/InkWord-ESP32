@@ -361,7 +361,8 @@ void GxEPD2_374_DEPG0370::_InitDisplay()
    * 实测 F 横笔朝下、TL 在左下（上下镜像，竖轴仍反）→ 再翻 x 轴（bit2）→
    * 0xD3 为最终值。标定口诀：看哪轴镜像就翻对应 bit（横屏竖轴=x/bit2） */
   _writeData(0xD3);    // 横屏方向最终修正：x- y-（0xDF→0xD7→0xD3 实测标定）
-  _writeData(0x0d);
+  _writeData(0x0d);    // demo LUT bank（2026-08-18 回退：全刷路径 demo 本就 0x0d，
+                       // 与 0x97 CDI 配套；局刷已改走 demo 忠实序列不再用本函数的局刷分支）
   _init_display_done = true;
 }
 
@@ -377,14 +378,134 @@ void GxEPD2_374_DEPG0370::_Update_Full()
 
 void GxEPD2_374_DEPG0370::_Update_Part()
 {
-  _writeCommand(0xE0); // force temp to get the lut waveform (demo)
-  _writeData(0x02);
-  _writeCommand(0xE5);
-  _writeData(100);     // demo 温度值
-  _writeCommand(0x50); // border setting, VBD floating (demo)
-  _writeData(0x17);
+  /* 注意：UI 局刷主路径已改走 demo 忠实序列（hwReset/initPartialDemo/
+   * updateDemoPartial，由 epd_driver.cpp 驱动），本函数仅遗留 API
+   * （epd_partial_refresh 直通路径）使用，仍保留此前对齐官方的参数 */
+  /* 2026-08-18 残影重叠修复：局刷序列对齐 GxEPD2 官方 GDEY037T03（同 UC8253），
+   * 替换 demo 参数 ——
+   *   a) E5=0x6E（demo 为 100）：官方快速局刷调定的温度补偿，驱动力足；
+   *   b) CDI=0xD7（demo 为 0x17 VBD floating）：VBD 内部生成，边框电压受控，
+   *      floating 会往局刷窗口边界残留电荷；
+   *   c) 刷后 _InitDisplay() 撤销 TSFIX（关键）：demo 序列缺这一步，
+   *      E0/E5 强制温度状态泄漏到后续全刷 → 全刷 LUT 波形被污染，
+   *      阈值自动全刷/深清也洗不掉残影（真机：翻词 20+ 次后字迹叠加） */
+  if (hasFastPartialUpdate)
+  {
+    _writeCommand(0xE0); // Cascade Setting (CCSET)
+    _writeData(0x02);    // TSFIX
+    _writeCommand(0xE5); // Force Temperature (TSSET)
+    _writeData(0x6E);
+  }
+  _writeCommand(0x50);
+  _writeData(0xD7);
   _PowerOn();
   _writeCommand(0x12); // display refresh
   _waitWhileBusy("_Update_Part", partial_refresh_time);
   _PowerOff();
+  if (hasFastPartialUpdate) _InitDisplay(); // undo TSFIX
+}
+
+/* ---- demo 忠实版局刷（2026-08-18 残影修复）----
+ * 对照 Info/ 官方 demo code：Display_windows_image_partial_update =
+ * Initial_partial_mode（硬复位+PSR+CDI/E0/E5）+ EPD_Dis_Part_RAM（双 RAM）
+ * + Update（0x04/0x12/0x02）。完全无状态，不依赖 COG 跨刷新存活 */
+void GxEPD2_374_DEPG0370::hwReset()
+{
+  _reset();
+}
+
+void GxEPD2_374_DEPG0370::initFullDemo()
+{
+  /* demo Epaper_Initial_full_mode：PSR + CDI=0x97；方向位保留 0xD3 实测标定值。
+   * 必须在 hwReset() 后调用（demo 每次全刷前硬复位，清掉局刷残留的
+   * E0=TSFIX/E5=强制温度/PSR2=LUT bank，否则全刷 LUT 在污染状态下选波形） */
+  _power_is_on = false;
+  _writeCommand(0x00);
+  _writeData(0xD3);
+  _writeData(0x0d);
+  _writeCommand(0x50); // border setting with white waveform shaking
+  _writeData(0x97);
+  _initial_write = false;
+  _initial_refresh = false;
+  _init_display_done = true;
+}
+
+void GxEPD2_374_DEPG0370::initPartialDemo()
+{
+  /* 局刷初始化（官方 GDEY037T03 参数：CDI=0xD7/E5=0x6E/PSR2=0x1f）。
+   * 2026-08-18 实测：demo 参数与官方参数在本面板均留残影，属 partial
+   * window 波形面板级缺陷；固定官方标准值，残影由低阈值真全刷清洗
+   * （见 epd_driver 混合刷新策略）。PSR 方向位保留 0xD3 实测标定值 */
+  _power_is_on = false;
+  _writeCommand(0x00);
+  _writeData(0xD3);
+  _writeData(0x1f);
+  _writeCommand(0x50); // border setting
+  _writeData(0xD7);
+  _writeCommand(0xE0); // force temp to get the lut waveform
+  _writeData(0x02);
+  _writeCommand(0xE5);
+  _writeData(0x6E);
+  _initial_write = false;    /* 局刷路径不触发库的首次清屏逻辑 */
+  _initial_refresh = false;
+  _init_display_done = true;
+}
+
+void GxEPD2_374_DEPG0370::demoWriteDual(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                                        const uint8_t* prev_fb, const uint8_t* new_fb)
+{
+  /* demo EPD_Dis_Part_RAM 忠实实现：单次 0x91 partial-in 会话内连续写双平面，
+   * 无 0x92（demo 不退出 partial 窗口，直接 0x04/0x12/0x02）。
+   * prev/new 为竖屏整帧（240x416 行主序，行宽 30 字节，bit=1 白）。
+   * x/w 需 8 像素对齐（UI 局刷窗口 y/h 8 对齐约束转置后自然满足） */
+  uint16_t wb = w / 8;
+  uint16_t xb = x / 8;
+  _writeCommand(0x91); // partial in
+  _setPartialRamArea(x, y, w, h);
+  _writeCommand(0x10); // previous plane
+  _startTransfer();
+  for (uint16_t i = 0; i < h; i++)
+  {
+    const uint8_t* row = prev_fb + (uint32_t)(y + i) * (WIDTH / 8) + xb;
+    for (uint16_t j = 0; j < wb; j++) _transfer(row[j]);
+  }
+  _endTransfer();
+  _writeCommand(0x13); // current plane
+  _startTransfer();
+  for (uint16_t i = 0; i < h; i++)
+  {
+    const uint8_t* row = new_fb + (uint32_t)(y + i) * (WIDTH / 8) + xb;
+    for (uint16_t j = 0; j < wb; j++) _transfer(row[j]);
+  }
+  _endTransfer();
+}
+
+void GxEPD2_374_DEPG0370::demoWriteFull(const uint8_t* new_fb)
+{
+  /* demo Epaper_Load_image 忠实实现：真全刷写入 —— 无 0x91/0x90 窗口指令，
+   * 直接整屏写 0x13（demo Display_image_full_update 调用链）。
+   * 与窗口化全屏刷（demoWriteDual 全屏参数）的区别：UC8253 在 partial window
+   * 模式下的刷新 LUT/驱动行为与全屏模式不同，窗口包裹的全刷驱动力不足，
+   * 真机实测留残影（2026-08-18，1796ms 完整执行仍洗不净） */
+  _writeCommand(0x13);
+  _startTransfer();
+  for (uint32_t i = 0; i < uint32_t(WIDTH) * uint32_t(HEIGHT) / 8; i++)
+  {
+    _transfer(new_fb[i]);
+  }
+  _endTransfer();
+}
+
+void GxEPD2_374_DEPG0370::updateDemoPartial()
+{
+  _writeCommand(0x04); // power on
+  _waitWhileBusy("DemoPartPowOn", power_on_time);
+  uint32_t t0 = millis();
+  _writeCommand(0x12); // update
+  _waitWhileBusy("DemoPart", full_refresh_time);
+  Serial.printf("[EPD] demo partial refresh busy: %ums\n",
+                (unsigned int)(millis() - t0)); /* 耗时异常→波形/供电问题信号 */
+  _writeCommand(0x02); // power off
+  _waitWhileBusy("DemoPartPowOff", power_off_time);
+  _power_is_on = false;
 }
