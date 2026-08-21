@@ -25,6 +25,18 @@ public class Word : BaseEntity
     /// <summary>标签（年级/教材单元）</summary>
     public string Tag { get; set; } = string.Empty;
 
+    /// <summary>词根词缀（如 "spect=看; vis=看"；V2.0 7.2 对齐，2026-08-20）</summary>
+    public string Root { get; set; } = string.Empty;
+
+    /// <summary>派生变形（逗号分隔，如 "inspect,inspection"）</summary>
+    public string Inflections { get; set; } = string.Empty;
+
+    /// <summary>教材来源（如 "人教版 九年级 Unit 5"）</summary>
+    public string Source { get; set; } = string.Empty;
+
+    /// <summary>年级（如 "九年级"；导出到设备词库底部标签行）</summary>
+    public string Grade { get; set; } = string.Empty;
+
     /// <summary>难度 1~5</summary>
     public int Difficulty { get; set; } = 1;
 

@@ -32,7 +32,7 @@ public class AdminDashboardController : ControllerBase
 
         // SRS 等级分布
         var srsDist = await _db.LearningRecords.AsNoTracking()
-            .Where(r => !r.Device.IsDeleted)
+            .Where(r => !r.Device!.IsDeleted)
             .GroupBy(r => r.SrsLevel)
             .Select(g => new SrsDistributionItem(g.Key, g.Count()))
             .ToListAsync(ct);
@@ -50,5 +50,94 @@ public class AdminDashboardController : ControllerBase
             AvgStudyMinutes: 0, srsDist, dailyActive);
 
         return Ok(ApiResponse<DashboardStats>.Ok(stats));
+    }
+
+    /// <summary>错词排行（P1 错词本）：ConsecutiveWrong&gt;0 聚合，
+    /// 按总连错人次降序；附带收藏记录数。</summary>
+    [HttpGet("wrong-top")]
+    public async Task<IActionResult> WrongTop([FromQuery] int top, CancellationToken ct)
+    {
+        top = top <= 0 || top > 100 ? 20 : top;
+
+        // 注意：GroupBy 后直接投影 record 再 OrderBy 会翻译失败
+        // （EF Core 8 无法把 record 成员映射回 SUM 聚合列，2026-08-21 实测），
+        // 故先投影匿名类型完成排序/Take，最后一步再构造 record。
+        var items = await _db.LearningRecords.AsNoTracking()
+            .Where(r => r.ConsecutiveWrong > 0)
+            .Join(_db.Words.AsNoTracking(),
+                  r => r.WordId, w => w.Id,
+                  (r, w) => new { w.Text, w.Meaning, r.ConsecutiveWrong })
+            .GroupBy(x => new { x.Text, x.Meaning })
+            .Select(g => new
+            {
+                g.Key.Text, g.Key.Meaning,
+                WrongCount = g.Sum(x => x.ConsecutiveWrong),
+                Learners = g.Count()
+            })
+            .OrderByDescending(x => x.WrongCount)
+            .Take(top)
+            .Select(x => new WrongTopItem(x.Text, x.Meaning, x.WrongCount, x.Learners))
+            .ToListAsync(ct);
+
+        var collected = await _db.LearningRecords.AsNoTracking()
+            .CountAsync(r => r.IsCollected, ct);
+
+        return Ok(ApiResponse<WrongTopResp>.Ok(new WrongTopResp(items, collected)));
+    }
+
+    public record SrsLevelDto(string Level, int Count);
+    public record DailyActiveDto(string Date, int Count);
+
+    /// <summary>SRS 分布（看板饼图）：等级分桶转语义名，
+    /// 与前端 SrsDistribution { level: string; count: number } 对齐。</summary>
+    [HttpGet("srs-distribution")]
+    public async Task<IActionResult> SrsDistribution(CancellationToken ct)
+    {
+        var levels = await _db.LearningRecords.AsNoTracking()
+            .Where(r => !r.Device!.IsDeleted)
+            .GroupBy(r => r.SrsLevel)
+            .Select(g => new { Level = g.Key, Count = g.Count() })
+            .ToListAsync(ct);
+
+        static string Name(int lv) => lv switch
+        {
+            0 => "新词",
+            <= 2 => "学习中",
+            <= 4 => "巩固中",
+            _ => "已掌握",
+        };
+
+        var items = levels.GroupBy(g => Name(g.Level))
+            .Select(g => new SrsLevelDto(g.Key, g.Sum(x => x.Count)))
+            .OrderBy(i => i.Level)
+            .ToList();
+
+        return Ok(ApiResponse<List<SrsLevelDto>>.Ok(items));
+    }
+
+    /// <summary>日活趋势（看板折线）：近 N 天每日活跃设备数，
+    /// 缺日补 0，date 格式 yyyy-MM-dd。</summary>
+    [HttpGet("daily-active")]
+    public async Task<IActionResult> DailyActive([FromQuery] int days, CancellationToken ct)
+    {
+        days = days <= 0 || days > 90 ? 30 : days;
+        var today = DateTime.UtcNow.Date;
+        var start = today.AddDays(-(days - 1));
+
+        var byDate = await _db.LearningRecords.AsNoTracking()
+            .Where(r => r.LastStudiedAt >= start)
+            .GroupBy(r => r.LastStudiedAt.Date)
+            .Select(g => new { Date = g.Key, Count = g.Select(r => r.DeviceId).Distinct().Count() })
+            .ToListAsync(ct);
+
+        var map = byDate.ToDictionary(x => x.Date, x => x.Count);
+        var items = Enumerable.Range(0, days)
+            .Select(i => today.AddDays(-i))
+            .OrderBy(d => d)
+            .Select(d => new DailyActiveDto(d.ToString("yyyy-MM-dd"),
+                map.TryGetValue(d, out var c) ? c : 0))
+            .ToList();
+
+        return Ok(ApiResponse<List<DailyActiveDto>>.Ok(items));
     }
 }

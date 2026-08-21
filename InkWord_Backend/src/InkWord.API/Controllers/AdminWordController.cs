@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using InkWord.API.DTOs;
 using InkWord.Core.Common;
 using InkWord.Core.Entities;
@@ -38,6 +39,10 @@ public class AdminWordController : ControllerBase
             Example = dto.Example ?? "",
             Audio = dto.Audio ?? "",
             Tag = dto.Tag ?? "",
+            Root = dto.Root ?? "",
+            Inflections = dto.Inflections ?? "",
+            Source = dto.Source ?? "",
+            Grade = dto.Grade ?? "",
             Difficulty = dto.Difficulty,
             Version = maxVer + 1,
             ChangeType = 0
@@ -60,6 +65,10 @@ public class AdminWordController : ControllerBase
         word.Example = dto.Example ?? "";
         word.Audio = dto.Audio ?? "";
         word.Tag = dto.Tag ?? "";
+        word.Root = dto.Root ?? "";
+        word.Inflections = dto.Inflections ?? "";
+        word.Source = dto.Source ?? "";
+        word.Grade = dto.Grade ?? "";
         word.Difficulty = dto.Difficulty;
         word.ChangeType = 1;
         word.Version = Math.Max(word.Version, await _wordRepo.GetMaxVersionAsync(ct)) + 1;
@@ -95,7 +104,8 @@ public class AdminWordController : ControllerBase
         return Ok(ApiResponse<PagedResult<Word>>.Ok(new PagedResult<Word>(items, total, q.Page, q.Size)));
     }
 
-    /// <summary>B-14 批量导入 CSV（首行表头：text,phonetic,meaning,example,audio,tag,difficulty）</summary>
+    /// <summary>B-14 批量导入 CSV（首行表头：text,phonetic,meaning,example,audio,tag,difficulty,
+    ///     root,inflections,source,grade —— 后四列可缺省，列序固定）</summary>
     [HttpPost("import")]
     public async Task<IActionResult> ImportCsv(IFormFile file, [FromQuery] string tag, CancellationToken ct)
     {
@@ -130,6 +140,10 @@ public class AdminWordController : ControllerBase
                 Audio = f.Length > 4 ? f[4].Trim() : "",
                 Tag = !string.IsNullOrEmpty(tag) ? tag : (f.Length > 5 ? f[5].Trim() : ""),
                 Difficulty = f.Length > 6 && int.TryParse(f[6], out var d) ? d : 1,
+                Root = f.Length > 7 ? f[7].Trim() : "",
+                Inflections = f.Length > 8 ? f[8].Trim() : "",
+                Source = f.Length > 9 ? f[9].Trim() : "",
+                Grade = f.Length > 10 ? f[10].Trim() : "",
                 Version = ++maxVer,
                 ChangeType = 0
             };
@@ -139,5 +153,33 @@ public class AdminWordController : ControllerBase
         await _wordRepo.SaveChangesAsync(ct);
 
         return Ok(ApiResponse<object>.Ok(new { success = ok, failed = fail, errors }, $"imported {ok} words"));
+    }
+
+    /// <summary>B-16 导出设备词库文件（words.json）：设备端评分/收藏上报的
+    /// Guid 映射入口。id 为设备本地序号（依赖导出顺序稳定，顺序/规模变化
+    /// 会触发设备侧学习状态整体作废重建），cloudId 为云端词条身份，
+    /// 设备据此前报 WordId（P2 上报闭环，见固件 word_parser/sync_client）。</summary>
+    [HttpGet("export")]
+    public async Task<IActionResult> Export(CancellationToken ct)
+    {
+        var words = await _wordRepo.GetIncrementalAsync(0, 100_000, ct);
+        var version = await _wordRepo.GetMaxVersionAsync(ct);
+
+        var payload = new
+        {
+            version,
+            words = words.Select((w, i) => new
+            {
+                id = i + 1,
+                cloudId = w.Id.ToString(),
+                w.Text, w.Phonetic, w.Meaning, w.Example, w.Audio, w.Tag, w.Difficulty,
+                w.Root, w.Inflections, w.Source, w.Grade,
+            }),
+        };
+
+        var json = JsonSerializer.Serialize(payload,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        return File(System.Text.Encoding.UTF8.GetBytes(json),
+            "application/json", "words.json");
     }
 }

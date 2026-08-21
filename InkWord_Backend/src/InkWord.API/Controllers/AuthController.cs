@@ -24,7 +24,7 @@ public class AuthController : ControllerBase
     }
 
     public record LoginReq(string Username, string Password);
-    public record LoginResp(string Token, int ExpiresIn);
+    public record LoginResp(string Username, string Token, int ExpiresIn);
 
     [HttpPost("login")]
     [AllowAnonymous]
@@ -35,7 +35,7 @@ public class AuthController : ControllerBase
             return Unauthorized(ApiResponse.Fail(401, "用户名或密码错误"));
 
         var token = IssueToken(user.Username, user.Role);
-        return Ok(ApiResponse<LoginResp>.Ok(new LoginResp(token, 3600)));
+        return Ok(ApiResponse<LoginResp>.Ok(new LoginResp(user.Username, token, 3600)));
     }
 
     private string IssueToken(string username, string role)

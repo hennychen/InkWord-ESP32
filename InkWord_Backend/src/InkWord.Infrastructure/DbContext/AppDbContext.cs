@@ -55,6 +55,7 @@ public class AppDbContext : Microsoft.EntityFrameworkCore.DbContext
         {
             e.HasIndex(lr => new { lr.DeviceId, lr.WordId }).IsUnique();
             e.HasIndex(lr => lr.NextReview);
+            e.HasIndex(lr => lr.ConsecutiveWrong); // 错词本排行过滤（P1）
             e.HasOne(lr => lr.Device)
              .WithMany(d => d.LearningRecords)
              .HasForeignKey(lr => lr.DeviceId)

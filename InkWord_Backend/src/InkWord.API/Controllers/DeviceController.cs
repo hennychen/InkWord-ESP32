@@ -104,6 +104,26 @@ public class DeviceController : ControllerBase
         return Ok(ApiResponse.Ok());
     }
 
+    /// <summary>B-10b 收藏上报（设备端 SET 长按切换后同步）</summary>
+    [HttpPost("sync/collect")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public async Task<IActionResult> SyncCollect([FromBody] CollectReq req, CancellationToken ct)
+    {
+        var device = (Device)HttpContext.Items["Device"]!;
+        var rec = await _recordRepo.GetAsync(device.Id, req.WordId, ct);
+        if (rec == null)
+        {
+            // 未学过的词直接收藏：落一条初始记录
+            rec = new LearningRecord { DeviceId = device.Id, WordId = req.WordId };
+            _srs.InitRecord(rec, DateTime.UtcNow);
+            await _recordRepo.AddAsync(rec, ct);
+        }
+        rec.IsCollected = req.Collected;
+        await _recordRepo.SaveChangesAsync(ct);
+
+        return Ok(ApiResponse.Ok());
+    }
+
     /// <summary>B-11 心跳</summary>
     [HttpPost("heartbeat")]
     [ServiceFilter(typeof(DeviceAuthFilter))]

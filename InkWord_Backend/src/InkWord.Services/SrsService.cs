@@ -25,12 +25,15 @@ public class SrsService
         // 复习次数 + 难度等级（按 quality 区分对错）
         if (quality < 3)
         {
-            // 答错：重置
+            // 答错：重置 + 连错递增（错词本依据，与固件 learning_state 同步规则）
+            rec.ConsecutiveWrong++;
             rec.IntervalDays = 1;
             rec.SrsLevel = 0;
         }
         else
         {
+            // 答对：连错清零（移出错词本）
+            rec.ConsecutiveWrong = 0;
             rec.IntervalDays = rec.ReviewCount switch
             {
                 0 => 1,
@@ -56,5 +59,7 @@ public class SrsService
         rec.SrsLevel = 0;
         rec.NextReview = now;
         rec.LastStudiedAt = now;
+        rec.ConsecutiveWrong = 0;
+        rec.IsCollected = false;
     }
 }

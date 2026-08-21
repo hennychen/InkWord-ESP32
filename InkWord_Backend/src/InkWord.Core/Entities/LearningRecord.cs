@@ -33,4 +33,11 @@ public class LearningRecord : BaseEntity
 
     /// <summary>最后学习时间</summary>
     public DateTime LastStudiedAt { get; set; }
+
+    /// <summary>连续答错次数（错词本：&gt;0 即在错词本中，答对归零；
+    /// 维护规则与固件 learning_state 同步：quality&lt;3 递增，≥3 清零）</summary>
+    public int ConsecutiveWrong { get; set; }
+
+    /// <summary>是否收藏（设备端 SET 长按切换，/sync/collect 上报）</summary>
+    public bool IsCollected { get; set; }
 }
