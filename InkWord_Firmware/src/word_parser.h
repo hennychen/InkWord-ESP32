@@ -21,6 +21,11 @@ extern "C" {
 #define WORD_EXAMPLE_MAX  (256)
 #define WORD_AUDIO_MAX    (96)
 #define WORD_TAG_MAX      (32)
+#define WORD_ROOT_MAX     (96)   /* 词根词缀（如 "spect=看; vis=看"） */
+#define WORD_INFL_MAX     (96)   /* 派生变形（逗号分隔） */
+#define WORD_SOURCE_MAX   (64)   /* 教材来源（如 "人教版 九年级 Unit 5"） */
+#define WORD_GRADE_MAX    (24)   /* 年级（如 "九年级"） */
+#define WORD_CLOUD_ID_MAX (40)   /* Guid 36 字符 + 余量；云端导出词库携带 */
 
 /** 单条词条 */
 typedef struct {
@@ -30,6 +35,17 @@ typedef struct {
     char     example[WORD_EXAMPLE_MAX];  /**< 例句 */
     char     audio[WORD_AUDIO_MAX];      /**< 音频文件名 */
     char     tag[WORD_TAG_MAX];          /**< 标签（年级等） */
+    /* 词库扩展四字段（V2.1 §6.2，2026-08-20；旧 JSON 缺键时为空串）：
+     * root 词根行（词卡右栏顶部）；source/grade 拼入底部标签行；
+     * inflections V1 暂不渲染（导出兼容保留）。注：四字段使
+     * WordEntry 816→1096B，词池+书最坏并发 ≈7.9MB < 8MB PSRAM 仍可行 */
+    char     root[WORD_ROOT_MAX];        /**< 词根词缀（"spect=看; vis=看"） */
+    char     inflections[WORD_INFL_MAX]; /**< 派生变形（逗号分隔，暂不渲染） */
+    char     source[WORD_SOURCE_MAX];    /**< 教材来源（"人教版 九年级 Unit 5"） */
+    char     grade[WORD_GRADE_MAX];      /**< 年级（"九年级"） */
+    char     cloud_id[WORD_CLOUD_ID_MAX];/**< 云端词条 Guid（后端 /words/export
+                                              生成；空 = 本地导入词，评分/收藏
+                                              不上报，见 learning_state 队列） */
     uint8_t  difficulty;                 /**< 难度 1~5 */
     uint32_t id;                         /**< 词库内序号 */
 } WordEntry;

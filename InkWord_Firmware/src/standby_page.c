@@ -13,13 +13,29 @@
  *   时间无效时引文留白（仅出处）；天气不显示（数据链路保留，
  *   后端就绪后可随时加回）
  *
- * 刷新策略（2026-08-18 用户定稿：每 5 分钟轮换引文，一律全局刷新；
- * 局刷路径真机实测显示异常且有残影，弃用）：
+ * 刷新策略（2026-08-20：引文轮换单段直接差分局刷 + 智能分流全刷，
+ * 见 epd_driver.cpp）：
  *   - 引文下标 = (epoch / STANDBY_QUOTE_INTERVAL_S(300s) + s_quote_off)
  *     % 24（自然窗口无状态派生，重启/校时自然对齐；s_quote_off 为
- *     短按 SET 手动轮换的相位偏移，重启归零）；下标变化即整页全局
- *     刷新（GxEPD2 display(false) 全刷模式写 previous，自带残影清理），
- *     自动轮换一天 288 次
+ *     短按 SET 手动轮换的相位偏移，重启归零）；下标变化时：
+ *       a) 差分预检分流：新帧与屏幕影子差分 > 带面积 25%（大面积
+ *          变化）或局刷计数达阈值 → 全刷；否则单段直接差分局刷；
+ *       b) 单段直接差分：画布绘完整新帧（旧字位白+新字位黑）后
+ *          一次局刷，COG 双 RAM 差分同 pass 驱动两方向翻转像素，
+ *          波形 387ms、切换 ≈0.5s（真机验证无残影定稿；完整方案
+ *          与规则见 README「局部刷新方案」节）；
+ *       c) 首绘/校时跳变（s_last_quote==-2）：无影子基准，直接全刷
+ *   - 低频保养（STANDBY_PARTIAL_MAX_N=12）：无窗口双 RAM 局刷自身
+ *     无残影（2026-08-20 真机验证），真全刷降级为例行深度保养，
+ *     自动轮换下 ≈ 1 小时一次；真全刷波形黑白交替闪烁属正常视觉，
+ *     连续手动 SET 翻 12 次才会遇到一次
+ *   - 引文带 [112,8,192,176)：无窗口整屏差分路径，无 8 对齐约束
+ *     （窗口对齐要求随窗口模式一并弃用）；
+ *   - 前帧缓存：epd_driver 自持 s_port_prev 双帧（每次刷新后同步），
+ *     局刷 0x10 差分基准始终与屏幕真实内容一致；
+ *   - 电源：刷新尾 0x02 Power OFF（关高压 rail、保 VCI 逻辑供电），
+ *     从不 Deep Sleep —— 控制器状态保留路径与局刷兼容；
+ *     局刷前硬复位安全：demo 双 RAM 写入不依赖 COG 内部缓存存活
  *   - 长按上：黑白交替深清 + 整页重绘（手动清陈年残影）
  *
  * 时间源（2026-08 真机实测后确定，应用层自治时钟，见 sb_time_start）：
@@ -37,6 +53,7 @@
 #include "weather_icons.h"   /* 仅 WX_ICON_COUNT：NVS 缓存合法性校验（不绘制） */
 #include "cjk_font.h"       /* 《传习录》引文楷体点阵 + 引文表 + 出处 */
 #include "word_parser.h"
+#include "study_mode_machine.h"  /* 阅读模式书页接管屏幕时待机页退位 */
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
 #include "lan_display_server.h"
@@ -58,7 +75,16 @@ static const char *TAG = "STANDBY";
 #define STANDBY_TZ              "CST-8"   /* POSIX 时区串：东八区 */
 #endif
 #ifndef STANDBY_QUOTE_INTERVAL_S
-#define STANDBY_QUOTE_INTERVAL_S 300      /* 引文轮换间隔：5 分钟（全局刷新） */
+#define STANDBY_QUOTE_INTERVAL_S 300      /* 引文轮换间隔：5 分钟 */
+#endif
+#ifndef STANDBY_PARTIAL_MAX_DIFF_PX
+#define STANDBY_PARTIAL_MAX_DIFF_PX (SB_QUOTE_W * SB_QUOTE_H / 4) /* 差分像素>带面积 25% 判大面积变化 → 全刷 */
+#endif
+#ifndef STANDBY_PARTIAL_MAX_N
+#define STANDBY_PARTIAL_MAX_N 12          /* 连续局刷次数上限 → 低频真全刷深度
+                                           * 保养（无窗口双 RAM 局刷已无残影，
+                                           * 全刷从窗口时代的频繁清洗降级为
+                                           * 例行保养，自动轮换下 ≈ 1 小时一次） */
 #endif
 
 /* ---- 布局常量（引文独占：居中引文 + 右下出处；y/h 均 8 对齐） ---- */
@@ -101,6 +127,14 @@ static int64_t s_time_timer_us = 0;         /* 基准对应的 esp_timer 微秒 
 
 /* 上次绘制内容跟踪（tick 差异检测；校时强制置失效重画） */
 static int s_last_quote = -2;         /* 引文下标（5 分钟窗；-1=无效空白，初始 -2 强制首绘） */
+
+/* 引文带影子缓存（局刷智能分流的差分基准）：
+ * s_quote_shadow = 屏幕当前引文带快照（draw_bitmap 同格式，bit=1=黑）；
+ * s_quote_scratch = 新帧读回缓冲。首绘/全刷后同步，局刷前差分 */
+#define SB_QUOTE_BYTES  (SB_QUOTE_W / 8 * SB_QUOTE_H)   /* 24x176=4224 字节 */
+static uint8_t s_quote_shadow[SB_QUOTE_BYTES];
+static uint8_t s_quote_scratch[SB_QUOTE_BYTES];
+static bool s_shadow_valid = false;   /* 影子是否可信（首绘前不可信） */
 
 /* ============================================================
  * 应用层自治时钟：系统 time()/settimeofday 在本机损坏（settimeofday
@@ -282,7 +316,10 @@ void standby_init(void)
 
 bool standby_is_active(void)
 {
-    return word_parser_get_count() == 0;
+    /* 阅读模式（P3）书页/占位页接管屏幕：待机页（含分钟心跳整刷）
+     * 退位，避免词库空时读书被待机页周期性冲掉 */
+    return word_parser_get_count() == 0 &&
+           study_mode_current() != MODE_READER;
 }
 
 void standby_weather_update(const weather_info_t *w)
@@ -341,8 +378,69 @@ void standby_render_full(void)
 
     s_last_quote = quote;    /* 同步跟踪状态，避免 tick 误判首帧差异 */
 
+    /* 全刷后屏幕与画布同步，刷新引文带影子（局刷差分新基准） */
+    epd_gfx_read_window(SB_QUOTE_X0, SB_QUOTE_Y0, SB_QUOTE_W, SB_QUOTE_H,
+                        s_quote_shadow);
+    s_shadow_valid = true;
+
     LOG_I("standby page rendered: quote=%d (%s)", quote,
           quote >= 0 ? k_chuanxilu_quotes[quote] : "time not synced");
+}
+
+/* 引文轮换绘制：单段直接差分局刷 + 差分智能分流。
+ * 仅在已有屏幕基准（s_last_quote >= -1 且影子可信）时由 tick 调用；
+ * 首绘/校时跳变走 standby_render_full（全刷）。
+ *
+ * 单段直接差分（2026-08-20 方案 B，取代两段式）：预检时画布已绘好
+ * 完整新帧（旧字位白 + 新字位黑），一次局刷让 COG 双 RAM 差分在
+ * 同一 pass 驱动两方向翻转像素，波形时间 387ms（两段式 774ms 减半，
+ * 切换约 0.5s）。
+ * 真机验证（2026-08-20）：无残影，定稿（方案演进与规则见 README
+ * 「局部刷新方案」节）。理论依据：方案 A 已验证无窗口波形下
+ * 黑→白单刷即净（该方向驱动力充足，窗口模式“混合差分留浅影”
+ * 的主因已排除）。
+ * 回退指引（若真机出现旧字浅影，即同 pass 混合方向翻不彻底）：
+ *   1) epd_gfx_fill_rect(带, 白) + flush_window_passes(带, 1)  洗旧字
+ *   2) sb_draw_quote(quote) + flush_window_passes(带, 1)      绘新字
+ * 两段式波形 774ms、真机验证无残影（完整代码见 git 历史或记忆） */
+static void standby_render_quote(void)
+{
+    int quote = sb_quote_now();
+
+    /* 0. 差分预检：先在画布绘好新帧，读回与屏幕影子比较分流 */
+    epd_gfx_fill_rect(SB_QUOTE_X0, SB_QUOTE_Y0, SB_QUOTE_W, SB_QUOTE_H,
+                      EPD_GFX_WHITE);
+    sb_draw_quote(quote);
+    epd_gfx_read_window(SB_QUOTE_X0, SB_QUOTE_Y0, SB_QUOTE_W, SB_QUOTE_H,
+                        s_quote_scratch);
+    int diff_px = 0;
+    for (int i = 0; i < SB_QUOTE_BYTES; i++)
+        diff_px += __builtin_popcount(s_quote_shadow[i] ^ s_quote_scratch[i]);
+
+    /* 智能分流：大面积变化（差分超阈值）或局刷计数达阈值 → 全刷 */
+    const char *mode;
+    if (diff_px > STANDBY_PARTIAL_MAX_DIFF_PX) {
+        mode = "full (large change)";
+    } else if (refresh_gfx_before_partial_n(STANDBY_PARTIAL_MAX_N)) {
+        mode = "full (partial count threshold)";
+    } else {
+        mode = "partial direct (single-phase diff)";
+    }
+
+    if (mode[0] == 'p') {
+        /* 单段直接差分：画布已是完整新帧（预检时绘好：旧字位白 +
+         * 新字位黑），一次局刷同 pass 驱动两方向翻转像素 */
+        epd_gfx_flush_window_passes(SB_QUOTE_X0, SB_QUOTE_Y0,
+                                    SB_QUOTE_W, SB_QUOTE_H, 1);
+        memcpy(s_quote_shadow, s_quote_scratch, SB_QUOTE_BYTES);
+    } else {
+        /* 全刷：整页重绘（含出处），影子随 render_full 内部同步 */
+        standby_render_full();
+    }
+
+    s_last_quote = quote;
+    LOG_I("quote rotate: idx=%d, %s, diff=%dpx, partials=%u", quote, mode,
+          diff_px, refresh_partial_count());
 }
 
 void standby_tick(void)
@@ -431,9 +529,14 @@ void standby_tick(void)
         s_time_valid_announced = false;   /* 时间回退，重新等待同步 */
     }
 
-    /* ---- 引文轮换：5 分钟窗下标变化即整页全局刷新（无局刷路径） ---- */
+    /* ---- 引文轮换：5 分钟窗下标变化 → 智能分流刷新 ----
+     * 首绘/校时跳变（-2 无基准）走全刷；其余先白后画 + 差分分流
+     * （常规轮换走局刷引文带，大面积变化/局刷超阈值自动全刷） */
     int quote = sb_quote_now();
     if (quote == s_last_quote) return;
 
-    standby_render_full();   /* 整页重绘 + 全刷（内容日志见 rendered） */
+    if (s_last_quote == -2 || !s_shadow_valid)
+        standby_render_full();   /* 无屏幕基准：整页全刷 */
+    else
+        standby_render_quote();  /* 有基准：局刷优先智能分流 */
 }

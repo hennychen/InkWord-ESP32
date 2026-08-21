@@ -256,24 +256,9 @@ void epd_full_refresh(const uint8_t *data)
     LOG_D("EPD full refresh done");
 }
 
-void epd_partial_refresh(int x, int y, int w, int h, const uint8_t *data)
-{
-    if (!s_inited) {
-        LOG_E("EPD not initialized");
-        return;
-    }
-    if (!data) {
-        LOG_E("EPD partial refresh: data is NULL");
-        return;
-    }
-
-    /* data 为窗口位图（竖屏面板坐标，行宽 ceil(w/8)，bit=1 白/0x00 黑），
-     * 遗留直通 API（refresh_submit 用）：写 0x13 → 局刷 → 回写 0x10；
-     * 不维护 s_port_prev —— UI 主路径已改走 epd_gfx_flush_window */
-    s_epd2.drawImagePart(data, 0, 0, w, h, x, y, w, h);
-
-    LOG_D("EPD partial refresh [%d,%d,%d,%d]", x, y, w, h);
-}
+/* epd_partial_refresh 已删（2026-08-20）：窗口直通路径（drawImagePart）
+ * 属已禁用的 partial window 方案，且不维护 s_port_prev，误用会破坏
+ * 无窗口双 RAM 差分的前帧一致性；UI 局刷统一走 epd_gfx_flush_window* */
 
 void epd_deep_sleep(void)
 {
@@ -371,6 +356,32 @@ void epd_gfx_draw_bitmap(int x, int y, int w, int h, const uint8_t *bits, uint16
     s_canvas->drawBitmap(x, y, bits, w, h, gfx_color(color));
 }
 
+void epd_gfx_read_window(int x, int y, int w, int h, uint8_t *out)
+{
+    if (!out || !s_canvas) return;
+    /* 与 draw_bitmap 输入格式互补的窗口提取：行主序 MSB-first，每行
+     * ceil(w/8) 字节，bit=1 = 画布置位 = 黑。逐行逐像素从画布 stride
+     * (52 字节/行) 装配，窗口超界部分置 0（白）*/
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > EPD_GFX_WIDTH)  w = EPD_GFX_WIDTH - x;
+    if (y + h > EPD_GFX_HEIGHT) h = EPD_GFX_HEIGHT - y;
+    if (w <= 0 || h <= 0) return;
+
+    const uint8_t *src = s_canvas->getBuffer();
+    const int stride = (EPD_GFX_WIDTH + 7) / 8;
+    const int wbytes = (w + 7) / 8;
+    memset(out, 0, (size_t)wbytes * h);
+    for (int cy = 0; cy < h; cy++) {
+        const uint8_t *row = src + (uint32_t)(y + cy) * stride;
+        uint8_t *dst = out + (uint32_t)cy * wbytes;
+        for (int cx = 0; cx < w; cx++) {
+            if (row[(x + cx) >> 3] & (0x80 >> ((x + cx) & 7)))
+                dst[cx >> 3] |= (uint8_t)(0x80 >> (cx & 7));
+        }
+    }
+}
+
 void epd_gfx_flush(void)
 {
     if (!s_inited) return;
@@ -386,26 +397,36 @@ void epd_gfx_flush(void)
     memcpy(s_port_prev, s_port_new, EPD_FB_SIZE); /* 屏幕内容 == 新帧 */
 }
 
-void epd_gfx_flush_window(int x, int y, int w, int h)
+void epd_gfx_flush_window_passes(int x, int y, int w, int h, int passes)
 {
     if (!s_inited) return;
 
     uint16_t px, py, pw, ph;
     gfx_rect_to_panel(x, y, w, h, &px, &py, &pw, &ph);
-    if (pw == 0 || ph == 0) return;
+    if (pw == 0 || ph == 0) return; /* 窗口参数仅做区域合法性检查 */
 
     canvas_to_panel(s_port_new);
 
-    /* demo 忠实版局刷（对照 Display_windows_image_partial_update）：
-     * 每次局刷硬复位 COG + partial 初始化（波形参数可切换）+
-     * 单会话双 RAM 写窗口（旧帧→0x10，新帧→0x13）+ 0x04/0x12/0x02。
-     * 完全无状态 —— 不依赖 COG 内部 RAM 跨刷新存活 */
-    s_epd2.hwReset();          /* demo：每次局刷前硬件复位，COG 状态归零 */
+    /* Plan B：无窗口整屏双 RAM 局刷（2026-08-20，取代窗口路径）：
+     * 不发 0x91/0x90，整屏写 0x10 旧帧 + 0x13 新帧，COG 全屏差分驱动
+     * 变化像素、跳过不变像素。窗口模式（demoWriteDual）三组参数实测均
+     * 不能干净刷白（0x1f 留浅影 / 0x0d 无深睡不消失 / +深睡仍遮盖），
+     * 与 GxEPD2 "多数 UC 面板禁用 partial window" 结论一致，弃用；
+     * 代价：每次传整屏 12KB（SPI @10MHz ≈ 10ms，可忽略）。
+     * passes 双刷：单次翻转不彻底时第二次 0x12 再驱动一遍；
+     * 局刷自身无残影，全刷降为低频深度保养（见 standby 混合策略） */
+    s_epd2.hwReset();          /* 每次局刷前硬件复位，COG 状态归零 */
     s_epd2.initPartialDemo();
-    s_epd2.demoWriteDual(px, py, pw, ph, s_port_prev, s_port_new);
-    s_epd2.updateDemoPartial(); /* demo：0x04→0x12→0x02 */
+    s_epd2.demoWriteDualNoWindow(s_port_prev, s_port_new);
+    s_epd2.updateDemoPartial((uint8_t)(passes < 1 ? 1 : passes));
 
     memcpy(s_port_prev, s_port_new, EPD_FB_SIZE); /* 屏幕内容 == 新帧 */
+}
+
+void epd_gfx_flush_window(int x, int y, int w, int h)
+{
+    /* 默认双刷：通用调用方（学习页翻词）对速度不敏感，取浅影最小的默认 */
+    epd_gfx_flush_window_passes(x, y, w, h, 2);
 }
 
 } /* extern "C" for GFX wrappers */

@@ -43,7 +43,7 @@ static esp_err_t set_common_headers(esp_http_client_handle_t client)
     return ESP_OK;
 }
 
-/* 拉取词库：GET /api/device/sync/words?version=N&count=... */
+/* 通用响应体收集器：供 pull/register 等需要读 body 的请求复用 */
 typedef struct {
     char  *buf;
     int    buf_size;
@@ -63,6 +63,85 @@ static esp_err_t pull_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+bool sync_has_device_key(void)
+{
+    return s_device_key[0] != '\0';
+}
+
+/* 按 URL 前缀选传输：http: 明文 TCP（本地开发后端），其余 TLS + 证书包 */
+static void fill_cfg(esp_http_client_config_t *cfg, const char *url, int timeout_ms)
+{
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->url = url;
+    cfg->timeout_ms = timeout_ms;
+    if (strncmp(url, "http:", 5) == 0) {
+        cfg->transport_type = HTTP_TRANSPORT_OVER_TCP;
+    } else {
+        cfg->transport_type = HTTP_TRANSPORT_OVER_SSL;
+        cfg->crt_bundle_attach = arduino_esp_crt_bundle_attach;
+    }
+}
+
+/* 首次注册：POST /api/device/register，后端按 MAC 幂等。
+ * 响应信封 { code, message, data:{ deviceId, apiKey } }，仅取 apiKey */
+int sync_register(const char *mac, const char *name,
+                  char *out_api_key, size_t key_len)
+{
+    if (!mac || !out_api_key || key_len <= 0) return -1;
+    out_api_key[0] = '\0';
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "mac", mac);
+    cJSON_AddStringToObject(o, "name", name ? name : "");
+    char *body = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!body) return -1;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device/register", s_base_url);
+
+    /* 响应体经 event_handler 收集（perform 后直接 read 不可靠） */
+    char resp[512] = { 0 };
+    recv_ctx_t rctx = { .buf = resp, .buf_size = sizeof(resp) - 1, .offset = 0 };
+    s_pull_ctx = &rctx;
+
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 15000);
+    cfg.event_handler = pull_event_handler;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    set_common_headers(client);
+    esp_http_client_set_post_field(client, body, strlen(body));
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    s_pull_ctx = NULL;
+    esp_http_client_cleanup(client);
+    free(body);
+
+    if (err != ESP_OK || status != 200 || rctx.offset <= 0) {
+        LOG_E("register failed: %s status=%d", esp_err_to_name(err), status);
+        return -1;
+    }
+
+    int ret = -1;
+    cJSON *root = cJSON_Parse(resp);
+    if (root) {
+        cJSON *code = cJSON_GetObjectItem(root, "code");
+        cJSON *data = cJSON_GetObjectItem(root, "data");
+        cJSON *key = data ? cJSON_GetObjectItem(data, "apiKey") : NULL;
+        if (cJSON_IsNumber(code) && code->valueint == 0 &&
+            cJSON_IsString(key) && key->valuestring && key->valuestring[0]) {
+            strncpy(out_api_key, key->valuestring, key_len - 1);
+            out_api_key[key_len - 1] = '\0';
+            ret = 0;
+        }
+        cJSON_Delete(root);
+    }
+    if (ret != 0) LOG_E("register payload invalid");
+    return ret;
+}
+
 int sync_pull_words(int local_version, char *out_buf, int buf_size)
 {
     if (!out_buf || buf_size <= 0) return -1;
@@ -74,14 +153,9 @@ int sync_pull_words(int local_version, char *out_buf, int buf_size)
     recv_ctx_t ctx = { .buf = out_buf, .buf_size = buf_size, .offset = 0 };
     s_pull_ctx = &ctx;
 
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .cert_pem = NULL,
-        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
-        .event_handler = pull_event_handler,
-        .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .timeout_ms = 15000,
-    };
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 15000);
+    cfg.event_handler = pull_event_handler;
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     esp_http_client_set_method(client, HTTP_METHOD_GET);
@@ -114,11 +188,12 @@ int sync_push_progress(const ProgressItem *items, int count)
 {
     if (!items || count <= 0) return -1;
 
-    /* 组装 JSON 数组 */
+    /* 组装 JSON 数组：wordId 为云端 Guid 字符串（后端 ProgressItem.WordId）；
+     * timestamp=0 由服务器落地时间代替（设备自治钟无绝对时间域） */
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < count; i++) {
         cJSON *o = cJSON_CreateObject();
-        cJSON_AddNumberToObject(o, "wordId", items[i].word_id);
+        cJSON_AddStringToObject(o, "wordId", items[i].word_id);
         cJSON_AddNumberToObject(o, "quality", items[i].quality);
         cJSON_AddNumberToObject(o, "timestamp", (double)items[i].timestamp);
         cJSON_AddItemToArray(arr, o);
@@ -130,12 +205,8 @@ int sync_push_progress(const ProgressItem *items, int count)
     char url[256];
     snprintf(url, sizeof(url), "%s/api/device/sync/progress", s_base_url);
 
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
-        .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .timeout_ms = 15000,
-    };
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 15000);
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     set_common_headers(client);
@@ -154,6 +225,41 @@ int sync_push_progress(const ProgressItem *items, int count)
     return -1;
 }
 
+/* 收藏上报：POST /api/device/sync/collect { wordId, collected } */
+int sync_push_collect(const char *word_id, bool collected)
+{
+    if (!word_id || !word_id[0]) return -1;
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "wordId", word_id);
+    cJSON_AddBoolToObject(o, "collected", collected);
+    char *body = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!body) return -1;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device/sync/collect", s_base_url);
+
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 15000);
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    set_common_headers(client);
+    esp_http_client_set_post_field(client, body, strlen(body));
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    free(body);
+
+    if (err == ESP_OK && status == 200) {
+        LOG_I("collect '%s' -> %d", word_id, collected);
+        return 0;
+    }
+    LOG_E("push collect failed: %s status=%d", esp_err_to_name(err), status);
+    return -1;
+}
+
 /* 心跳：POST /api/device/heartbeat */
 int sync_heartbeat(int battery, const char *fw_ver)
 {
@@ -166,12 +272,8 @@ int sync_heartbeat(int battery, const char *fw_ver)
     char url[256];
     snprintf(url, sizeof(url), "%s/api/device/heartbeat", s_base_url);
 
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
-        .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .timeout_ms = 10000,
-    };
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 10000);
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     set_common_headers(client);
@@ -199,14 +301,9 @@ int sync_fetch_weather(weather_info_t *out)
     recv_ctx_t ctx = { .buf = s_wx_buf, .buf_size = sizeof(s_wx_buf), .offset = 0 };
     s_pull_ctx = &ctx;
 
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
-        .event_handler = pull_event_handler,
-        .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .timeout_ms = 10000,
-    };
-
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 10000);
+    cfg.event_handler = pull_event_handler;
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     esp_http_client_set_method(client, HTTP_METHOD_GET);
     set_common_headers(client);

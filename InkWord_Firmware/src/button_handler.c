@@ -9,6 +9,7 @@
 #include "button_handler.h"
 #include "debug_log.h"
 #include "gpio_config.h"
+#include "haptic.h"
 
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -106,9 +107,11 @@ void button_scan_task(void *arg)
                     st->stable_pressed = raw;
                     st->debounce_cnt = 0;
                     if (raw) {
-                        /* 刚刚稳定为“按下” */
+                        /* 刚刚稳定为“按下”：全局 20ms 短震（PRD 5.4，
+                         * 覆盖配网/待机等全部页面；语义档反馈由 main.cpp 补位） */
                         st->press_tick = millis();
                         st->long_fired = false;
+                        haptic_event(HAPTIC_KEYPRESS);
                     }
                 }
             }

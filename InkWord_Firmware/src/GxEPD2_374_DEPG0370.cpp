@@ -379,8 +379,10 @@ void GxEPD2_374_DEPG0370::_Update_Full()
 void GxEPD2_374_DEPG0370::_Update_Part()
 {
   /* 注意：UI 局刷主路径已改走 demo 忠实序列（hwReset/initPartialDemo/
-   * updateDemoPartial，由 epd_driver.cpp 驱动），本函数仅遗留 API
-   * （epd_partial_refresh 直通路径）使用，仍保留此前对齐官方的参数 */
+   * updateDemoPartial，由 epd_driver.cpp 驱动，无窗口整屏双 RAM 差分）；
+   * 本函数（partial window 路径）现无调用方 —— 遗留直通 API
+   * epd_partial_refresh 已删（2026-08-20），保留本函数仅备查，
+   * 仍保留此前对齐官方的参数 */
   /* 2026-08-18 残影重叠修复：局刷序列对齐 GxEPD2 官方 GDEY037T03（同 UC8253），
    * 替换 demo 参数 ——
    *   a) E5=0x6E（demo 为 100）：官方快速局刷调定的温度补偿，驱动力足；
@@ -432,20 +434,24 @@ void GxEPD2_374_DEPG0370::initFullDemo()
 
 void GxEPD2_374_DEPG0370::initPartialDemo()
 {
-  /* 局刷初始化（官方 GDEY037T03 参数：CDI=0xD7/E5=0x6E/PSR2=0x1f）。
-   * 2026-08-18 实测：demo 参数与官方参数在本面板均留残影，属 partial
-   * window 波形面板级缺陷；固定官方标准值，残影由低阈值真全刷清洗
-   * （见 epd_driver 混合刷新策略）。PSR 方向位保留 0xD3 实测标定值 */
+  /* 局刷初始化（2026-08-20 回归本面板 demo 原始三件套：
+   *   PSR2=0x0d / CDI=0x17(VBD floating) / E5=100(0x64)。
+   * 此前用 GDEY037T03 官方值（0x1f/0xD7/0x6E）属张冠李戴 —— GDEY037T03
+   * 是 SSD1680 体系面板，PSR 第二字节位定义与 UC8253 完全不同；
+   * GxEPD2 对 UC8253 家族（GxEPD2_213_flex）注释 0x0d = "VCOM to 0V
+   * fast"，直接影响局刷驱动力。8-18 那次"demo 参数仍残影"的测试
+   * PSR2 用的也是 0x1f（未入 git，demo 三件套从未被忠实测过）。
+   * PSR 方向位保留 0xD3 实测标定值（与 demo 0xDF 仅差镜像位 bit2） */
   _power_is_on = false;
   _writeCommand(0x00);
   _writeData(0xD3);
-  _writeData(0x1f);
+  _writeData(0x0d);
   _writeCommand(0x50); // border setting
-  _writeData(0xD7);
+  _writeData(0x17);    // VBD[1:0]=00 floating（demo 原值）
   _writeCommand(0xE0); // force temp to get the lut waveform
   _writeData(0x02);
   _writeCommand(0xE5);
-  _writeData(0x6E);
+  _writeData(100);     // demo 原值（门电压选择）
   _initial_write = false;    /* 局刷路径不触发库的首次清屏逻辑 */
   _initial_refresh = false;
   _init_display_done = true;
@@ -496,16 +502,54 @@ void GxEPD2_374_DEPG0370::demoWriteFull(const uint8_t* new_fb)
   _endTransfer();
 }
 
-void GxEPD2_374_DEPG0370::updateDemoPartial()
+void GxEPD2_374_DEPG0370::demoWriteDualNoWindow(const uint8_t* prev_fb, const uint8_t* new_fb)
 {
+  /* Plan B（2026-08-20）：无窗口整屏双 RAM 写入 —— 不发 0x91/0x90，
+   * 直接整屏写 0x10 旧帧 + 0x13 新帧，COG 按双平面内存差分驱动变化
+   * 像素、跳过不变像素（含窗口外的出处/状态栏）。规避 partial window
+   * 模式本身（窗口模式三组参数实测均不能干净刷白，见 .h 注释）。
+   * 与 demoWriteDual 的关键差异：无 0x91 partial-in / 0x90 窗口指令，
+   * COG 保持全屏扫描模式 —— 与 demoWriteFull 同路径，仅多写旧帧平面 */
+  _writeCommand(0x10); // previous plane（整屏）
+  _startTransfer();
+  for (uint32_t i = 0; i < uint32_t(WIDTH) * uint32_t(HEIGHT) / 8; i++)
+  {
+    _transfer(prev_fb[i]);
+  }
+  _endTransfer();
+  _writeCommand(0x13); // current plane（整屏）
+  _startTransfer();
+  for (uint32_t i = 0; i < uint32_t(WIDTH) * uint32_t(HEIGHT) / 8; i++)
+  {
+    _transfer(new_fb[i]);
+  }
+  _endTransfer();
+}
+
+void GxEPD2_374_DEPG0370::updateDemoPartial(uint8_t passes)
+{
+  /* 双刷（passes≥2）：同一上电会话内连发两次 0x12。COG 差分按双 RAM
+   * 内存内容而非实际光学状态，第一次未翻转彻底的像素会被第二次
+   * 再次驱动（单次翻转补强手段）。
+   *
+   * 电源终态：0x02 Power Off（关高压 rail、保 VCI 逻辑供电），不深睡。
+   * 8-20 曾为救窗口模式加刷新后深睡（0x07/0xA5），窗口模式已弃用
+   * （改无窗口整屏双 RAM，见 demoWriteDualNoWindow），深睡每次多耗
+   * 400ms 拖慢切换，使命结束移除；下次刷新前 hwReset 自动重新初始化 */
+  if (passes < 1) passes = 1;
   _writeCommand(0x04); // power on
   _waitWhileBusy("DemoPartPowOn", power_on_time);
   uint32_t t0 = millis();
-  _writeCommand(0x12); // update
-  _waitWhileBusy("DemoPart", full_refresh_time);
-  Serial.printf("[EPD] demo partial refresh busy: %ums\n",
-                (unsigned int)(millis() - t0)); /* 耗时异常→波形/供电问题信号 */
+  for (uint8_t p = 0; p < passes; p++) {
+    _writeCommand(0x12); // update
+    _writeData(0x00);   /* demo 忠实哑字节（Epaper_Update_and_Deepsleep） */
+    _waitWhileBusy("DemoPart", full_refresh_time);
+  }
+  Serial.printf("[EPD] demo partial refresh busy: %ums (%u %s)",
+                (unsigned int)(millis() - t0), passes, passes > 1 ? "passes" : "pass");
+  Serial.println(); /* 耗时异常→波形/供电问题信号 */
   _writeCommand(0x02); // power off
+  _writeData(0x00);   /* demo 忠实哑字节 */
   _waitWhileBusy("DemoPartPowOff", power_off_time);
   _power_is_on = false;
 }

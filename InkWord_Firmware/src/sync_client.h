@@ -2,27 +2,35 @@
  * @file sync_client.h
  * @brief HTTP 同步客户端 (Task F-18)
  *
- * 与后端交互：拉取增量词库、回传学习记录、心跳。
+ * 与后端交互：注册、拉取增量词库、回传学习记录（评分/收藏）、
+ * 心跳、天气与校时。
+ * 词身份协议（P2）：评分/收藏上报的 wordId 为云端词条 Guid 字符串
+ * （words.json 的 cloudId 字段，后端 /admin/words/export 生成）。
  */
 #ifndef INKWORD_SYNC_CLIENT_H
 #define INKWORD_SYNC_CLIENT_H
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#define SYNC_WORD_ID_MAX (40)  /**< Guid 36 字符 + 余量 */
+
 /** 学习记录条目（回传给后端） */
 typedef struct {
-    uint32_t word_id;
-    uint8_t  quality;       /* 0~5 */
-    int64_t  timestamp;     /* Unix 秒 */
+    char     word_id[SYNC_WORD_ID_MAX]; /* 云端词条 Guid；空串条目应跳过 */
+    uint8_t  quality;                   /* 0~5 */
+    int64_t  timestamp;                 /* Unix 秒；0 = 由服务器落地时间代替
+                                            （设备自治钟无绝对时间域） */
 } ProgressItem;
 
 /**
- * @brief 设置后端 Base URL，如 "https://api.inkword.example.com"
+ * @brief 设置后端 Base URL，如 "https://api.inkword.example.com"。
+ *        http: 前缀自动降级明文 TCP（本地开发后端）。
  */
 void sync_set_base_url(const char *url);
 
@@ -30,6 +38,23 @@ void sync_set_base_url(const char *url);
  * @brief 设置设备认证 Key（写入 X-Device-Key 头）。
  */
 void sync_set_device_key(const char *key);
+
+/**
+ * @brief 设备认证 Key 是否已配置（NVS 恢复或注册成功后为真）。
+ */
+bool sync_has_device_key(void);
+
+/**
+ * @brief 首次注册：POST /api/device/register（后端按 MAC 幂等，重复
+ *        注册返回既有 ApiKey）。成功后调用方应持久化到 NVS。
+ * @param mac         十六进制 MAC 字符串（如 "AABBCCDDEEFF"）。
+ * @param name        设备名（可 NULL，后端默认 InkWord-XXXX）。
+ * @param out_api_key 输出 ApiKey 缓冲。
+ * @param key_len     缓冲大小。
+ * @return 0 成功；<0 失败（网络/解析）。
+ */
+int sync_register(const char *mac, const char *name,
+                  char *out_api_key, size_t key_len);
 
 /**
  * @brief 拉取自 localVersion 以来的增量词库 JSON。(F-18)
@@ -41,12 +66,20 @@ void sync_set_device_key(const char *key);
 int sync_pull_words(int local_version, char *out_buf, int buf_size);
 
 /**
- * @brief 批量回传学习记录。
- * @param items  记录数组。
+ * @brief 批量回传学习记录（评分）。
+ * @param items  记录数组（word_id 为空串的条目由调用方过滤）。
  * @param count  记录数。
  * @return 0 成功。
  */
 int sync_push_progress(const ProgressItem *items, int count);
+
+/**
+ * @brief 收藏状态上报（设备端 SET 长按切换后同步）。
+ * @param word_id   云端词条 Guid。
+ * @param collected 收藏状态。
+ * @return 0 成功。
+ */
+int sync_push_collect(const char *word_id, bool collected);
 
 /**
  * @brief 发送心跳。

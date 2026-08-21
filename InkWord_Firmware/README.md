@@ -66,16 +66,18 @@
 | **音频** | [`audio_player`](src/audio_player.h) | I2S + MAX98357A, 44.1kHz/16bit, WAV/MP3 播放 |
 | **按键** | [`button_handler`](src/button_handler.h) | 五向导航开关轮询去抖, 区分短按 / 长按 (1.5s) |
 | **存储** | [`storage_manager`](src/storage_manager.h) | SD 卡 SPI 挂载至 `/sdcard`, 文件读写 |
-| **刷新调度** | [`refresh_scheduler`](src/refresh_scheduler.h) | 局刷计数, 达阈值自动全刷清残影（学习页阈值 8；待机页已改全局刷新不再使用） |
-| **词库** | [`word_parser`](src/word_parser.h) | 解析 `words.json` 词库至内存 |
+| **刷新调度** | [`refresh_scheduler`](src/refresh_scheduler.h) | 局刷计数, 达阈值例行全刷（学习页阈值 8；待机页引文轮换阈值 12 低频保养） |
+| **词库** | [`word_parser`](src/word_parser.h) | 解析 `words.json` 至 PSRAM 词池（4000 词；JSON 缓冲 2MB） |
 | **SRS 引擎** | [`srs_engine`](src/srs_engine.h) | SM-2 间隔重复算法 (纯算法, 可单测) |
-| **模式状态机** | [`study_mode_machine`](src/study_mode_machine.h) | 闪卡 / 听写 / 复习三模式切换 |
+| **学习状态** | [`learning_state`](src/learning_state.h) | 每词 SM-2 状态/连错/收藏；LR02 sparse NVS + 脏标记延迟落盘 |
+| **模式状态机** | [`study_mode_machine`](src/study_mode_machine.h) | 闪卡 / 听写 / 复习 / 阅读四模式切换 |
+| **CJK 字库/文本** | [`cjk_font`](src/cjk_font.h) + [`cjk_text`](src/cjk_text.h) | 三级点阵字库 bin（16/20/24px，3892 字，646KB 嵌入）+ UTF-8 混排绘制层（词卡释义/tag、阅读器、待机页共用；CJK 按字断行 / ASCII 按词断，墨迹盒变宽渲染） |
 | **Wi-Fi 联网** | [`wifi_manager`](src/wifi_manager.h) | 网络栈/STA 连接、NVS 凭据持久化、SoftAP、AP 扫描、快速+慢速断线重连、异步连接 |
 | **HTTP 同步** | [`sync_client`](src/sync_client.h) | 增量词库拉取、学习记录回传、心跳上报、天气拉取（附带校时） |
 | **OTA** | [`ota_manager`](src/ota_manager.h) | 双分区升级: 下载 / 校验 / 切换 / 回滚 |
 | **Wi-Fi 配置 UI** | [`wifi_config_ui`](src/wifi_config_ui.h) | 扫描列表 + QWERTY 软键盘配网向导（长按 C） |
 | **LAN 直传/配网门户** | [`lan_display_server`](src/lan_display_server.h) | 设备端 HTTP 服务器 + 内嵌发送页 + Wi-Fi 配网页 + mDNS + SoftAP captive portal + DNS 劫持 |
-| **待机页** | [`standby_page`](src/standby_page.h) + [`cjk_font`](src/cjk_font.h) | 无词库时的《传习录》引文整页（引文独占：居中楷体 Bold 24px 点阵每 5 分钟轮换 + 右下角出处；HTTP Date+后端双校时、NVS 天气缓存；轮换即全局刷新防残影） |
+| **待机页** | [`standby_page`](src/standby_page.h) | 无词库时的《传习录》引文整页（引文独占：居中楷体 Bold 24px 点阵每 5 分钟轮换 + 右下角出处；HTTP Date+后端双校时、NVS 天气缓存；轮换默认局刷 + 差分/计数智能分流全刷防残影） |
 
 ### 启动流程
 
@@ -99,13 +101,18 @@ setup() (Arduino)
 
 ### 学习模式
 
-三种模式循环切换 (D 键切换)，模式持久化到 NVS:
+四种模式循环切换 (D 键切换)，模式持久化到 NVS:
 
 | 模式 | 说明 |
 |------|------|
 | **闪卡** (FLASH) | 看词猜义，C 键发音 |
 | **听写** (DICTATION) | 听音拼写 |
 | **复习** (REVIEW) | SRS 到期词复习 |
+| **阅读** (READER) | SD 卡 books 目录 TXT 阅读（16/20/24px 三级字号，进度记忆） |
+
+释义/标签支持中文（cjk_text 16px 点阵混排：CJK 按字断行、ASCII 按词
+断、超宽自动换行；真实词库释义为中文，FreeSans 仅 ASCII 不可用）；
+demo 构建内置中文释义词可直接上机验证。
 
 ### SM-2 间隔重复算法
 
@@ -115,13 +122,66 @@ setup() (Arduino)
   q >= 3: 1天 → 6天 → 6×EF天 → … (间隔逐步增长)
 ```
 
-### 防残影刷新调度
+### 词库扩容与内存布局（2026-08-20）
+
+词库从 DRAM 静态 64 词扩容至 4000 词，三层内存全部迁 PSRAM
+（`MALLOC_CAP_SPIRAM`，与阅读器书缓冲共享 8MB Octal）：
+
+| 层 | 位置 | 容量 | 说明 |
+|------|------|------|------|
+| 词池 `s_word_pool` | PSRAM 堆 | 4000 × ~816B ≈ 3.3MB | setup 内按 MAX_WORDS 逐半降级分配 |
+| JSON 解析缓冲 | PSRAM 堆 | 2MB | word_parser 显式 PSRAM，防配置漂移 |
+| 学习状态数组 `s_state` | PSRAM 堆 | 4000 × 24B ≈ 96KB | 惰性初始化，未学词零成本 |
+
+学习状态持久化改 **LR02 sparse 格式**：NVS blob 只存非默认态词
+（学过/连错>0/已收藏，每词 21B，上限 300 活跃词 ≈ 6.3KB，配 nvs
+24KB 分区；词库规模变化整体作废）。保存时机：评分/收藏仅置脏标记，
+主循环 `learning_state_maybe_save()` 静默 5s 后落盘——按键路径零 NVS
+阻塞，掉电窗口 ≤5s（与上报队列不持久化策略一致）。
+
+编译实测（inkword-s3）：Flash 54.0%，DRAM 31.1%（词池迁出后静态
+内存大幅下降）。
+
+### 局部刷新方案（2026-08-20 定稿）
+
+**无窗口整屏双 RAM 差分 + 单段直接差分**，真机验证无残影、引文切换
+≈0.5s。适用于所有局刷场景：待机页引文轮换已按此实施；学习页翻词走
+同一无窗口路径（`epd_gfx_flush_window` 默认双刷，速度不敏感取最稳）；
+后续新增局刷场景一律按本方案实施。
+
+**指令序列**（单次局刷完整会话，入口 `epd_gfx_flush_window_passes`）：
 
 ```
-局刷计数 < 8:  GxEPD2 displayWindow 差分局刷 (仅内容区, ~350ms, 无闪烁)
-局刷计数 >= 8: 强制全屏刷新清残影 → 计数归零
-GFX 局刷路径 (epd_gfx_flush_window): 先调 refresh_gfx_before_partial()
-前置检查，返回 true 时需整屏重绘后全刷（待机页已改全局刷新，不经过此路径）
+hwReset()                      硬复位 COG —— 安全：双平面全量重写，
+                               不依赖 COG 内部缓存存活
+initPartialDemo()              partial 波形初始化（PSR=0xD3,0x0d /
+                               CDI=0x17 / E0=0x02 / E5=100，demo 原始值）
+demoWriteDualNoWindow(prev,new) 整屏写双平面：0x10 旧帧 + 0x13 新帧
+                               —— 不发 0x91/0x90 窗口指令
+updateDemoPartial(passes)      0x04 上电 → 0x12(+0x00 哑字节)×passes
+                               → BUSY 387ms/pass → 0x02(+0x00) Power Off
+```
+
+**核心规则：**
+
+| # | 规则 | 依据 |
+|---|------|------|
+| 1 | 禁用 partial window（0x91/0x90） | 窗口模式三组参数实测均不能干净刷白（0x1f 留浅影 / 0x0d 无深睡旧字不消失 / +深睡仍遮盖），与 GxEPD2 "多数 UC 面板禁用 partial window" 结论一致 |
+| 2 | 前帧影子与屏幕真实内容严格一致 | 驱动自持 `s_port_prev` 每次刷新后同步；0x10 差分基准失真即花屏 |
+| 3 | 单段直接差分：新帧一次写入（同 pass 允许混合方向翻转） | 黑→白单刷即净已真机验证，混合差分旧顾虑仅窗口弱波形下成立 |
+| 4 | 波形耗时按次计费：387ms/pass，与面积/内容无关 | 实测 diff 1190~4439px 恒 387ms；逐行/拆区/提频均无效，提速唯一杠杆是减少刷新次数 |
+| 5 | 电源终态 0x02 Power Off，不 Deep Sleep | 深睡是窗口时代补偿（+400ms），已移除 |
+| 6 | 低频保养：连续 N 次局刷后例行真全刷（黑白闪烁属正常） | 学习页 N=8（`refresh_gfx_before_partial()`）；待机页 N=12（自动轮换 ≈1 小时一次） |
+| 7 | 大面积变化分流全刷 | 待机页：引文带差分 > 带面积 25% 直接全刷 |
+| 8 | 遗留窗口直通 API 已删（refresh_submit / epd_partial_refresh / Rect，2026-08-20） | 走 drawImagePart 窗口路径且不维护 s_port_prev，误用即违反规则 2 导致花屏；后续新增局刷一律走 epd_gfx_flush_window* |
+
+**回退阶梯**（再现残影时逐级退，各级真机耗时）：
+
+```
+单段直接差分 387ms（现行，真机验证无残影）
+  → 两段式单刷 774ms（先整带刷白再绘字，亦真机验证无残影）
+  → 两段式白段双刷 1161ms（窗口时代验证版）
+  → 真全刷 1796ms
 ```
 
 ### 无词库待机页（《传习录》引文独占）
@@ -141,15 +201,15 @@ GFX 局刷路径 (epd_gfx_flush_window): 先调 refresh_gfx_before_partial()
               ——王阳明《传习录》  ← 出处 [192,216)：右下角右对齐（静态）
 ```
 
-**《传习录》引文（中文子集点阵，~11.7KB flash）：**
+**《传习录》引文（点阵字库渲染；字库 P3 已升级三级 3892 字，见上文）**：
 
 - 24 条经典选句每 5 分钟轮换一条（知行合一、四句教、岩中花树等），一轮 2 小时
-- 引文与字形由 [`tools/gen_cjk_font.swift`](tools/gen_cjk_font.swift) 从
-  [`tools/chuanxilu_quotes.txt`](tools/chuanxilu_quotes.txt) 生成
-  （macOS CoreText 渲染 Kaiti SC Bold 22pt -> 24x24 1bpp，163 字形，
-  含出处串字符；两遍法实测墨迹盒自适应：Pass1 大画布逐字实测基线上/下
-  与左右墨迹极值，Pass2 据此居中定基线，装不下自动缩字号；
-  验收硬指标：全部字形 72 字节完整 + 四边 edge-touch=0），
+- 引文与字形由 [`tools/gen_cjk_font.swift`](tools/gen_cjk_font.swift) 生成
+  （P3 重写：macOS CoreText 渲染，字体 Kaiti SC 优先（Bold 变体，
+  不覆盖时回退 Songti SC/Heiti 等首个全字符集家族），三级 16/20/24px，字符集=
+  GB2312 一级 ∪ 全角标点 ∪ ASCII ∪ 引文 = 3892 字，点阵 bin 646KB 经
+  board_build.embed_files 嵌入；两遍法实测墨迹盒自适应：Pass1 测极值
+  Pass2 居中，验收硬指标：全部字形完整 + 四边 edge-touch=0），
   重生成：`cd InkWord_Firmware && swift tools/gen_cjk_font.swift`
 - 排版约束在生成侧校验：每行 ≤8 字（含标点）、每条 ≤5 行、行首无标点
 
@@ -170,13 +230,19 @@ GFX 局刷路径 (epd_gfx_flush_window): 先调 refresh_gfx_before_partial()
 | 轮询 | 后台任务每 ~30 分钟自动拉取；短按中立即拉取（阻塞 ≤10s） |
 | 缓存 | NVS 持久化（3 小时内有效），重启即有画面 |
 
-**刷新策略（2026-08-18 用户定稿：每 5 分钟轮换，一律全局刷新）：**
+**刷新策略（引文轮换按上文「局部刷新方案（2026-08-20 定稿）」实施）：**
 
-- 引文下标 = epoch / `STANDBY_QUOTE_INTERVAL_S`（默认 300s，可用
-  `-DSTANDBY_QUOTE_INTERVAL_S=600` 等覆盖）% 24，无状态派生，
-  重启/校时自然对齐同一窗口；变化即整页全局刷新（一天 288 次）
-- 全刷走 GxEPD2 `display(false)` 全刷模式（写 previous 缓冲，
-  自带残影清理）；局刷路径真机实测显示异常且有残影，已弃用
+- 引文下标 = (epoch / `STANDBY_QUOTE_INTERVAL_S`（默认 300s，可用
+  `-DSTANDBY_QUOTE_INTERVAL_S=600` 等覆盖）+ SET 手动偏移) % 24，
+  无状态派生，重启/校时自然对齐同一窗口
+- 轮换走单段直接差分局刷（方案与规则见上文定稿节）：画布绘完整
+  新帧（旧字位白 + 新字位黑）后一次局刷，波形 387ms、切换 ≈0.5s，
+  真机验证无残影
+- 智能分流：读回新帧与屏幕影子逐像素差分，变化像素 > 带面积 25%
+  （`STANDBY_PARTIAL_MAX_DIFF_PX` 可覆盖）→ 全刷；否则局刷引文带
+  [112,8,192x176)
+- 低频保养 `STANDBY_PARTIAL_MAX_N=12`：连续 12 次局刷例行真全刷
+- 首绘/校时跳变/配网与 LAN 页退出恢复均走全刷重建基准
 - 清屏采用黑白交替深清（`epd_clear_screen`）：先全黑全刷再回白，
   洗掉长时间驻留的陈年黑迹（仅白帧全刷翻转不彻底会留浅影）
 - 长按上手动清残影（黑白交替深清 + 整页重绘，与学习页同语义）

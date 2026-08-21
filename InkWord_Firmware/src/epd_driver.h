@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 /* 双坐标体系：
- *   - 面板物理/底层直通：竖屏 240x416（epd_full_refresh / epd_partial_refresh）
+ *   - 面板物理/底层直通：竖屏 240x416（epd_full_refresh / epd_clear_screen）
  *   - GFX 显示层：横屏 416x240，rotation=1（epd_gfx_* 系列，UI 主路径） */
 #define EPD_WIDTH       (240)
 #define EPD_HEIGHT      (416)
@@ -59,16 +59,6 @@ void epd_clear_screen(void);
  *             NULL 时等同于 epd_clear_screen()。
  */
 void epd_full_refresh(const uint8_t *data);
-
-/**
- * @brief 局部刷新（局刷模式，双缓冲对比，竖屏 GFX 坐标）。
- * @param x,y,w,h 目标矩形（竖屏显示坐标，同 epd_gfx_*，x/w 需 8 像素对齐）。
- * @param data    该区域 1bpp 位图，行宽 = ceil(w/8) 字节，
- *                bit=1 为白 0x00=黑（与 demo/COG SRAM 语义一致）。
- *
- * 内部自动维护上一帧缓冲，无需外部传入旧画面。
- */
-void epd_partial_refresh(int x, int y, int w, int h, const uint8_t *data);
 
 /**
  * @brief 深度休眠（0x07/0xA5）。下次刷新前 GxEPD2 自动硬件复位并
@@ -112,12 +102,20 @@ void epd_gfx_draw_text(int x, int y, const char *text, uint16_t color, int font_
 /** @brief 测量文本宽高 */
 void epd_gfx_text_bounds(const char *text, int font_size, int *out_w, int *out_h);
 /** @brief 绘制单色位图（Adafruit GFX 行主序 MSB-first，bit=1 画 color，0 保持背景；
- *         即 image2cpp "horizontal, MSB first" 导出格式，尺寸建议 8 对齐 */
+ *         即 image2cpp "horizontal, MSB first" 导出格式，尺寸建议 8 对齐） */
 void epd_gfx_draw_bitmap(int x, int y, int w, int h, const uint8_t *bits, uint16_t color);
+/** @brief 读回画布窗口位图（与 draw_bitmap 同格式：行主序 MSB-first，
+ *         bit=1=画布置位=黑），供上层新旧帧差分统计（智能局刷/全刷分流）；
+ *         out 容量需 >= ceil(w/8)*h 字节 */
+void epd_gfx_read_window(int x, int y, int w, int h, uint8_t *out);
 /** @brief 将帧缓冲推送到屏幕（全刷） */
 void epd_gfx_flush(void);
-/** @brief 将指定区域推送到屏幕（局刷） */
+/** @brief 将指定区域推送到屏幕（局刷，默认双刷 2x0x12 减浅影） */
 void epd_gfx_flush_window(int x, int y, int w, int h);
+/** @brief 同上，可指定同会话 0x12 次数（passes=1 单刷最快，2 双刷减浅影）。
+ *         无窗口双 RAM 波形强，两段式刷新两个方向均单刷（passes=1）
+ *         即可洗净（2026-08-20 真机验证）；双刷留作浅影回退手段 */
+void epd_gfx_flush_window_passes(int x, int y, int w, int h, int passes);
 
 #ifdef __cplusplus
 }

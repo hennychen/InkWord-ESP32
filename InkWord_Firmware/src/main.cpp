@@ -9,11 +9,16 @@
  *   上 短按=上一条 / 长按=清残影全刷；
  *   下 短按=下一条 / 长按=切换学习模式；
  *   中 短按=发音 / 长按=进入 Wi-Fi 配置；
- *   左 短按预留（释义滚动扩展）/ 长按=进入 AP 直连/配网门户
+ *   左 短按=自评「忘记」Q1（SM-2 质量分 1：连错+1，>0 入错词本）/ 长按=进入 AP 直连/配网门户
  *        （手机连 InkWord-Setup 热点直传，绕开路由器隔离；任意键退出）；
- *   右 短按预留 / 长按=进入 LAN 接收页（同网浏览器直传，任意键退出）；
- *   SET 短按=遮蔽/揭晓释义（闪卡自测；待机页=轮换下一条引文）/ 长按预留 SRS「记得」；
- *   RST 短按=回到当前模式第一条 / 长按预留 SRS「忘了」。
+ *   右 短按=自评「简单」Q5（SM-2 质量分 5：连错清零，错词本中移出）/ 长按=进入 LAN 接收页（同网浏览器直传，任意键退出）；
+ *   SET 短按=遮蔽/揭晓释义（闪卡自测；待机页=轮换下一条引文）/ 长按=收藏/取消当前词（左栏 * 标记）；
+ *   RST 短按=回到当前模式第一条 / 长按=错词本进出（连错>0 过滤视图，答对清空自动退出）。
+ *
+ * 阅读模式（P3，长按下循环切换进入）：上/下=翻页，左/右=字号缩放
+ * （16/20/24px 三级循环，按当前页首字符就近保持阅读位置），RST=回
+ * 第一页；中/SET 短按与词相关长按（收藏）不适用；进度自动保存
+ * （NVS rd_*）。
  *
  * 无词库待机页（词库为空时默认显示，见 standby_page.c）：
  *   时钟/日历/天气整页；待机态长按语义与学习页一致（配网/清残影/门户/LAN），
@@ -26,10 +31,13 @@
 #include "epd_driver.h"
 #include "audio_player.h"
 #include "button_handler.h"
+#include "haptic.h"
 #include "storage_manager.h"
 #include "refresh_scheduler.h"
 #include "word_parser.h"
+#include "cjk_text.h"     /* 词卡释义/tag 中文点阵混排（P3 字库资产） */
 #include "srs_engine.h"
+#include "learning_state.h"
 #include "study_mode_machine.h"
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
@@ -37,12 +45,16 @@
 #include "ota_manager.h"
 #include "lan_display_server.h"
 #include "standby_page.h"
+#include "reader_engine.h"   /* 阅读模式（P3）：书分页/字号/进度 */
 #include "ble_provision.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"    /* 词池/阅读器书缓冲：PSRAM 分配 */
+#include "esp_mac.h"          /* esp_read_mac：首次注册的设备身份 */
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -51,7 +63,20 @@
 
 static const char *TAG = "MAIN";
 #define FW_VERSION  "1.0.0"
-#define MAX_WORDS   64  /* 暂时减少，避免 DRAM 溢出 */
+/* 词库容量（PRD §7.2 容量红线 2026-08-20 解除）：词池迁 PSRAM 后
+ * 上限 4000 词（词库扩展四字段后 sizeof(WordEntry)≈1096B，
+ * 4000 词 ≈ 4.2MB；与阅读器单书上限 4MB 并发最坏 ≈ 8.2MB——仅
+ * “满词库+4MB 大书”同时存在时才触顶，实际书多在 1-2MB 且词池
+ * 分配失败时逐半降级兼容）。实际分配不足时 setup 内逐级降级，
+ * 见 s_word_pool 分配处 */
+#define MAX_WORDS   4000
+
+/* 后端 API Base URL（P2 上报闭环）：部署时 -D INKWORD_API_BASE=... 覆盖，
+ * 或经 NVS "inkword"/"api_url" 覆盖（配网 UI 扩展后可写）；
+ * http: 前缀自动走明文 TCP（本地开发后端，见 sync_client fill_cfg） */
+#ifndef INKWORD_API_BASE
+#define INKWORD_API_BASE "https://api.inkword.example.com"
+#endif
 
 /* 演示词库开关：inkword-s3-demo 环境置 1；无 SD 词库时加载内嵌 5 词，
  * 用于学习页按键（翻词/SET 遮蔽/RST 回首）的整机验证；
@@ -68,83 +93,50 @@ static const char *TAG = "MAIN";
 #define INKWORD_BLE_PROVISION 0
 #endif
 
-static WordEntry s_word_pool[MAX_WORDS];
+/* 词池：PSRAM 堆分配（原 DRAM 静态数组仅容 64 词；与 reader_engine
+ * 书缓冲同策略 MALLOC_CAP_SPIRAM，setup 内 storage_init 后分配） */
+static WordEntry *s_word_pool = NULL;
+static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORDS） */
 
 /* ============================================================
  * 单词卡片 UI 渲染 + 局部刷新策略 (Task F-16)
  *
- * 布局（GFX 横屏 416x240，rotation=1，FreeSans 基线 y 语义）：
+ * 布局（GFX 横屏 416x240，rotation=1；FreeSans 基线 y / 点阵顶左 y）：
  *   y[0,32)    状态栏：模式名（左）/ 序号（右）/ 分隔线
  *   左栏 x[16,248)  单词(24pt 超宽自动降级) + 音标(9pt) + 底部标签
- *   竖分隔线 x=248；右栏 x[264,400) 释义(12pt 自动断行 ≤6 行)
+ *                  （tag 含中文时走 16px 点阵，见 cjk_text）
+ *   竖分隔线 x=248；右栏 x[264,400) 释义(16px 点阵混排自动断行 ≤6 行，
+ *                  中文释义可渲染——真实词库释义为中文，FreeSans 仅 ASCII)
  *
- * 刷新策略：
- *   - 首帧 / 模式切换 / 清残影后：整屏重绘 + 全刷（epd_gfx_flush）
- *   - 同模式翻页：仅重绘内容区 + 局刷（epd_gfx_flush_window），
- *     状态栏不动；GxEPD2 自动维护 previous 缓冲，UC8253 局刷波形
- *     对像素对差分，只有变化的像素被翻转（无闪烁）
- *   - 残影管理：局刷次数达到阈值时先清屏全刷再整屏重绘
+ * 刷新策略（2026-08-20 无窗口方案定稿，见 README「局部刷新方案」）：
+ *   - 首帧 / 模式切换 / 保养：整屏重绘 + 全刷（epd_gfx_flush）
+ *   - 同模式翻词/翻页：重绘内容区 + 局刷（epd_gfx_flush_window，
+ *     无窗口整屏双 RAM 差分：整屏写 0x10 旧帧 + 0x13 新帧，COG
+ *     全屏差分只翻转变化像素，无闪烁；状态栏不重绘自动跳过）
+ *   - 残影管理：局刷计数达阈值（学习/阅读页 8 次）时升级为整屏重绘
+ *     + 真全刷低频保养（局刷自身无残影，全刷仅防累积）
  * ============================================================ */
 
-#define UI_STATUS_H     32    /* 状态栏高度（rotation=1 下局刷窗口 y/h 需 8 对齐） */
+#define UI_STATUS_H     32    /* 状态栏高度（内容区顶 y；无窗口差分下不再要求 8 对齐） */
 #define UI_MARGIN_X     16    /* 左右留白 */
 #define UI_STATUS_BASE  22    /* 状态栏文字基线 y */
 #define UI_WORD_BASE    100   /* 单词基线 y（左栏，24pt 超宽自动降级） */
 #define UI_PHON_BASE    132   /* 音标基线 y（左栏，9pt） */
 #define UI_VSEP_X       248   /* 左右分栏竖线 x */
 #define UI_MEAN_X       264   /* 释义起始 x（右栏） */
-#define UI_MEAN_BASE    62    /* 释义首行基线 y（右栏，12pt） */
+#define UI_MEAN_TOP     48    /* 释义首行顶 y（右栏，16px 点阵顶左语义） */
 #define UI_MEAN_LH      26    /* 释义行距 */
-#define UI_MEAN_LINES   6     /* 释义最大行数 */
+#define UI_MEAN_LINES   6     /* 释义最大行数（超出截断） */
 #define UI_MEAN_MAX_W   (EPD_GFX_WIDTH - UI_MEAN_X - UI_MARGIN_X) /* 右栏文本宽 */
 #define UI_WORD_MAX_W   (UI_VSEP_X - 2 * UI_MARGIN_X)             /* 左栏文本宽 */
-#define UI_FOOT_BASE    224   /* 左栏底部标签基线 y（9pt） */
+#define UI_FOOT_BASE    224   /* 左栏底部标签基线 y（9pt，纯 ASCII tag） */
+#define UI_FOOT_TOP     206   /* 中文 tag 16px 点阵顶 y（UI_FOOT_BASE-16-2） */
+#define UI_MEAN_HINT_BASE 62  /* 遮蔽态 FreeSans 提示基线（沿用旧释义基线） */
+#define UI_ROOT_TOP     156   /* 词根行顶 y（左栏，音标下空白区；≤2 行） */
+#define UI_ROOT_LINES   2     /* 词根行数上限（超出截断） */
+#define UI_ROOT_LH      20    /* 词根行距（16px 字 + 4 间距） */
 
 static study_mode_t s_last_mode = MODE_COUNT; /* 无效值：首帧强制全刷 */
-static char s_mean_lines[UI_MEAN_LINES][128]; /* 释义断行缓冲 */
-
-/* 简易断行：按空格断词累积，超宽换行；返回实际行数（超出行丢弃） */
-static int ui_wrap_meaning(const char *s, int font_size, int max_w)
-{
-    int n = 0, len = 0;
-    if (!s) return 0;
-    s_mean_lines[0][0] = '\0';
-
-    while (*s && n < UI_MEAN_LINES) {
-        while (*s == ' ' || *s == '\t') s++; /* 跳过前导空白 */
-        if (!*s) break;
-
-        const char *word = s; /* 取一个词 */
-        while (*s && *s != ' ' && *s != '\t') s++;
-        int wlen = (int)(s - word);
-
-        /* 拼接尝试：当前行 + 空格 + 新词 */
-        char trial[192];
-        int tl = len;
-        if (tl + 1 + wlen >= (int)sizeof(trial) - 1) break;
-        memcpy(trial, s_mean_lines[n], tl);
-        if (tl > 0) trial[tl++] = ' ';
-        memcpy(trial + tl, word, wlen);
-        tl += wlen;
-        trial[tl] = '\0';
-
-        int tw, th;
-        epd_gfx_text_bounds(trial, font_size, &tw, &th);
-        if (tw <= max_w || len == 0) {
-            memcpy(s_mean_lines[n], trial, tl + 1);
-            len = tl;
-            if (tw > max_w) break; /* 单词自身超宽，独占一行后截断 */
-        } else {
-            n++;
-            if (n >= UI_MEAN_LINES) break;
-            if (wlen >= (int)sizeof(s_mean_lines[0]) - 1) wlen = sizeof(s_mean_lines[0]) - 1;
-            memcpy(s_mean_lines[n], word, wlen);
-            s_mean_lines[n][wlen] = '\0';
-            len = wlen;
-        }
-    }
-    return n + 1;
-}
 
 /* 字号自适应：从 start_size 逐级降到能放进 max_w 的字号 */
 static int ui_fit_font(const char *text, int start_size, int max_w)
@@ -157,8 +149,8 @@ static int ui_fit_font(const char *text, int start_size, int max_w)
     return 1;
 }
 
-/* 绘制状态栏：模式名（左）+ 序号（右）+ 分隔线 */
-static void ui_draw_status(study_mode_t mode, int index)
+/* 绘制状态栏：模式名（左）+ 序号（右，错词本=序号/错词数）+ 分隔线 */
+static void ui_draw_status(study_mode_t mode)
 {
     epd_gfx_fill_rect(0, 0, EPD_GFX_WIDTH, UI_STATUS_H, EPD_GFX_WHITE);
 
@@ -166,9 +158,10 @@ static void ui_draw_status(study_mode_t mode, int index)
                       study_mode_name(mode), EPD_GFX_BLACK, 1);
 
     char buf[24];
-    int total = word_parser_get_count();
+    int total = study_mode_seq_total();
     int tw, th;
-    snprintf(buf, sizeof(buf), "%d/%d", total ? index + 1 : 0, total);
+    snprintf(buf, sizeof(buf), "%d/%d",
+             total ? study_mode_seq_pos() + 1 : 0, total);
     epd_gfx_text_bounds(buf, 1, &tw, &th);
     epd_gfx_draw_text(EPD_GFX_WIDTH - UI_MARGIN_X - tw, UI_STATUS_BASE,
                       buf, EPD_GFX_BLACK, 1);
@@ -190,23 +183,58 @@ static void ui_draw_content(const WordEntry *w)
         epd_gfx_draw_text(UI_MARGIN_X, UI_PHON_BASE,
                           w->phonetic, EPD_GFX_BLACK, 1);
 
+    /* 收藏标记（P1）：已收藏词在左栏音标行右侧显示 *（SET 长按切换） */
+    if (learning_state_is_collected(study_mode_current_word_index())) {
+        int sw, sh;
+        epd_gfx_text_bounds("*", 2, &sw, &sh);
+        epd_gfx_draw_text(UI_VSEP_X - UI_MARGIN_X - sw, UI_PHON_BASE,
+                          "*", EPD_GFX_BLACK, 2);
+    }
+
     epd_gfx_draw_vline(UI_VSEP_X, UI_STATUS_H + 16,
                        EPD_GFX_HEIGHT - UI_STATUS_H - 32, EPD_GFX_BLACK);
 
-    int lines;
+    /* 释义：16px 点阵混排（中文按字断/ASCII 按词断，超宽自动换行，
+     * 超 6 行截断）；遮蔽态仍走 FreeSans 英文提示 */
     if (study_mode_is_revealed()) {
-        lines = ui_wrap_meaning(w->meaning, 2, UI_MEAN_MAX_W);
-        for (int i = 0; i < lines; i++)
-            epd_gfx_draw_text(UI_MEAN_X, UI_MEAN_BASE + i * UI_MEAN_LH,
-                              s_mean_lines[i], EPD_GFX_BLACK, 2);
+        cjk_text_draw_wrap(UI_MEAN_X, UI_MEAN_TOP, UI_MEAN_MAX_W,
+                           /*level*/0, UI_MEAN_LH, UI_MEAN_LINES,
+                           w->meaning, EPD_GFX_BLACK);
     } else {
         /* 遮蔽自测态：右栏仅提示，不画释义（SET 揭晓） */
-        epd_gfx_draw_text(UI_MEAN_X, UI_MEAN_BASE,
+        epd_gfx_draw_text(UI_MEAN_X, UI_MEAN_HINT_BASE,
                           "[SET] to reveal", EPD_GFX_BLACK, 1);
     }
 
-    if (w->tag[0])
-        epd_gfx_draw_text(UI_MARGIN_X, UI_FOOT_BASE, w->tag, EPD_GFX_BLACK, 1);
+    /* 词根行（左栏音标下空白区）：root 非空才画，≤2 行截断；
+     * 词根本文自带 “=” 语义不加前缀（与音标裸文本一致） */
+    if (w->root[0])
+        cjk_text_draw_wrap(UI_MARGIN_X, UI_ROOT_TOP, UI_WORD_MAX_W,
+                           /*level*/0, UI_ROOT_LH, UI_ROOT_LINES,
+                           w->root, EPD_GFX_BLACK);
+
+    /* 底部标签行：tag·grade·source 非空项以间隔号拼接（间隔号在
+     * 字库全角标点集内）；含中文走 16px 点阵单行截断，纯 ASCII
+     * 且无扩展字段时保持 FreeSans 9pt */
+    char foot[160];
+    int  fl = 0;
+    const char *parts[3] = { w->tag, w->grade, w->source };
+    for (int i = 0; i < 3 && fl < (int)sizeof(foot) - 2; i++) {
+        if (!parts[i][0]) continue;
+        if (fl > 0) { foot[fl++] = '\xC2'; foot[fl++] = '\xB7'; } /* U+00B7 间隔号 */
+        /* 逐字节拼入，超长截断防溢出 */
+        for (const char *q = parts[i]; *q && fl < (int)sizeof(foot) - 1; q++)
+            foot[fl++] = *q;
+    }
+    foot[fl] = '\0';
+    if (foot[0]) {
+        if (cjk_text_has_wide(foot))
+            cjk_text_draw_wrap(UI_MARGIN_X, UI_FOOT_TOP, UI_WORD_MAX_W,
+                               /*level*/0, 0, 1, foot, EPD_GFX_BLACK);
+        else
+            epd_gfx_draw_text(UI_MARGIN_X, UI_FOOT_BASE, foot,
+                              EPD_GFX_BLACK, 1);
+    }
 }
 
 /* LAN 直传外部内容整帧直刷后调用：GFX previous 缓冲已失配，
@@ -221,6 +249,34 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
 {
     if (wifi_config_ui_is_active()) return; /* 配置页期间不绘制学习页 */
     if (lan_server_is_active()) return;     /* LAN 接收页期间不绘制学习页 */
+
+    /* 阅读模式（P3）：index=页码，渲染走 reader_engine，词库空判断
+     * 不适用；实时页码由内容区页脚承担（局刷不重画状态栏） */
+    if (mode == MODE_READER) {
+        if (!reader_ready()) {
+            epd_gfx_fill_screen(EPD_GFX_WHITE);
+            reader_render_placeholder();
+            epd_gfx_flush();            /* 占位页低频，一律整屏全刷 */
+            s_last_mode = MODE_COUNT;
+            return;
+        }
+        bool need_full = (mode != s_last_mode);
+        if (!need_full && refresh_gfx_before_partial()) need_full = true;
+
+        if (need_full) ui_draw_status(mode);
+        epd_gfx_fill_rect(0, UI_STATUS_H, EPD_GFX_WIDTH,
+                          EPD_GFX_HEIGHT - UI_STATUS_H, EPD_GFX_WHITE);
+        reader_render_page(index);
+
+        if (need_full)
+            epd_gfx_flush();            /* 整屏全刷 */
+        else
+            /* 仅局刷内容区（无窗口整屏双 RAM 差分，窗口参数仅做合法性检查） */
+            epd_gfx_flush_window(0, UI_STATUS_H,
+                                 EPD_GFX_WIDTH, EPD_GFX_HEIGHT - UI_STATUS_H);
+        s_last_mode = mode;
+        return;
+    }
 
     int total = word_parser_get_count();
     const WordEntry *w = total ? word_parser_get(index % total) : NULL;
@@ -237,12 +293,12 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
     if (!need_full && refresh_gfx_before_partial()) need_full = true;
 
     if (need_full) {
-        ui_draw_status(mode, index);
+        ui_draw_status(mode);
         ui_draw_content(w);
         epd_gfx_flush(); /* 整屏全刷 */
     } else {
         ui_draw_content(w);
-        /* 仅局刷内容区（rotation=1 要求 y/h 8 对齐：y=32, h=208） */
+        /* 仅局刷内容区（无窗口整屏双 RAM 差分，窗口参数仅做合法性检查） */
         epd_gfx_flush_window(0, UI_STATUS_H,
                              EPD_GFX_WIDTH, EPD_GFX_HEIGHT - UI_STATUS_H);
     }
@@ -255,8 +311,12 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
  * （LAN/配网退出与模式切换后的恢复路径均经此路由） */
 static void ui_render_current(void)
 {
-    if (word_parser_get_count() > 0)
-        ui_render_word(study_mode_current(), 0);
+    study_mode_t m = study_mode_current();
+    if (m == MODE_READER)
+        /* 阅读模式恢复当前页（无书显示占位页），不回待机页 */
+        ui_render_word(m, study_mode_seq_pos());
+    else if (word_parser_get_count() > 0)
+        ui_render_word(m, 0);
     else
         standby_render_full();
 }
@@ -299,6 +359,7 @@ static void on_button(nav_key_t id, button_event_t event)
             return;
         case NAV_DOWN:
             /* 切换学习模式并重绘（ui_render_word 检测到模式变化自动全刷） */
+            haptic_event(HAPTIC_MODE);   /* 模式切换 50ms（PRD 5.4） */
             study_mode_switch_next();
             ui_render_current();
             return;
@@ -309,19 +370,60 @@ static void on_button(nav_key_t id, button_event_t event)
             /* 幂等启动服务器并显示访问 URL */
             lan_server_enter_receive_page();
             return;
-        /* SET/RST 长按预留 SRS「记得/忘了」评分（SM-2 闭环接入学习
-         * 记录上报后启用，见 srs_engine.h 质量分）；2026-08-18 残影
-         * 定位期间的临时 A/B 切换工具已移除（结论：partial window 波形
-         * 面板级缺陷，采用局刷+低阈值真全刷清洗策略，见 epd_driver） */
+        case NAV_SET:
+            /* 收藏/取消当前词（P1）：局部重绘内容区刷新 * 标记；
+             * 阅读模式无“当前词”概念，不响应 */
+            if (study_mode_current() == MODE_READER) return;
+            haptic_event(HAPTIC_REVIEW); /* 确认型操作归自评档 30ms（PRD 5.4 未单列） */
+            learning_state_toggle_collect(study_mode_current_word_index());
+            ui_render_word(study_mode_current(),
+                           study_mode_current_word_index());
+            return;
+        case NAV_RST:
+            /* 错词本进出（P1）：无错词 100ms 长震边界反馈（PRD 5.4） */
+            if (study_mode_current() == MODE_WRONGBOOK) {
+                study_mode_exit_wrongbook();
+            } else if (!study_mode_enter_wrongbook()) {
+                haptic_event(HAPTIC_ERROR);
+                return;
+            }
+            haptic_event(HAPTIC_MODE);
+            ui_render_current(); /* 模式变化 -> 全刷重绘第一条 */
+            return;
         default:
             return;
         }
     }
 
     /* 短按：上/下翻词，中=发音，SET=遮蔽/揭晓释义，RST=回第一条；
-     * 左/右预留（释义滚动扩展）；SET/RST 长按预留 SRS 记得/忘了评分
-     * （SM-2 闭环接入学习记录上报后启用，见 srs_engine.h 质量分） */
+     * 左=自评「忘记」Q1，右=自评「简单」Q5（SM-2 评分入 learning_state，
+     * 错词本内答对自动移出，序列清空自动退回闪卡） */
     if (event != BUTTON_EVENT_SHORT_PRESS) return;
+
+    /* 阅读模式短按路由（P3）：上/下=翻页，左/右=字号缩放，
+     * RST=回第一页（“回到当前模式第一条”全局语义）；
+     * 词相关动作（发音/自评/遮蔽）不适用，中/SET 忽略 */
+    if (study_mode_current() == MODE_READER) {
+        switch (id) {
+        case NAV_UP:
+            study_mode_handle_action(0);      /* 上一页 */
+            return;
+        case NAV_DOWN:
+            study_mode_handle_action(1);      /* 下一页 */
+            return;
+        case NAV_LEFT:
+            study_mode_reader_font_step(-1);  /* 字号缩小（震动由去抖层 20ms 覆盖） */
+            return;
+        case NAV_RIGHT:
+            study_mode_reader_font_step(+1);  /* 字号放大 */
+            return;
+        case NAV_RST:
+            study_mode_reset_cursor();        /* 回第一页 */
+            return;
+        default:
+            return;
+        }
+    }
 
     switch (id) {
     case NAV_UP:
@@ -339,6 +441,20 @@ static void on_button(nav_key_t id, button_event_t event)
     case NAV_RST:
         study_mode_reset_cursor();     /* 回到当前模式第一条 */
         return;
+    case NAV_LEFT:
+        learning_state_apply_quality(study_mode_current_word_index(), 1);
+        haptic_event(HAPTIC_REVIEW);   /* 自评提交 30ms（PRD 5.4） */
+        if (study_mode_after_quality(1))
+            ui_render_word(study_mode_current(),
+                           study_mode_current_word_index());
+        return;
+    case NAV_RIGHT:
+        learning_state_apply_quality(study_mode_current_word_index(), 5);
+        haptic_event(HAPTIC_REVIEW);   /* 自评提交 30ms（PRD 5.4） */
+        if (study_mode_after_quality(5))
+            ui_render_word(study_mode_current(),
+                           study_mode_current_word_index());
+        return;
     default:
         return;
     }
@@ -347,7 +463,87 @@ static void on_button(nav_key_t id, button_event_t event)
 /* 后台心跳 + OTA 检查任务。
  * 启动阶段：每 2s 轮询，联网即立即启动 LAN 直传服务（不设上限：
  *           即使路由器后启动/断电恢复，联网后也能尽快拉起服务）；
- * 之后转为 10 分钟周期：心跳 + OTA 检查（含服务兜底重启，幂等） */
+ * 之后转为 10 分钟周期：上报队列 flush + 首次注册 + 心跳 + OTA
+ * 检查（含服务兜底重启，幂等） */
+/* ============================================================
+ * 云端同步凭据与上报 flush (P2)
+ * 凭据链：NVS "inkword"/{api_url, dev_key} → sync_set_*；无 key 时
+ * 联网后按 MAC 幂等注册（后端返回既有 ApiKey）并回写 NVS。
+ * ============================================================ */
+
+static void sync_credentials_load(void)
+{
+    char url[128], key[64];
+    nvs_handle_t h;
+    if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) {
+        sync_set_base_url(INKWORD_API_BASE);
+        return;
+    }
+    size_t len = sizeof(url);
+    if (nvs_get_str(h, "api_url", url, &len) == ESP_OK)
+        sync_set_base_url(url);
+    else
+        sync_set_base_url(INKWORD_API_BASE);
+    len = sizeof(key);
+    if (nvs_get_str(h, "dev_key", key, &len) == ESP_OK)
+        sync_set_device_key(key);
+    nvs_close(h);
+}
+
+static void sync_try_register(void)
+{
+    if (sync_has_device_key()) return;
+
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char mac_str[13];
+    snprintf(mac_str, sizeof(mac_str), "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    char key[64];
+    if (sync_register(mac_str, NULL, key, sizeof(key)) == 0) {
+        sync_set_device_key(key);
+        nvs_handle_t h;
+        if (nvs_open("inkword", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_str(h, "dev_key", key);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        LOG_I("device registered, key persisted");
+    } else {
+        LOG_W("register failed, retry next cycle");
+    }
+}
+
+/* 上报队列 flush：逐条发送（人手按键频次下 HTTP 开销可忽略；攒批优化
+ * 待设备规模上来后）。无 cloudId 的词（本地导入）直接丢弃；任一条
+ * 失败即停，队列保留待下周期重试（timestamp=0 由服务器落地时间代替） */
+static void sync_flush_pending(void)
+{
+    int guard = learning_state_event_count();
+    while (guard-- > 0) {
+        lr_event_t ev;
+        if (!learning_state_event_peek(0, &ev)) break;
+
+        const WordEntry *w = word_parser_get(ev.word_idx);
+        if (!w || !w->cloud_id[0]) {
+            learning_state_event_drop(1); /* 本地词：无云端身份，事件无价值 */
+            continue;
+        }
+
+        if (ev.quality >= 0) {
+            ProgressItem it = {};   /* 全零初始化（quality/word_id/timestamp） */
+            it.quality = (uint8_t)ev.quality;
+            it.timestamp = 0;
+            strncpy(it.word_id, w->cloud_id, sizeof(it.word_id) - 1);
+            if (sync_push_progress(&it, 1) != 0) return;
+        } else {
+            if (sync_push_collect(w->cloud_id, ev.collected) != 0) return;
+        }
+        learning_state_event_drop(1);
+    }
+}
+
 static void background_task(void *arg)
 {
     (void)arg;
@@ -363,6 +559,10 @@ static void background_task(void *arg)
         vTaskDelay(period);
         if (wifi_is_connected()) {
             lan_server_start(); /* 兜底：服务异常停止则重启（幂等） */
+
+            /* 云端闭环（P2）：首次注册（幂等）+ 评分/收藏上报 flush */
+            sync_try_register();
+            sync_flush_pending();
 
             int bat = 100; /* TODO: 读取 ADC 电量 */
             sync_heartbeat(bat, FW_VERSION);
@@ -418,15 +618,19 @@ void setup()
     epd_clear_screen();                 /* 显示启动白屏 */
 
     audio_init();
+    haptic_init();                   /* 触觉反馈（P2 震动）：先于按键扫描任务 */
     button_handler_init();
     button_register_callback(on_button);
 
-    /* 3. 刷新调度器：局刷阈值=3（本面板 partial window 波形驱动力不足，
-     * 局刷攒 3 次残影后用真全刷洗掉；嫌闪可升，嫌脏可降） */
-    refresh_scheduler_init(3);
+    /* 3. 刷新调度器：学习/阅读页局刷阈值=8（2026-08-20 无窗口方案定稿：
+     * 双 RAM 差分局刷自身无残影，全刷降为低频深度保养，N=8 平衡闪烁
+     * 频率；待机页走独立 _n 阈值 12，见 standby_page.c） */
+    refresh_scheduler_init(8);
 
-    /* 4. WiFi 联网（失败不阻塞主流程） */
+    /* 4. WiFi 联网（失败不阻塞主流程）；同步凭据（base URL / 设备 key）
+     *    从 NVS 恢复到 sync_client，首次注册留待联网后 background_task */
     wifi_manager_init();
+    sync_credentials_load();
 
     /* 4.5 Wi-Fi 配置：无凭据时自动开启 AP 配网门户
      *     （手机连 InkWord-Setup 热点后自动弹出配置页）；
@@ -447,29 +651,48 @@ void setup()
     /* 5. 标记当前固件有效，防止 OTA 回滚 */
     ota_mark_valid();
 
-    /* 6. 加载词库 */
+    /* 6. 加载词库（词池 PSRAM 化，2026-08-20）：按 MAX_WORDS 逐半降级
+     *    分配，与阅读器书缓冲共享 8MB Octal；全部分配失败（极小概率）
+     *    置空容量，词库空走待机页 */
+    for (int cap = MAX_WORDS; cap > 0 && !s_word_pool; cap /= 2) {
+        s_word_pool = (WordEntry *)heap_caps_malloc(
+            (size_t)cap * sizeof(WordEntry), MALLOC_CAP_SPIRAM);
+        if (s_word_pool) s_word_cap = cap;
+        else LOG_W("word pool alloc %d entries failed, halving", cap);
+    }
+    LOG_I("word pool: %d entries x %uB = %uKB PSRAM",
+          s_word_cap, (unsigned)sizeof(WordEntry),
+          (unsigned)((size_t)s_word_cap * sizeof(WordEntry) / 1024));
+
     const char *word_file = SD_MOUNT_POINT "/words.json";
-    if (storage_file_exists(word_file)) {
-        int n = word_parser_load(word_file, s_word_pool, MAX_WORDS);
+    if (s_word_pool && storage_file_exists(word_file)) {
+        int n = word_parser_load(word_file, s_word_pool, s_word_cap);
         LOG_I("word DB loaded: %d entries", n);
     } else {
         LOG_W("words.json not found on SD card");
     }
 #if INKWORD_DEMO_WORDS
     /* 测试构建：无 SD 词库时内嵌演示词，验证学习页按键 */
-    if (word_parser_get_count() == 0) {
-        word_parser_load_demo(s_word_pool, MAX_WORDS);
+    if (s_word_pool && word_parser_get_count() == 0) {
+        word_parser_load_demo(s_word_pool, s_word_cap);
     }
 #endif
+
+    /* 6.5 本地学习状态（P1 错词本/收藏）：按词库规模锁定并从 NVS 恢复；
+     *     必须先于 study_mode_init/首次渲染（错词序列与收藏标记依赖） */
+    learning_state_init(word_parser_get_count());
 
     /* 7. 初始化待机页（恢复 NVS 天气缓存），进入上次学习模式；
      *    无词库时渲染待机页（时钟/日历/天气） */
     standby_init();
+    /* 7.5 阅读引擎（P3）：找书整本入 PSRAM + 建页表；必须先于
+     *     study_mode_init（READER 模式恢复阅读页进度/页数依赖页表） */
+    reader_engine_init();
     study_mode_init();
-    if (word_parser_get_count() > 0) {
+    if (word_parser_get_count() > 0 && study_mode_current() != MODE_READER) {
         study_mode_handle_action(1);    /* 渲染第一条 */
     } else {
-        standby_render_full();
+        ui_render_current();            /* READER 书页/占位页 或 待机页 */
     }
 
     /* 8. 启动后台任务（心跳/OTA） */
@@ -479,9 +702,10 @@ void setup()
 }
 
 /* Arduino loop - 主循环（事件驱动；待机页分钟级心跳由 standby_tick 承载，
- * 非待机状态时零开销返回） */
+ * 非待机状态时零开销返回；学习状态脏标记静默 5s 后在非按键路径落盘） */
 void loop()
 {
     standby_tick();
+    learning_state_maybe_save();  /* LR02 sparse 延迟保存（无脏零开销） */
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
