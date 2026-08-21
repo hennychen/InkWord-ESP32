@@ -3,7 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import {
-  DashboardStats, SrsDistribution, DailyActiveData, ApiResponse,
+  DashboardStats, SrsDistribution, DailyActiveData, WrongTopResp, ApiResponse,
 } from '../models/models';
 
 /**
@@ -29,6 +29,13 @@ export class DashboardApiService {
   getDailyActive(days = 30): Observable<ApiResponse<DailyActiveData[]>> {
     return this.http.get<ApiResponse<DailyActiveData[]>>(
       `${this.base}/daily-active`, { params: { days } },
+    );
+  }
+
+  /** 错词排行（P1：连错 > 0 聚合 Top N，跨学习者求和） */
+  getWrongTop(top = 20): Observable<ApiResponse<WrongTopResp>> {
+    return this.http.get<ApiResponse<WrongTopResp>>(
+      `${this.base}/wrong-top`, { params: { top } },
     );
   }
 }

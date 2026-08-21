@@ -1,6 +1,10 @@
 <div class="page-header">
   <h2>词库管理</h2>
   <div class="header-actions">
+    <button mat-raised-button (click)="exportLibrary()" matTooltip="导出 words.json（含 cloudId），拷入 SD 卡后设备可上报评分/收藏">
+      <mat-icon>download</mat-icon>
+      导出设备词库
+    </button>
     <button mat-raised-button color="primary" (click)="openImport()">
       <mat-icon>upload_file</mat-icon>
       批量导入
@@ -59,21 +63,15 @@
     </ng-container>
 
     <!-- 释义列 -->
-    <ng-container matColumnDef="definition">
+    <ng-container matColumnDef="meaning">
       <th mat-header-cell *matHeaderCellDef>释义</th>
-      <td mat-cell *matCellDef="let word" class="definition-cell">{{ word.definition }}</td>
+      <td mat-cell *matCellDef="let word" class="definition-cell">{{ word.meaning }}</td>
     </ng-container>
 
-    <!-- 标签列 -->
-    <ng-container matColumnDef="tags">
+    <!-- 标签列（后端单 string；含年级/教材来源，见编辑弹窗） -->
+    <ng-container matColumnDef="tag">
       <th mat-header-cell *matHeaderCellDef>标签</th>
-      <td mat-cell *matCellDef="let word">
-        <mat-chip-set>
-          @for (tag of word.tags; track tag) {
-            <mat-chip>{{ tag }}</mat-chip>
-          }
-        </mat-chip-set>
-      </td>
+      <td mat-cell *matCellDef="let word">{{ word.tag || '—' }}</td>
     </ng-container>
 
     <!-- 难度列 -->

@@ -25,21 +25,28 @@
 }
 
 /* 导航项样式 */
+/* 修复：MDC list 文字/图标颜色由内部 token 控制，不继承 a { color }，
+ * 深色 sidebar 上需显式覆盖为浅色，否则深底深字不可见 */
+mat-nav-list {
+  --mdc-list-list-item-label-text-color: rgba(245, 245, 245, 0.86);
+  --mdc-list-list-item-leading-icon-color: rgba(245, 245, 245, 0.70);
+  --mdc-list-list-item-hover-state-layer-color: rgba(255, 255, 255, 0.08);
+  --mdc-list-list-item-focus-state-layer-color: rgba(255, 255, 255, 0.12);
+  --mdc-list-list-item-label-font-weight: 400;
+
+  /* 激活态加粗提亮 */
+  a.active-nav {
+    --mdc-list-list-item-label-text-color: #ffffff;
+    --mdc-list-list-item-label-font-weight: 500;
+    --mdc-list-list-item-leading-icon-color: #ffffff;
+  }
+}
+
 mat-nav-list a {
-  color: #ccc;
   transition: background-color 0.2s;
 
   &:hover {
     background-color: rgba(255, 255, 255, 0.08);
-  }
-
-  &.active-nav {
-    background-color: rgba(255, 255, 255, 0.12);
-    color: #fff;
-
-    mat-icon {
-      color: #fff;
-    }
   }
 }
 

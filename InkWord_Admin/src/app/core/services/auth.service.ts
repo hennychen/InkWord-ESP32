@@ -25,7 +25,7 @@ export class AuthService {
       .post<ApiResponse<LoginResponse>>(`${environment.apiUrl}/auth/login`, credentials)
       .pipe(
         tap((res) => {
-          if (res.code === 200 && res.data?.token) {
+          if (res.code === 0 && res.data?.token) {
             this.tokenService.setToken(res.data.token);
             this.tokenService.setUsername(res.data.username);
             this.username.set(res.data.username);

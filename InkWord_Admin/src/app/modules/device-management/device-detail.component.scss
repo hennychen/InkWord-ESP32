@@ -31,13 +31,13 @@
 
   .label {
     font-size: 0.75rem;
-    color: #888;
+    color: var(--text-secondary);
     margin-bottom: 4px;
   }
 
   .value {
     font-size: 0.95rem;
-    color: #1a1a1a;
+    color: var(--text-primary);
     display: flex;
     align-items: center;
     gap: 4px;
@@ -51,12 +51,12 @@
 }
 
 .online-text {
-  color: #4caf50;
+  color: var(--color-success);
   font-weight: 500;
 }
 
 .offline-text {
-  color: #f44336;
+  color: var(--color-danger);
   font-weight: 500;
 }
 
@@ -91,12 +91,12 @@
 
   .bar-value {
     font-size: 0.7rem;
-    color: #555;
+    color: var(--text-secondary);
   }
 
   .bar-time {
     font-size: 0.7rem;
-    color: #999;
+    color: var(--text-secondary);
   }
 }
 
@@ -104,7 +104,7 @@
 .command-panel {
   h3 {
     font-size: 1rem;
-    color: #333;
+    color: var(--text-primary);
     margin: 0 0 12px;
   }
 }

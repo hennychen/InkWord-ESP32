@@ -24,9 +24,9 @@
     <mat-toolbar class="toolbar">
       <span class="spacer"></span>
 
-      <!-- 主题切换 -->
-      <button mat-icon-button (click)="toggleTheme()" matTooltip="切换主题">
-        <mat-icon>{{ themeService.mode() === 'light' ? 'dark_mode' : 'light_mode' }}</mat-icon>
+      <!-- 主题切换：亮 → 暗 → 跟随系统 -->
+      <button mat-icon-button (click)="cycleTheme()" [matTooltip]="themeTooltip">
+        <mat-icon>{{ themeIcon[themeService.mode()] }}</mat-icon>
       </button>
 
       <span class="user-info">

@@ -24,35 +24,47 @@ export interface LoginRequest {
 }
 
 export interface LoginResponse {
-  token: string;
-  expiresAt: string;
   username: string;
+  token: string;
+  /** 有效期（秒） */
+  expiresIn: number;
 }
 
 // ── Word ──────────────────────────────────────────────
+/** 与后端 Word 实体 JSON（camelCase）严格对齐：definition/tags[]/audioFile
+ *  为历史错位命名，2026-08-20 修正（词库扩展四字段一并落地） */
 export interface Word {
   id: string;
   text: string;
   phonetic?: string;
-  definition: string;
+  meaning: string;
   example?: string;
-  audioFile?: string;
-  tags: string[];
+  audio?: string;
+  tag?: string;
   difficulty: number;
-  source?: string;
+  /** 词库扩展四字段（V2.1 §6.2，2026-08-20） */
+  root?: string;         // 词根词缀 “spect=看; vis=看”
+  inflections?: string;  // 派生变形（逗号分隔）
+  source?: string;       // 教材来源 “人教版 九年级 Unit 5”
+  grade?: string;        // 年级 “九年级”
+  version: number;
+  changeType: number;
   archived: boolean;
-  createdAt: string;
+  createdAt?: string;
 }
 
 export interface WordCreateDto {
   text: string;
   phonetic?: string;
-  definition: string;
+  meaning: string;
   example?: string;
-  audioFile?: string;
-  tags: string[];
+  audio?: string;
+  tag?: string;
   difficulty: number;
+  root?: string;
+  inflections?: string;
   source?: string;
+  grade?: string;
 }
 
 export interface WordUpdateDto extends WordCreateDto {
@@ -113,4 +125,18 @@ export interface SrsDistribution {
 export interface DailyActiveData {
   date: string;
   count: number;
+}
+
+// ── WrongBook (P1) ──────────────────────────────────
+/** 错词排行条目（后端 WrongTopItem，camelCase） */
+export interface WrongTopItem {
+  wordText: string;
+  meaning: string;
+  wrongCount: number;
+  learners: number;
+}
+
+export interface WrongTopResp {
+  items: WrongTopItem[];
+  collectedRecords: number;
 }

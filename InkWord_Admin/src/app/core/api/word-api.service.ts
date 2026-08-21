@@ -56,4 +56,9 @@ export class WordApiService {
       `${this.base}/import`, formData,
     );
   }
+
+  /** 导出设备词库文件（P2：含 cloudId，拷入 SD 卡后设备可上报评分/收藏） */
+  exportDeviceLibrary(): Observable<Blob> {
+    return this.http.get(`${this.base}/export`, { responseType: 'blob' });
+  }
 }

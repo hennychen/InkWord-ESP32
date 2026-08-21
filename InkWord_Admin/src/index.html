@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <title>InkWordAdmin</title>
@@ -9,7 +9,18 @@
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 </head>
-<body class="mat-typography light-theme">
+<body class="mat-typography">
+  <script>
+    // 首帧防闪：Angular bootstrap 前根据存储/auto 系统偏好设 body 主题 class
+    // （须在 body 内执行，此时 body 已存在、app-root 尚未渲染）
+    (function () {
+      var m = localStorage.getItem('inkword_theme') || 'auto';
+      var dark = m === 'dark' ||
+        (m === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.body.classList.add(dark ? 'dark-theme' : 'light-theme');
+      document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+    })();
+  </script>
   <app-root></app-root>
 </body>
 </html>

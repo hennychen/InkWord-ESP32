@@ -60,7 +60,7 @@ export class LoginComponent {
     this.authService.login(this.form.getRawValue()).subscribe({
       next: (res) => {
         this.loading.set(false);
-        if (res.code === 200 && res.data?.token) {
+        if (res.code === 0 && res.data?.token) {
           const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl') || '/dashboard';
           this.router.navigate([returnUrl]);
         } else {

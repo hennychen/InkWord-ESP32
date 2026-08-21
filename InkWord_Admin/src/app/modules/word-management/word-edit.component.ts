@@ -6,15 +6,14 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSelectModule } from '@angular/material/select';
-import { MatChipsModule, MatChipInputEvent } from '@angular/material/chips';
-import { MatIconModule } from '@angular/material/icon';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { WordApiService } from '../../core/api/word-api.service';
 import { Word } from '../../core/models/models';
 
 /**
  * 词库编辑/新增弹窗 (A-07)：
- * 响应式表单 + 校验 + 标签 chips 输入 + 例句。
+ * 响应式表单 + 校验 + 词库扩展四字段（root/inflections/source/grade，
+ * 2026-08-20）；tag 为单文本（后端 string，历史 chips[] 错位已修正）。
  */
 @Component({
   selector: 'app-word-edit',
@@ -27,8 +26,6 @@ import { Word } from '../../core/models/models';
     MatInputModule,
     MatButtonModule,
     MatSelectModule,
-    MatChipsModule,
-    MatIconModule,
   ],
   templateUrl: './word-edit.component.html',
   styleUrl: './word-edit.component.scss',
@@ -42,28 +39,20 @@ export class WordEditComponent {
 
   readonly isEdit = signal(!!this.data);
   readonly saving = signal(false);
-  readonly tags = signal<string[]>(this.data?.tags ?? []);
 
   readonly form = this.fb.nonNullable.group({
     text: [this.data?.text ?? '', [Validators.required]],
     phonetic: [this.data?.phonetic ?? ''],
-    definition: [this.data?.definition ?? '', [Validators.required]],
+    meaning: [this.data?.meaning ?? '', [Validators.required]],
     example: [this.data?.example ?? ''],
+    audio: [this.data?.audio ?? ''],
+    tag: [this.data?.tag ?? ''],
     difficulty: [this.data?.difficulty ?? 1, [Validators.required]],
+    root: [this.data?.root ?? ''],
+    inflections: [this.data?.inflections ?? ''],
     source: [this.data?.source ?? ''],
+    grade: [this.data?.grade ?? ''],
   });
-
-  addTag(event: MatChipInputEvent): void {
-    const value = (event.value || '').trim();
-    if (value) {
-      this.tags.update((tags) => [...tags, value]);
-    }
-    event.chipInput!.clear();
-  }
-
-  removeTag(tag: string): void {
-    this.tags.update((tags) => tags.filter((t) => t !== tag));
-  }
 
   save(): void {
     if (this.form.invalid) {
@@ -72,7 +61,7 @@ export class WordEditComponent {
     }
 
     this.saving.set(true);
-    const value = { ...this.form.getRawValue(), tags: this.tags() };
+    const value = this.form.getRawValue();
 
     const request = this.isEdit()
       ? this.wordApi.update(this.data!.id, { id: this.data!.id, ...value })

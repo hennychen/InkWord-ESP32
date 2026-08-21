@@ -1,0 +1,66 @@
+.loading-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 80px 0;
+  color: #888;
+}
+
+/* 口径说明 */
+.head-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 0.85rem;
+  color: #888;
+
+  .dot {
+    opacity: 0.5;
+  }
+}
+
+/* 图表区 */
+.charts-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.chart-card {
+  mat-card-header {
+    margin-bottom: 8px;
+  }
+
+  mat-card-title {
+    font-size: 1rem;
+    color: #333;
+  }
+}
+
+.chart-canvas {
+  height: 360px;
+  width: 100%;
+}
+
+/* 明细表 */
+.table-card {
+  mat-card-content {
+    overflow-x: auto;
+  }
+
+  .word {
+    font-weight: 600;
+    color: #1a1a1a;
+    white-space: nowrap;
+  }
+}
+
+.empty {
+  padding: 32px 0;
+  text-align: center;
+  color: #888;
+}

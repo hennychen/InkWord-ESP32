@@ -8,7 +8,6 @@ import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSelectModule } from '@angular/material/select';
-import { MatChipsModule } from '@angular/material/chips';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatSnackBar } from '@angular/material/snack-bar';
@@ -37,7 +36,6 @@ import { WordImportComponent } from './word-import.component';
     MatButtonModule,
     MatIconModule,
     MatSelectModule,
-    MatChipsModule,
     MatProgressSpinnerModule,
     MatDialogModule,
   ],
@@ -52,7 +50,7 @@ export class WordListComponent implements OnInit, AfterViewInit {
   private readonly route = inject(ActivatedRoute);
 
   readonly loading = signal(true);
-  readonly displayedColumns = ['text', 'phonetic', 'definition', 'tags', 'difficulty', 'actions'];
+  readonly displayedColumns = ['text', 'phonetic', 'meaning', 'tag', 'difficulty', 'actions'];
 
   dataSource = new MatTableDataSource<Word>([]);
   total = 0;
@@ -183,6 +181,23 @@ export class WordListComponent implements OnInit, AfterViewInit {
     const ref = this.dialog.open(WordImportComponent, { width: '600px' });
     ref.afterClosed().subscribe((result) => {
       if (result) this.loadData();
+    });
+  }
+
+  /** 导出设备词库 words.json（含 cloudId）：下载后拷入 SD 卡，
+   * 设端据 cloudId 上报评分/收藏（P2 云端闭环） */
+  exportLibrary(): void {
+    this.wordApi.exportDeviceLibrary().subscribe({
+      next: (blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'words.json';
+        a.click();
+        URL.revokeObjectURL(url);
+        this.snackBar.open('已导出 words.json，拷入 SD 卡根目录后重启设备', '关闭', { duration: 5000 });
+      },
+      error: () => this.snackBar.open('导出失败', '关闭', { duration: 2000 }),
     });
   }
 }

@@ -29,6 +29,12 @@ export const routes: Routes = [
         title: '数据看板 — InkWord',
       },
       {
+        path: 'wrong-top',
+        loadComponent: () =>
+          import('./modules/wrongbook/wrong-top.component').then((m) => m.WrongTopComponent),
+        title: '错词排行 — InkWord',
+      },
+      {
         path: 'words',
         loadComponent: () =>
           import('./modules/word-management/word-list.component').then((m) => m.WordListComponent),

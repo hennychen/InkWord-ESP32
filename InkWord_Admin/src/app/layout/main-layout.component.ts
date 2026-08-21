@@ -44,6 +44,7 @@ export class MainLayoutComponent {
 
   readonly navItems: NavItem[] = [
     { label: '数据看板', icon: 'dashboard', route: '/dashboard' },
+    { label: '错词排行', icon: 'error_outline', route: '/wrong-top' },
     { label: '词库管理', icon: 'menu_book', route: '/words' },
     { label: '设备管理', icon: 'devices', route: '/devices' },
     { label: 'OTA 升级', icon: 'system_update', route: '/ota' },
@@ -53,8 +54,24 @@ export class MainLayoutComponent {
     return this.authService.username();
   }
 
-  toggleTheme(): void {
-    this.themeService.toggle();
+  /** 主题按钮图标：亮/暗/跟随系统三态 */
+  readonly themeIcon = {
+    light: 'light_mode',
+    dark: 'dark_mode',
+    auto: 'brightness_auto',
+  } as const;
+
+  /** 主题按钮提示（含当前生效状态） */
+  get themeTooltip(): string {
+    const m = this.themeService.mode();
+    if (m === 'auto') {
+      return `跟随系统（当前：${this.themeService.resolved() === 'dark' ? '暗色' : '亮色'}）`;
+    }
+    return m === 'dark' ? '暗色模式' : '亮色模式';
+  }
+
+  cycleTheme(): void {
+    this.themeService.cycle();
   }
 
   logout(): void {
