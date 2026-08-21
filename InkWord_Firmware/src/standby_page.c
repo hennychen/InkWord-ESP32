@@ -304,6 +304,62 @@ static void sb_time_start(void)
 }
 
 /* ============================================================
+ * P5 深睡时钟交接：NVS 基准对 + RTC 慢钟差分
+ * esp_timer 随 SoC 深睡归零，自治钟基准对不能直接存活；系统 time()
+ * 绝对值不可信（settimeofday 路径损坏）但其在深睡中由 RTC 慢钟维持
+ * 走时且跨深睡连续 —— 只取差分（time(NULL) - 入睡时刻值）无碰损坏
+ * 路径。冷启动 RTC 清零，差分无意义，restore 仅限深睡唤醒后的启动
+ * 路径调用（main.cpp 按唤醒原因分流）。
+ * 精度：内部 RC 慢钟小时级睡眠误差分钟级，联网后 HTTP Date 校准兜底
+ * ============================================================ */
+#define SB_NVS_SLEEP_EPOCH  "slp_ep0"   /* 入睡时刻自治钟基准 Unix 秒 */
+#define SB_NVS_SLEEP_RTC    "slp_rtc0"  /* 入睡时刻系统 RTC 原始值（仅取差分） */
+
+void standby_time_checkpoint(void)
+{
+    /* 时间未同步：不写基准对（唤醒后维持未同步留白，联网走 HTTP 校时） */
+    if (s_time_epoch < SB_VALID_UNIX) return;
+
+    nvs_handle_t h;
+    if (nvs_open("inkword", NVS_READWRITE, &h) != ESP_OK) return;
+    int64_t rtc0 = (int64_t)time(NULL);
+    nvs_set_i64(h, SB_NVS_SLEEP_EPOCH, s_time_epoch);
+    nvs_set_i64(h, SB_NVS_SLEEP_RTC, rtc0);
+    nvs_commit(h);
+    nvs_close(h);
+    LOG_I("clock checkpoint: epoch=%lld rtc0=%lld",
+          (long long)s_time_epoch, (long long)rtc0);
+}
+
+void standby_time_restore(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) return;
+
+    int64_t ep0 = 0, rtc0 = 0;
+    bool ok = nvs_get_i64(h, SB_NVS_SLEEP_EPOCH, &ep0) == ESP_OK &&
+              nvs_get_i64(h, SB_NVS_SLEEP_RTC, &rtc0) == ESP_OK;
+    nvs_close(h);
+    if (!ok || ep0 < SB_VALID_UNIX) return;
+
+    int64_t rtc_diff = (int64_t)time(NULL) - rtc0;
+    if (rtc_diff < 0) rtc_diff = 0;  /* RTC 异常倒退：按 0 保守处理 */
+
+    /* 重建基准对：esp_timer 已归零，以当前时刻为新计时起点 */
+    s_time_epoch = ep0 + rtc_diff;
+    s_time_timer_us = esp_timer_get_time();
+    s_time_started = true;
+    s_last_quote = -2;   /* 首帧强制重判（5 分钟窗可能已切换） */
+    LOG_I("clock restored: rtc_diff=%llds epoch=%lld",
+          (long long)rtc_diff, (long long)s_time_epoch);
+}
+
+void standby_time_set(int64_t epoch)
+{
+    sb_time_adjust(epoch);   /* 复用校时：无效区间忽略，<60s 漂移不重置 */
+}
+
+/* ============================================================
  * 公共 API
  * ============================================================ */
 void standby_init(void)

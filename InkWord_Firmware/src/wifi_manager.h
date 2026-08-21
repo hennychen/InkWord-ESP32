@@ -37,6 +37,14 @@ bool wifi_is_connected(void);
 void wifi_disconnect(void);
 
 /**
+ * @brief 停射频入深睡（P5）：esp_wifi_stop 停 STA/AP 与射频
+ *        （disconnect 只断连不停射频，睡眠前须彻底断电域）。
+ *        不重入：下次使用前需 esp_wifi_start 或重新 wifi_manager_init
+ *        （深睡唤醒 = 重启，正常路径不受影响）。
+ */
+void wifi_radio_off(void);
+
+/**
  * @brief 扫描附近 Wi-Fi 网络（阻塞，约 1~2 秒）。
  * @param results  输出缓冲，由调用方分配。
  * @param max      缓冲容量（最大条目数）。

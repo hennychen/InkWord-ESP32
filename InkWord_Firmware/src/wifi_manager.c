@@ -187,6 +187,12 @@ void wifi_disconnect(void)
     s_connected = false;
 }
 
+void wifi_radio_off(void)
+{
+    esp_wifi_stop();    /* 停 STA/AP + 射频断电（深睡前彻底关断） */
+    s_connected = false;
+}
+
 bool wifi_has_saved_credentials(void)
 {
     wifi_config_t cfg;

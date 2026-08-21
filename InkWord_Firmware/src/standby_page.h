@@ -83,6 +83,29 @@ void standby_weather_update(const weather_info_t *w);
  */
 void standby_render_full(void);
 
+/* ---- P5 深睡时钟交接（power_manager 调用） ---- */
+
+/**
+ * @brief 入睡前的时钟交接：自治钟基准 epoch + 入睡时刻系统 RTC 原始值
+ *        写入 NVS（时间未同步时 no-op）。power_enter_sleep 第 2 步。
+ */
+void standby_time_checkpoint(void);
+
+/**
+ * @brief 深睡唤醒后的时钟恢复：RTC 慢钟差分重建基准对
+ *        （epoch = 入睡基准 + (time(NULL) - rtc0)，esp_timer 已归零
+ *        以当前时刻重开计时）。仅限深睡唤醒后的启动路径调用
+ *        （冷启动 RTC 清零差分无意义）；无 checkpoint 或未同步时 no-op。
+ *        精度：RC 慢钟小时级误差分钟级，联网后 HTTP Date 校准兑底。
+ */
+void standby_time_restore(void);
+
+/**
+ * @brief 外部校时入口（静默心跳会话 HTTP Date 用）：复用校时规则
+ *        （无效区间忽略；已同步且偏差 <60s 不重置）。
+ */
+void standby_time_set(int64_t epoch);
+
 #ifdef __cplusplus
 }
 #endif

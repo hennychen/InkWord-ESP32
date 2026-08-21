@@ -23,6 +23,12 @@
  * 无词库待机页（词库为空时默认显示，见 standby_page.c）：
  *   时钟/日历/天气整页；待机态长按语义与学习页一致（配网/清残影/门户/LAN），
  *   短按中=立即拉取天气，其余短按忽略。
+ *
+ * 深睡与定时唤醒（P5，power_manager.c）：无操作 10 分钟入睡（引文轮换/
+ * 后台心跳随交互模式冻结，墨水屏驻留末帧零功耗）；中键唤醒恢复交互
+ * （自治钟 RTC 慢钟差分恢复 + 联网 HTTP Date 校准兑底）；RTC TIMER
+ * 每 2h 静默心跳会话（Wi-Fi 快连 → 校时 → 上报/心跳/OTA → 回睡，
+ * 全程不碰屏）。唤醒即重启，setup 最早期按唤醒原因分流。
  */
 #include <Arduino.h>
 
@@ -47,6 +53,7 @@
 #include "standby_page.h"
 #include "reader_engine.h"   /* 阅读模式（P3）：书分页/字号/进度 */
 #include "ble_provision.h"
+#include "power_manager.h"   /* P5 深睡/唤醒分流与入睡检查 */
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -321,9 +328,25 @@ static void ui_render_current(void)
         standby_render_full();
 }
 
+/* P5 幻影按键吞除武装标志：按键唤醒的会话置位（setup），on_button 吞掉
+ * 唤醒后首个中键事件后清位（见 on_button 顶部注释） */
+static bool s_wake_swallow_center = false;
+
 /* 五向导航按键事件回调 */
 static void on_button(nav_key_t id, button_event_t event)
 {
+    /* P5：任何按键事件都刷新无操作计时（含配网/门户转发与退出路径） */
+    power_note_activity();
+
+    /* P5：深睡唤醒幻影事件吞除：唤醒键（中键）按住唤醒时，扫描任务
+     * 零状态起步，释放时误报 SHORT（中键=发音）或按住超阈值误报 LONG
+     * （中键=进配网）；吞掉唤醒后首个中键事件（真实按压最多迟一次
+     * 发音，无破坏性；唤醒确认 20ms 震动已在 setup 给出） */
+    if (s_wake_swallow_center && id == NAV_CENTER) {
+        s_wake_swallow_center = false;
+        return;
+    }
+
     /* Wi-Fi 配置页激活时，按键全部转发 */
     if (wifi_config_ui_is_active()) {
         wifi_config_ui_on_button(id, event);
@@ -544,6 +567,70 @@ static void sync_flush_pending(void)
     }
 }
 
+/* ============================================================
+ * P5 静默心跳会话：RTC TIMER 唤醒后的极简启动路径（不返回）
+ * 屏/SD/音频/学习状态全不初始化：墨水屏驻留末帧不碰 COG，
+ * sync_flush_pending 的 guard=learning_state_event_count()=0（静态
+ * 零初始化）自然空转——事件队列是内存态且仅由按键产生，入睡时已
+ * 论证必空（见 power_enter_sleep 注释）。NVS 必须初始化（凭据/时钟
+ * checkpoint 均在 NVS）。业务链：Wi-Fi 快连（10s 超时失败静默回睡，
+ * 不重试不闪屏）→ HTTP Date 校时（standby_page 静态基准对无需
+ * standby_init 即可写）→ 注册/上报/心跳/OTA 检查 → 回睡。
+ * ============================================================ */
+static void silent_heartbeat_session(void)
+{
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
+    }
+
+    wifi_manager_init();
+    sync_credentials_load();
+
+    /* 未配网的新设备（无凭据即入睡）：不白等超时直接回睡 */
+    if (!wifi_has_saved_credentials()) {
+        LOG_W("silent session: no wifi credentials, back to sleep");
+        power_enter_sleep(PM_HEARTBEAT_PERIOD_S);
+    }
+
+    /* 连接为事件驱动异步（wifi_manager_init 内自动连已存网络），
+     * 轮询等待：路由器在线典型 2~3s，离线等满 10s 静默回睡 */
+    int waited_s = 0;
+    while (!wifi_is_connected() && waited_s < PM_WAKE_WIFI_TIMEOUT_S) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        waited_s++;
+    }
+    if (!wifi_is_connected()) {
+        LOG_W("silent session: wifi timeout (%ds), back to sleep", waited_s);
+        power_enter_sleep(PM_HEARTBEAT_PERIOD_S);
+    }
+
+    /* HTTP Date 校时：刷新 standby 自治钟内存基准（回睡前由
+     * power_enter_sleep 内 checkpoint 落 NVS，下级唤醒用新基准） */
+    int64_t now = sync_fetch_http_time();
+    if (now > 0) {
+        standby_time_set(now);
+        LOG_I("silent session: clock calibrated (epoch=%lld)", (long long)now);
+    }
+
+    /* 云端闭环（与 background_task 周期段同链）：幂等注册 + 上报 flush */
+    sync_try_register();
+    sync_flush_pending();
+    int bat = 100; /* TODO: 读取 ADC 电量（与 background_task 同占位） */
+    sync_heartbeat(bat, FW_VERSION);
+
+    /* OTA 检查：升级成功即重启进新固件（走正常启动路径 ota_mark_valid） */
+    char url[256], md5[64];
+    int size = 0;
+    if (ota_check_for_update(url, sizeof(url), md5, sizeof(md5), &size)) {
+        LOG_I("OTA update found (silent session), size=%d", size);
+        ota_perform_upgrade(url, md5);
+    }
+
+    power_enter_sleep(PM_HEARTBEAT_PERIOD_S);   /* 不返回 */
+}
+
 static void background_task(void *arg)
 {
     (void)arg;
@@ -601,6 +688,14 @@ void setup()
     log_init();
     LOG_I("=== InkWord firmware %s booting ===", FW_VERSION);
 
+    /* 1.5 P5 电源分流（先于一切外设）：TIMER 唤醒 = 静默心跳会话
+     *     （校时/上报/OTA 后回睡，不返回）；中键唤醒/冷启动走下方
+     *     正常流程。gpio_hold 跨深睡锁存的 EPD 引脚已在 power_init 释放 */
+    if (power_init() == ESP_SLEEP_WAKEUP_TIMER)
+        silent_heartbeat_session();
+    if (power_woke_by_button())
+        s_wake_swallow_center = true;  /* 唤醒键幻影事件吞除武装 */
+
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -616,9 +711,12 @@ void setup()
 
     epd_driver_init();
     epd_clear_screen();                 /* 显示启动白屏 */
+    power_mark_periph_online();         /* P5：本会话外设在线（入睡时收口外设） */
 
     audio_init();
     haptic_init();                   /* 触觉反馈（P2 震动）：先于按键扫描任务 */
+    if (power_woke_by_button())
+        haptic_event(HAPTIC_KEYPRESS); /* P5：唤醒确认 20ms（先于屏恢复完成） */
     button_handler_init();
     button_register_callback(on_button);
 
@@ -682,6 +780,12 @@ void setup()
      *     必须先于 study_mode_init/首次渲染（错词序列与收藏标记依赖） */
     learning_state_init(word_parser_get_count());
 
+    /* 6.9 P5 深睡唤醒时钟恢复：自治钟基准对经 RTC 慢钟差分重建
+     *     （仅按键唤醒路径；冷启动/复位 cause=UNDEFINED 不走此路，
+     *     维持未同步留白等 HTTP 校准。须在待机页首渲染/tick 之前） */
+    if (power_woke_by_button())
+        standby_time_restore();
+
     /* 7. 初始化待机页（恢复 NVS 天气缓存），进入上次学习模式；
      *    无词库时渲染待机页（时钟/日历/天气） */
     standby_init();
@@ -707,5 +811,6 @@ void loop()
 {
     standby_tick();
     learning_state_maybe_save();  /* LR02 sparse 延迟保存（无脏零开销） */
+    power_maybe_sleep();          /* P5：无操作超时且无禁睡条件则入睡（不返回） */
     vTaskDelay(pdMS_TO_TICKS(1000));
 }

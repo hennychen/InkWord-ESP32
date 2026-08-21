@@ -51,6 +51,12 @@ void haptic_pulse(uint16_t on_ms);
  */
 void haptic_pulse2(uint16_t on_ms, uint16_t gap_ms);
 
+/**
+ * @brief 立即关断马达（P5 深睡前收口）：停定时器 + 极性感知关断，
+ *        防低有效模块在深睡中常震；未 init 时安全（GPIO 空操作）。
+ */
+void haptic_off(void);
+
 #ifdef __cplusplus
 }
 #endif
