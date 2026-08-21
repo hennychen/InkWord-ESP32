@@ -93,6 +93,9 @@ class GxEPD2_374_DEPG0370 : public GxEPD2_EPD
                                  真全刷写入 —— 不带 0x91/0x90 窗口指令，
                                  直接整屏写 0x13（窗口化全屏刷驱动力不足，
                                  真机验证窗口包裹的全刷仍留残影） */
+    /* demoWriteSingleNoWindow（单平面写）已删（2026-08-21 实验 B 证伪）：
+     * 0x12 后 COG 不自动 new→old，只写 0x13 → 差分基准落后一帧 → 残迹。
+     * 0x10 每次必须显式重写 */
     void updateDemoPartial(uint8_t passes = 1);/**< demo Epaper_Update_partial：0x04→0x12×passes→0x02。
                                  passes=2 双刷（同会话两次 0x12）：第二次 0x12 把同批
                                  RAM 差分像素再驱动一遍（COG 按内存差分非光学态，

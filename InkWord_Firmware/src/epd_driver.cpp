@@ -412,9 +412,13 @@ void epd_gfx_flush_window_passes(int x, int y, int w, int h, int passes)
      * 变化像素、跳过不变像素。窗口模式（demoWriteDual）三组参数实测均
      * 不能干净刷白（0x1f 留浅影 / 0x0d 无深睡不消失 / +深睡仍遮盖），
      * 与 GxEPD2 "多数 UC 面板禁用 partial window" 结论一致，弃用；
-     * 代价：每次传整屏 12KB（SPI @10MHz ≈ 10ms，可忽略）。
+     * 代价：每次传整屏 12KB（SPI @20MHz ≈ 6ms，可忽略）。
      * passes 双刷：单次翻转不彻底时第二次 0x12 再驱动一遍；
-     * 局刷自身无残影，全刷降为低频深度保养（见 standby 混合策略） */
+     * 局刷自身无残影，全刷降为低频深度保养（见 standby 混合策略）。
+     *
+     * 单平面写（只写 0x13 省 ≈5ms）已实验证伪（2026-08-21）：0x12 后
+     * COG 不自动 new→old，差分基准落后一帧 → 连续局刷残迹；
+     * 0x10 必须每次显式重写 */
     s_epd2.hwReset();          /* 每次局刷前硬件复位，COG 状态归零 */
     s_epd2.initPartialDemo();
     s_epd2.demoWriteDualNoWindow(s_port_prev, s_port_new);

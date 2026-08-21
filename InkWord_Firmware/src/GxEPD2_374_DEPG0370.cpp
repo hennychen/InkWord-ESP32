@@ -12,10 +12,11 @@
 #include "GxEPD2_374_DEPG0370.h"
 
 /* 构造参数：busy_level=LOW（忙电平），busy_timeout=10s。
- * SPI 频率由基类默认 _spi_settings=4MHz（杜邦线安全值）；
- * 如需调整用 selectSPI(SPI, SPISettings(...))，不要改这里 */
+ * SPI 频率 20MHz（2026-08-21 实验 A：10→20MHz 省一半帧传输 ≈5ms/帧；
+ * 杜邦线+EVK011 转接实测稳定则保留，若花屏/错帧回退 10MHz）；
+ * 如需再调整用 selectSPI(SPI, SPISettings(...))，不要改这里 */
 GxEPD2_374_DEPG0370::GxEPD2_374_DEPG0370(int16_t cs, int16_t dc, int16_t rst, int16_t busy) :
-  GxEPD2_EPD(cs, dc, rst, busy, LOW, 10000000, WIDTH, HEIGHT, panel, hasColor, hasPartialUpdate, hasFastPartialUpdate)
+  GxEPD2_EPD(cs, dc, rst, busy, LOW, 20000000, WIDTH, HEIGHT, panel, hasColor, hasPartialUpdate, hasFastPartialUpdate)
 {
 }
 
@@ -525,6 +526,11 @@ void GxEPD2_374_DEPG0370::demoWriteDualNoWindow(const uint8_t* prev_fb, const ui
   }
   _endTransfer();
 }
+
+/* demoWriteSingleNoWindow（单平面写）已删（2026-08-21 实验 B 证伪）：
+ * 真机实测 0x12 后 COG 不自动 new→old 转移 —— 只写 0x13 时差分基准
+ * 落后一帧，连续局刷出现上上帧陈旧像素（残迹）。0x10 必须每次显式
+ * 重写，勿再试 */
 
 void GxEPD2_374_DEPG0370::updateDemoPartial(uint8_t passes)
 {
