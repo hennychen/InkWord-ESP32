@@ -642,9 +642,9 @@ void lan_server_enter_receive_page(void)
                           EPD_GFX_BLACK, 1);
     } else {
         epd_gfx_draw_text(16, 80, "WiFi not connected.", EPD_GFX_BLACK, 2);
-        epd_gfx_draw_text(16, 120, "Long press F for WiFi portal,",
+        epd_gfx_draw_text(16, 120, "Long press LEFT for WiFi portal,",
                           EPD_GFX_BLACK, 2);
-        epd_gfx_draw_text(16, 150, "or long press C (keyboard UI).",
+        epd_gfx_draw_text(16, 150, "or long press CENTER (keyboard).",
                           EPD_GFX_BLACK, 2);
     }
 

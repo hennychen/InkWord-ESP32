@@ -5,9 +5,16 @@
  * 使用 epd_driver GFX 包装函数绘图（1bpp 帧缓冲）。
  * 独立 FreeRTOS 任务处理所有 UI 逻辑，按键事件通过队列非阻塞转发。
  *
- * 适配屏幕：240x416 (DEPG0370 竖屏)
+ * 适配屏幕：416x240 (DEPG0370 横屏 GFX 层)
  * 颜色：EPD_GFX_BLACK (1), EPD_GFX_WHITE (0)
  * 字体大小：1=小, 2=中, 3=大, 4=特大
+ *
+ * 布局与刷新（2026-08-21 五向版重排）：
+ *   - 键盘按横屏 416px 宽重排放大，4 行居中，不再与底栏重叠
+ *     （旧版按 240px 竖屏设计：第 4 行 y210~238 压到底栏 y218 文字）
+ *   - 页面切换/首帧：整页重绘 + 全刷；光标移动/输入/删除：重绘
+ *     内容区（标题栏以下）+ 无窗口局刷单 pass，经 refresh_scheduler
+ *     计数达阈值转全刷保养 —— 消除每次按键的整屏黑白闪烁
  */
 #include "wifi_config_ui.h"
 #include "wifi_manager.h"
@@ -15,6 +22,7 @@
 #include "epd_driver.h"
 #include "debug_log.h"
 #include "study_mode_machine.h"
+#include "refresh_scheduler.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -42,16 +50,33 @@ static const char *TAG = "WIFI_UI";
 #define C_BLACK  EPD_GFX_BLACK
 #define C_WHITE  EPD_GFX_WHITE
 
-/* 键盘几何（按 240px 宽设计，横屏 416px 宽时自动居中） */
-#define KB_KEY_W           22
-#define KB_KEY_H           28
-#define KB_GAP             2
-#define KB_START_Y         120
+/* ---- 页面布局（横屏 416x240） ---- */
+#define TITLE_H            30    /* 标题栏高（黑底白字，文字基线 21） */
+#define BOTTOM_LINE_Y      220   /* 底栏分隔线 y（键盘/列表均止于此之上） */
+#define CONTENT_TOP        TITLE_H /* 局刷重绘区顶：标题栏以下全部重绘 */
 
-/* 列表几何（横屏 416x240：4 项可完整显示不与底栏重叠） */
+/* ---- 密码框 ---- */
+#define PWD_BOX_Y          34
+#define PWD_BOX_H          32
+#define PWD_SHOW_MAX       36    /* 18pt '*' 掩码最多显示个数（防溢出 400px 框） */
+
+/* ---- 键盘几何（横屏 416 宽重排，4 行均居中） ---- */
+#define KB_START_Y         74    /* 键盘顶：密码框 y[34,66) 之后留 8px */
+#define KB_KEY_W           36    /* 行 0/1 字母键宽 */
+#define KB_KEY_H           32
+#define KB_GAP             3
+/* 行 2：Shift(48) + zxcvbnm(7x36) + Del(48)，含 gap 总宽 372 */
+static const int kb_w_r2[9] = { 48, 36, 36, 36, 36, 36, 36, 36, 48 };
+/* 行 3 功能行：Mode(64) + Space(180) + OK(112)，总宽 362 */
+static const int kb_w_r3[3] = { 64, 180, 112 };
+
+/* ---- 列表几何（横屏 416x240：4 项完整显示且不压底栏） ---- */
 #define LIST_ITEM_H        44
-#define LIST_START_Y       42
+#define LIST_START_Y       34
 #define LIST_MAX_VISIBLE   4
+
+/* ---- 刷新策略 ---- */
+#define WIFI_UI_PARTIAL_MAX  10  /* 局刷阈值：达次数转全刷保养（待机12/学习8 之间） */
 
 /* 屏幕尺寸 */
 #define SCR_W   epd_gfx_width()
@@ -156,6 +181,31 @@ static void ui_text(int x, int y, const char *str, int font_size, bool black_tex
     epd_gfx_draw_text(x, y, str, color, font_size);
 }
 
+/**
+ * 文本超宽时截断加省略号（横屏列表 SSID 用，替代旧版固定 15 字符截断）
+ */
+static void ellipsize(char *buf, int font, int max_w)
+{
+    int w, h;
+    epd_gfx_text_bounds(buf, font, &w, &h);
+    while (w > max_w && strlen(buf) > 4) {
+        buf[strlen(buf) - 1] = 0;
+        int n = (int)strlen(buf);
+        if (n >= 4) { buf[n - 1] = '.'; buf[n - 2] = '.'; buf[n - 3] = '.'; }
+        epd_gfx_text_bounds(buf, font, &w, &h);
+    }
+}
+
+/**
+ * 局刷阈值预检（带计数副作用）：返回 true 表示本次操作走局刷
+ * （计数 +1，调用方重绘内容区后必须执行局刷配对）；返回 false 表示
+ * 局刷次数已达保养阈值，调用方需整页重绘走全刷。
+ */
+static bool partial_ok(void)
+{
+    return !refresh_gfx_before_partial_n(WIFI_UI_PARTIAL_MAX);
+}
+
 /* ============================================================
  * 键盘辅助函数
  * ============================================================ */
@@ -202,26 +252,28 @@ static void kb_label(int row, int col, char *buf, int bufsize)
     }
 }
 
+static int kb_col_w(int row, int col)
+{
+    if (row == 2) return kb_w_r2[col];
+    if (row == 3) return kb_w_r3[col];
+    return KB_KEY_W;
+}
+
 static void kb_pixel_rect(int row, int col, int *px, int *py, int *pw, int *ph)
 {
+    int len = kb_row_lens[row];
+
     *ph = KB_KEY_H;
     *py = KB_START_Y + row * (KB_KEY_H + KB_GAP);
 
-    if (row < 3) {
-        int len = kb_row_lens[row];
-        int total = len * KB_KEY_W + (len - 1) * KB_GAP;
-        int sx = (SCR_W - total) / 2;
-        *pw = KB_KEY_W;
-        *px = sx + col * (KB_KEY_W + KB_GAP);
-    } else {
-        int widths[] = { 50, 108, 70 };
-        int total = widths[0] + widths[1] + widths[2] + 2 * KB_GAP;
-        int sx = (SCR_W - total) / 2;
-        int x = sx;
-        for (int i = 0; i < col; i++) x += widths[i] + KB_GAP;
-        *pw = widths[col];
-        *px = x;
-    }
+    int total = (len - 1) * KB_GAP;
+    for (int i = 0; i < len; i++) total += kb_col_w(row, i);
+
+    int x = (SCR_W - total) / 2;
+    for (int i = 0; i < col; i++) x += kb_col_w(row, i) + KB_GAP;
+
+    *px = x;
+    *pw = kb_col_w(row, col);
 }
 
 /* ============================================================
@@ -269,17 +321,12 @@ static void draw_lock_icon(int x, int y, bool inverted)
     epd_gfx_draw_hline(x + 3, y + 1, 6, c);
 }
 
-static void draw_list_page(void)
+/* 列表内容（列表项 + 滚动条 + 底栏）；标题栏由全刷路径绘制 */
+static void draw_list_body(void)
 {
-    ui_clear();
-
-    /* 标题栏（黑底白字） */
-    epd_gfx_fill_rect(0, 0, SCR_W, 36, C_BLACK);
-    ui_text(6, 12, "Select Wi-Fi", FONT_LG, false);
-
     if (s_ap_count == 0) {
-        ui_text_center(0, 160, SCR_W, 30, "No networks", FONT_LG, true);
-        ui_text_center(0, 195, SCR_W, 20, "Press OK to rescan", FONT_SM, true);
+        ui_text_center(0, 100, SCR_W, 30, "No networks", FONT_LG, true);
+        ui_text_center(0, 140, SCR_W, 20, "Press OK to rescan", FONT_SM, true);
     } else {
         int visible = s_ap_count < LIST_MAX_VISIBLE ? s_ap_count : LIST_MAX_VISIBLE;
         for (int i = 0; i < visible; i++) {
@@ -295,17 +342,17 @@ static void draw_list_page(void)
             strncpy(ssid_buf, (char *)s_ap_list[idx].ssid, 32);
             ssid_buf[32] = 0;
             if (strlen(ssid_buf) == 0) strcpy(ssid_buf, "(hidden)");
-            if ((int)strlen(ssid_buf) > 15) ssid_buf[15] = 0;
-            ui_text(30, y + 20, ssid_buf, FONT_LG, !sel);
+            ellipsize(ssid_buf, FONT_LG, 300);
+            ui_text(30, y + 28, ssid_buf, FONT_LG, !sel);
 
-            draw_signal_bars(SCR_W - 50, y + 12, s_ap_list[idx].rssi, sel);
+            draw_signal_bars(SCR_W - 72, y + 12, s_ap_list[idx].rssi, sel);
 
             if (s_ap_list[idx].authmode != WIFI_AUTH_OPEN)
-                draw_lock_icon(SCR_W - 22, y + 14, sel);
+                draw_lock_icon(SCR_W - 28, y + 14, sel);
         }
 
         if (s_ap_count > LIST_MAX_VISIBLE) {
-            int sb_x = SCR_W - 12;
+            int sb_x = SCR_W - 10;
             int sb_h = LIST_MAX_VISIBLE * LIST_ITEM_H;
             int sb_y = LIST_START_Y;
             epd_gfx_draw_rect(sb_x, sb_y, 4, sb_h, C_BLACK);
@@ -316,43 +363,49 @@ static void draw_list_page(void)
     }
 
     /* 底部提示栏 */
-    int bottom_y = SCR_H - 22;
-    epd_gfx_draw_hline(0, bottom_y, SCR_W, C_BLACK);
-    ui_text_center(0, bottom_y + 2, SCR_W, 18,
-                   "U/D Move OK Sel LEFT Exit", FONT_SM, true);
+    epd_gfx_draw_hline(0, BOTTOM_LINE_Y, SCR_W, C_BLACK);
+    ui_text_center(0, BOTTOM_LINE_Y + 2, SCR_W, 18,
+                   "U/D Select  OK Confirm  LEFT Exit", FONT_SM, true);
+}
 
+static void draw_list_page(bool partial)
+{
+    /* 局刷路径：清内容区 → 重绘 → 单 pass 局刷（无按键闪屏） */
+    if (partial && partial_ok()) {
+        epd_gfx_fill_rect(0, CONTENT_TOP, SCR_W, SCR_H - CONTENT_TOP, C_WHITE);
+        draw_list_body();
+        epd_gfx_flush_window_passes(0, CONTENT_TOP, SCR_W,
+                                    SCR_H - CONTENT_TOP, 1);
+        return;
+    }
+
+    ui_clear();
+
+    /* 标题栏（黑底白字） */
+    epd_gfx_fill_rect(0, 0, SCR_W, TITLE_H, C_BLACK);
+    ui_text(6, 21, "Select Wi-Fi", FONT_MD, false);
+
+    draw_list_body();
     ui_flush();
 }
 
-static void draw_password_page(void)
+/* 密码内容（密码框 + 键盘 + 底栏）；标题栏由全刷路径绘制 */
+static void draw_pwd_body(void)
 {
-    ui_clear();
+    /* 密码输入框 + 掩码（超长只显示末尾，18pt 光标跟随） */
+    epd_gfx_draw_rect(8, PWD_BOX_Y, SCR_W - 16, PWD_BOX_H, C_BLACK);
 
-    /* 标题：SSID */
-    epd_gfx_fill_rect(0, 0, SCR_W, 36, C_BLACK);
-    char title[48];
-    snprintf(title, sizeof(title), "PWD: %.24s", s_ssid);
-    ui_text(6, 12, title, FONT_LG, false);
+    int show = s_pwd_len > PWD_SHOW_MAX ? PWD_SHOW_MAX : s_pwd_len;
+    char pwd_display[PWD_SHOW_MAX + 2];
+    memset(pwd_display, '*', (size_t)show);
+    pwd_display[show] = 0;
 
-    /* 密码输入框 */
-    epd_gfx_draw_rect(6, 42, SCR_W - 12, 36, C_BLACK);
+    int tw, th;
+    epd_gfx_text_bounds(pwd_display, FONT_LG, &tw, &th);
+    ui_text(14, PWD_BOX_Y + 23, show ? pwd_display : "", FONT_LG, true);
+    epd_gfx_draw_vline(14 + tw + 4, PWD_BOX_Y + 6, PWD_BOX_H - 12, C_BLACK);
 
-    char pwd_display[68];
-    int p = 0;
-    for (int i = 0; i < s_pwd_len && p < 66; i++)
-        pwd_display[p++] = '*';
-    pwd_display[p] = 0;
-    ui_text(12, 52, pwd_display, FONT_LG, true);
-
-    if (p > 0) {
-        int tw, th;
-        epd_gfx_text_bounds(pwd_display, FONT_LG, &tw, &th);
-        epd_gfx_draw_vline(12 + tw + 3, 48, 24, C_BLACK);
-    } else {
-        epd_gfx_draw_vline(14, 48, 24, C_BLACK);
-    }
-
-    /* 绘制键盘 */
+    /* 绘制键盘（单字符/OK 键用大字号，多字符功能键用中字号） */
     for (int row = 0; row < 4; row++) {
         for (int col = 0; col < kb_row_lens[row]; col++) {
             int kx, ky, kw, kh;
@@ -366,16 +419,37 @@ static void draw_password_page(void)
 
             char label[12];
             kb_label(row, col, label, sizeof(label));
-            int kf = (row == 3) ? FONT_LG : FONT_XL;
+            int kf = (strlen(label) <= 2) ? FONT_LG : FONT_MD;
             ui_text_center(kx, ky, kw, kh, label, kf, !sel);
         }
     }
 
-    int bottom_y = SCR_H - 22;
-    epd_gfx_draw_hline(0, bottom_y, SCR_W, C_BLACK);
-    ui_text_center(0, bottom_y + 2, SCR_W, 18,
-                   "Move OK In L(L) Del OK(L) Back", FONT_SM, true);
+    /* 底部提示栏 */
+    epd_gfx_draw_hline(0, BOTTOM_LINE_Y, SCR_W, C_BLACK);
+    ui_text_center(0, BOTTOM_LINE_Y + 2, SCR_W, 18,
+                   "U/D L/R Move  OK Key  Hold-L Del  Hold-OK List", FONT_SM, true);
+}
 
+static void draw_password_page(bool partial)
+{
+    /* 局刷路径：光标移动/输入/删除只刷内容区，无按键闪屏 */
+    if (partial && partial_ok()) {
+        epd_gfx_fill_rect(0, CONTENT_TOP, SCR_W, SCR_H - CONTENT_TOP, C_WHITE);
+        draw_pwd_body();
+        epd_gfx_flush_window_passes(0, CONTENT_TOP, SCR_W,
+                                    SCR_H - CONTENT_TOP, 1);
+        return;
+    }
+
+    ui_clear();
+
+    /* 标题：SSID */
+    epd_gfx_fill_rect(0, 0, SCR_W, TITLE_H, C_BLACK);
+    char title[48];
+    snprintf(title, sizeof(title), "PWD: %.24s", s_ssid);
+    ui_text(6, 21, title, FONT_MD, false);
+
+    draw_pwd_body();
     ui_flush();
 }
 
@@ -430,7 +504,7 @@ static void exit_config(void)
 
 static void handle_list(nav_key_t id, button_event_t evt)
 {
-    /* 中长按 / 左短按退出（沿用旧 D 双出口设计，容错） */
+    /* 中长按 / 左短按退出（长按左在 main 层为 AP 门户，此处仅容错旧习惯） */
     if (evt == BUTTON_EVENT_LONG_PRESS && id == NAV_CENTER) {
         exit_config();
         return;
@@ -441,18 +515,18 @@ static void handle_list(nav_key_t id, button_event_t evt)
     case NAV_UP:
         if (s_selected > 0) s_selected--;
         if (s_selected < s_list_off) s_list_off = s_selected;
-        draw_list_page();
+        draw_list_page(true);
         break;
     case NAV_DOWN:
         if (s_selected < s_ap_count - 1) s_selected++;
         if (s_selected >= s_list_off + LIST_MAX_VISIBLE)
             s_list_off = s_selected - LIST_MAX_VISIBLE + 1;
-        draw_list_page();
+        draw_list_page(true);
         break;
     case NAV_CENTER:
         if (s_ap_count == 0) {
             do_scan();
-            draw_list_page();
+            draw_list_page(false);
         } else {
             strncpy(s_ssid, (char *)s_ap_list[s_selected].ssid, 32);
             s_ssid[32] = 0;
@@ -462,7 +536,7 @@ static void handle_list(nav_key_t id, button_event_t evt)
             s_kb_col = 0;
             s_kb_mode = KBM_LOWER;
             s_state = WUI_PASSWORD;
-            draw_password_page();
+            draw_password_page(false);
         }
         break;
     case NAV_LEFT:
@@ -475,15 +549,15 @@ static void handle_list(nav_key_t id, button_event_t evt)
 
 static void handle_password(nav_key_t id, button_event_t evt)
 {
-    /* 中长按返回列表；左长按快删（替代旧 D 双功能） */
+    /* 中长按返回列表；左长按快删（键盘 Del 键的按键侧快捷方式） */
     if (evt == BUTTON_EVENT_LONG_PRESS && id == NAV_CENTER) {
         s_state = WUI_LIST;
-        draw_list_page();
+        draw_list_page(false);
         return;
     }
     if (evt == BUTTON_EVENT_LONG_PRESS && id == NAV_LEFT) {
         if (s_pwd_len > 0) s_password[--s_pwd_len] = 0;
-        draw_password_page();
+        draw_password_page(true);
         return;
     }
     if (evt != BUTTON_EVENT_SHORT_PRESS) return;
@@ -515,6 +589,7 @@ static void handle_password(nav_key_t id, button_event_t evt)
             }
             if (s_kb_mode == KBM_UPPER) s_kb_mode = KBM_LOWER;
         } else {
+            int go_connect = 0;
             switch (func) {
             case KBF_SHIFT:
                 s_kb_mode = (s_kb_mode == KBM_UPPER) ? KBM_LOWER : KBM_UPPER;
@@ -532,6 +607,10 @@ static void handle_password(nav_key_t id, button_event_t evt)
                 }
                 break;
             case KBF_CONNECT:
+                go_connect = 1;
+                break;
+            }
+            if (go_connect) {
                 s_state = WUI_CONNECT;
                 draw_connecting();
                 s_password[s_pwd_len] = 0;
@@ -557,7 +636,7 @@ static void handle_password(nav_key_t id, button_event_t evt)
 
     s_kb_row = row;
     s_kb_col = col;
-    draw_password_page();
+    draw_password_page(true);
 }
 
 static void handle_result(nav_key_t id, button_event_t evt)
@@ -568,11 +647,11 @@ static void handle_result(nav_key_t id, button_event_t evt)
     switch (id) {
     case NAV_CENTER:
         s_state = WUI_PASSWORD;
-        draw_password_page();
+        draw_password_page(false);
         break;
     case NAV_LEFT:
         s_state = WUI_LIST;
-        draw_list_page();
+        draw_list_page(false);
         break;
     default:
         break;
@@ -595,7 +674,7 @@ static void wifi_ui_task(void *arg)
         if (IS_ENTER_EVT(evt)) {
             s_state = WUI_LIST;
             do_scan();
-            draw_list_page();
+            draw_list_page(false);
             continue;
         }
 
