@@ -27,18 +27,13 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Backup & temp files
-*.bak
-*.bak2
-*.bak3
-*.bak4
-*.bak5
-*.bak6
-*.bak7
-*.bak8
-*.bak9
+# Backup & temp files（*.bak* 通配覆盖 .bak10 等多位后缀）
+*.bak*
 *.orig
 InkWord_Firmware/1
+
+# Qoder IDE 计划/会话文件
+.qoder/
 
 # IDE / clangd 生成物
 compile_commands.json

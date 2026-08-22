@@ -63,7 +63,8 @@ InkWord-ESP32/
 │       └── modules/         #   dashboard / word-management / device-management / ota / wrongbook
 ├── docs/
 │   ├── PRD_V2.1.md          # 产品需求全集（功能树/接口契约/里程碑/风险）
-│   └── WIRING_DIAGRAM.md    # 硬件接线全集（GPIO 分配/演变速记）
+│   ├── WIRING_DIAGRAM.md    # 硬件接线全集（GPIO 分配/演变速记）
+│   └── PANEL_COMPAT_DESIGN.md # 多屏兼容设计（面板描述符/五层架构/色彩平面/迁移路径）
 ├── docker-compose.yml       # 全栈编排（postgres/redis/backend/frontend）
 └── README.md                # 本文档
 ```
@@ -310,6 +311,7 @@ NVS blob = {magic "LR02", count, used, lr_sparse_t[used]}
 |:---|:---|
 | `docs/PRD_V2.1.md` | 需求全集：功能树/硬件 BOM/GPIO 分配/接口契约/验收标准/里程碑/风险 |
 | `docs/WIRING_DIAGRAM.md` | 接线全集：屏幕/按键/音频/马达/SD + 历史演变速记 |
+| `docs/PANEL_COMPAT_DESIGN.md` | 多屏兼容设计：面板描述符/五层架构/色彩平面与调色板/构建矩阵/Phase 0-8 迁移路径 |
 | `InkWord_Firmware/README.md` | 固件详解：模块/构建/刷新策略/词库扩容与内存布局 |
 | `InkWord_Admin/`、`InkWord_Backend/` 各自 README | 端内细节 |
 

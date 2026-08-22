@@ -4,7 +4,8 @@
  *
  * 布局（引文独占，GFX 横屏 416x240，rotation=1，用户 2026-08-18 定稿：
  * 仅显示《传习录》引文，星期/日期/农历/月年均不显示）：
- *   引文块 [112,8,192,176)：cjk_font 子集楷体 Bold 24px 点阵，
+ *   引文块 [112,8,192,176)：cjk_font 子集楷体 Bold 点阵（档位字库级，
+ *     MID 档 24px 与历史定稿一致；SMALL 档 16px），
  *     8 字/行 x 5 行，行距 8px（行高 32，松排版）；水平居中
  *     （(416-192)/2），内容块带内垂直居中；
  *     每 STANDBY_QUOTE_INTERVAL_S(5min) 轮换一条（24 条循环）
@@ -33,6 +34,10 @@
  *     （窗口对齐要求随窗口模式一并弃用）；
  *   - 前帧缓存：epd_driver 自持 s_port_prev 双帧（每次刷新后同步），
  *     局刷 0x10 差分基准始终与屏幕真实内容一致；
+ *   - 三色面板（partial 不可用，§13.2）：自动轮换停用 —— 自然窗
+ *     冻结在最近渲染窗（s_quote_hold_win），仅 SET 手动翻页可用；
+ *     渲染路径局刷自动降级整帧全刷（epd_driver flush_window*），
+ *     SET 翻页 = 一次 ~16s 全刷（用户主动，计费可接受）；
  *   - 电源：刷新尾 0x02 Power OFF（关高压 rail、保 VCI 逻辑供电），
  *     从不 Deep Sleep —— 控制器状态保留路径与局刷兼容；
  *     局刷前硬复位安全：demo 双 RAM 写入不依赖 COG 内部缓存存活
@@ -52,6 +57,7 @@
 #include "refresh_scheduler.h"
 #include "weather_icons.h"   /* 仅 WX_ICON_COUNT：NVS 缓存合法性校验（不绘制） */
 #include "cjk_font.h"       /* 《传习录》引文楷体点阵 + 引文表 + 出处 */
+#include "layout_profile.h" /* Phase 5：档位→字库级映射（引文大字场景） */
 #include "word_parser.h"
 #include "study_mode_machine.h"  /* 阅读模式书页接管屏幕时待机页退位 */
 #include "wifi_manager.h"
@@ -67,6 +73,7 @@
 #include <time.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>   /* Phase 5：影子/抓取缓冲运行期分配（standby_init） */
 
 static const char *TAG = "STANDBY";
 
@@ -78,7 +85,7 @@ static const char *TAG = "STANDBY";
 #define STANDBY_QUOTE_INTERVAL_S 300      /* 引文轮换间隔：5 分钟 */
 #endif
 #ifndef STANDBY_PARTIAL_MAX_DIFF_PX
-#define STANDBY_PARTIAL_MAX_DIFF_PX (SB_QUOTE_W * SB_QUOTE_H / 4) /* 差分像素>带面积 25% 判大面积变化 → 全刷 */
+#define STANDBY_PARTIAL_MAX_DIFF_PX (-1)  /* 差分像素阈值：<0 = 运行期按带面积 25%（Phase 5 随带尺寸参数化） */
 #endif
 #ifndef STANDBY_PARTIAL_MAX_N
 #define STANDBY_PARTIAL_MAX_N 12          /* 连续局刷次数上限 → 低频真全刷深度
@@ -87,14 +94,26 @@ static const char *TAG = "STANDBY";
                                            * 例行保养，自动轮换下 ≈ 1 小时一次） */
 #endif
 
-/* ---- 布局常量（引文独占：居中引文 + 右下出处；y/h 均 8 对齐） ---- */
-#define SB_QUOTE_X0       112    /* 引文带 x：(416-192)/2 水平居中 */
-#define SB_QUOTE_Y0       8      /* 引文带 [8,184)：屏上部已无其他内容，满幅可用 */
-#define SB_QUOTE_W        192    /* 24px 字格 x 8 列 = 192 */
-#define SB_QUOTE_H        176    /* 带高（5 行×行高 32-尾距 8=152 + 余量；8 对齐） */
-#define SB_QUOTE_LINE_GAP 8      /* 行间距：字格 24px 之外追加（松排版，不侵入出处带） */
-#define SB_ATTR_Y0        192    /* 出处带 [192,216)：右下角 */
-#define SB_ATTR_X1        392    /* 出处右缘（右边距 24 对齐） */
+/* ---- 布局常量（引文独占：居中引文 + 右下出处） ----
+ * Phase 5 档位化：字格尺寸运行期取布局档位字库级（MID=24px 与旧
+ * 字面精确相等，视觉零变化；SMALL=16px），带宽/带高/坐标全部由
+ * 字格 s_cell 派生（MID 416x240 括号值逐项等于旧宏）：
+ *   quote_w  = SB_QUOTE_COLS * cell                （192）
+ *   x0       = (gfx_w - quote_w) / 2                （112）
+ *   attr_y0  = gfx_h - SB_ATTR_BOTTOM - cell        （192）
+ *   quote_h  = attr_y0 - SB_ATTR_GAP - SB_QUOTE_Y0  （176）
+ * 影子/抓取缓冲按运行期带尺寸堆分配（standby_init），static 数组
+ * 尺寸约束解除（Phase 4 遗留注释同步作废） */
+#define SB_QUOTE_COLS      8     /* 每行字数上限（引文数据约束 <=8 字/行） */
+#define SB_QUOTE_Y0        8     /* 引文带顶：屏上部满幅可用（顶部边距语义常量） */
+#define SB_QUOTE_LINE_GAP  8     /* 行间距：字格之外追加（松排版，不侵入出处带） */
+#define SB_ATTR_BOTTOM     24    /* 出处底边距（视觉对称留白） */
+#define SB_ATTR_GAP        8     /* 引文带底与出处带顶间隙 */
+#define SB_QUOTE_W         (SB_QUOTE_COLS * s_cell)
+#define SB_QUOTE_X0        ((epd_gfx_width() - SB_QUOTE_W) / 2)
+#define SB_ATTR_Y0         (epd_gfx_height() - SB_ATTR_BOTTOM - s_cell)
+#define SB_QUOTE_H         (SB_ATTR_Y0 - SB_ATTR_GAP - SB_QUOTE_Y0)
+#define SB_ATTR_X1         (epd_gfx_width() - 24)  /* 出处右缘：右边距 24（416→392） */
 #define SB_VALID_UNIX     1735689600LL /* 2025-01-01 00:00:00 UTC，早于此未同步 */
 #define SB_VALID_UNIX_MAX 4102444800LL /* 2100-01-01 00:00:00 UTC，晚于此被污染 */
 #define SB_TZ_OFFSET_S    (8 * 3600)   /* 东八区，与 STANDBY_TZ 一致 */
@@ -117,6 +136,8 @@ static volatile bool s_flag_ghost_clear = false;   /* 长按上：loop 执行清
 static volatile bool s_flag_fetch_weather = false; /* 短按中：loop 立即拉天气 */
 static volatile bool s_flag_quote_next = false;    /* 短按 SET：手动轮换下一条引文 */
 static int s_quote_off = 0;                        /* 手动轮换偏移（内存态，重启归零回自然对齐） */
+static int s_quote_hold_win = -1;                  /* 三色屏自然窗冻结（-1=未冻结，首绘用实时窗；
+                                                     * BW 面板 partial 可用恒不参与，§13.2） */
 
 static bool s_time_started = false;
 static bool s_time_valid_announced = false; /* 时间同步成功只告一次（回退则重置） */
@@ -128,12 +149,20 @@ static int64_t s_time_timer_us = 0;         /* 基准对应的 esp_timer 微秒 
 /* 上次绘制内容跟踪（tick 差异检测；校时强制置失效重画） */
 static int s_last_quote = -2;         /* 引文下标（5 分钟窗；-1=无效空白，初始 -2 强制首绘） */
 
-/* 引文带影子缓存（局刷智能分流的差分基准）：
+/* Phase 5 档位化：字库级与字格（standby_init 按布局档位填充；
+ * MID 档 level=2 即 24px，与旧 CJK_GLYPH_W/H 硬宏精确相等。
+ * 初值为 epd 未初始化前的兜底，绘制前必经 standby_init 覆盖） */
+static int s_quote_level = 2;
+static int s_cell = CJK_GLYPH_H;
+
+/* 引文带影子缓存（局刷智能分流的差分基准；Phase 5 改运行期按带
+ * 尺寸堆分配，LARGE 档带高增长不再受编译期上限约束）：
  * s_quote_shadow = 屏幕当前引文带快照（draw_bitmap 同格式，bit=1=黑）；
- * s_quote_scratch = 新帧读回缓冲。首绘/全刷后同步，局刷前差分 */
-#define SB_QUOTE_BYTES  (SB_QUOTE_W / 8 * SB_QUOTE_H)   /* 24x176=4224 字节 */
-static uint8_t s_quote_shadow[SB_QUOTE_BYTES];
-static uint8_t s_quote_scratch[SB_QUOTE_BYTES];
+ * s_quote_scratch = 新帧读回缓冲。首绘/全刷后同步，局刷前差分；
+ * 分配失败时 s_shadow_valid 恒 false，轮换安全降级为全刷 */
+static uint8_t *s_quote_shadow = NULL;
+static uint8_t *s_quote_scratch = NULL;
+static int s_quote_bytes = 0;
 static bool s_shadow_valid = false;   /* 影子是否可信（首绘前不可信） */
 
 /* ============================================================
@@ -213,8 +242,8 @@ static uint32_t sb_utf8_next(const char *s, int *len)
     return c;
 }
 
-/* 《传习录》引文：楷体 24px 点阵，8 字/行，行距 SB_QUOTE_LINE_GAP，
- * 块垂直居中；idx<0 留白 */
+/* 《传习录》引文：楷体点阵（档位字库级，MID=24px），8 字/行，
+ * 行距 SB_QUOTE_LINE_GAP，块垂直居中；idx<0 留白 */
 static void sb_draw_quote(int idx)
 {
     if (idx < 0 || idx >= CHUANXILU_QUOTE_N) return;
@@ -224,7 +253,7 @@ static void sb_draw_quote(int idx)
     for (const char *p = q; *p; p++)
         if (*p == '\n') lines++;
 
-    int line_h = CJK_GLYPH_H + SB_QUOTE_LINE_GAP;   /* 行高 = 字格 + 行距 */
+    int line_h = s_cell + SB_QUOTE_LINE_GAP;     /* 行高 = 字格 + 行距 */
     int block_h = lines * line_h - SB_QUOTE_LINE_GAP; /* 末行不带尾距 */
     int y = SB_QUOTE_Y0 + (SB_QUOTE_H - block_h) / 2;
     int row = 0, col = 0, i = 0;
@@ -232,11 +261,11 @@ static void sb_draw_quote(int idx)
         if (q[i] == '\n') { row++; col = 0; i++; continue; }
         int len;
         uint32_t cp = sb_utf8_next(&q[i], &len);
-        const uint8_t *bits = cjk_glyph_lookup(cp);
+        const uint8_t *bits = cjk_glyph_lookup_level(cp, s_quote_level);
         if (bits)
-            epd_gfx_draw_bitmap(SB_QUOTE_X0 + col * CJK_GLYPH_W,
+            epd_gfx_draw_bitmap(SB_QUOTE_X0 + col * s_cell,
                                 y + row * line_h,
-                                CJK_GLYPH_W, CJK_GLYPH_H, bits, EPD_GFX_BLACK);
+                                s_cell, s_cell, bits, EPD_GFX_BLACK);
         col++;
         i += len;
     }
@@ -252,15 +281,15 @@ static void sb_draw_attrib(void)
         p += len;
         n++;
     }
-    int x = SB_ATTR_X1 - n * CJK_GLYPH_W;
+    int x = SB_ATTR_X1 - n * s_cell;
     int col = 0, i = 0;
     while (k_chuanxilu_attrib[i]) {
         int len;
         uint32_t cp = sb_utf8_next(&k_chuanxilu_attrib[i], &len);
-        const uint8_t *bits = cjk_glyph_lookup(cp);
+        const uint8_t *bits = cjk_glyph_lookup_level(cp, s_quote_level);
         if (bits)
-            epd_gfx_draw_bitmap(x + col * CJK_GLYPH_W, SB_ATTR_Y0,
-                                CJK_GLYPH_W, CJK_GLYPH_H, bits, EPD_GFX_BLACK);
+            epd_gfx_draw_bitmap(x + col * s_cell, SB_ATTR_Y0,
+                                s_cell, s_cell, bits, EPD_GFX_BLACK);
         col++;
         i += len;
     }
@@ -286,12 +315,27 @@ static bool sb_now(struct tm *out_tm)
  * （无状态派生，重启/校时自然对齐同一窗口；时间无效返回 -1 留白）。
  * s_quote_off 为 SET 手动轮换偏移：叠加在自然窗口之上，
  * 下标变化由 tick 差异检测捕获并整页刷新 */
+/* 三色屏自动轮换冻结窗同步：每次实际渲染后记录当前自然窗，
+ * sb_quote_now 以冻结窗替代实时窗（时间窗变化不再触发刷新，
+ * SET 偏移仍可翻页）。BW 面板 partial 可用，冻结窗不启用 */
+static void sb_hold_win_sync(void)
+{
+    if (epd_gfx_partial_supported()) return;
+    int64_t sec = sb_epoch_now();
+    if (sec >= SB_VALID_UNIX && sec <= SB_VALID_UNIX_MAX)
+        s_quote_hold_win = (int)(sec / STANDBY_QUOTE_INTERVAL_S);
+}
+
 static int sb_quote_now(void)
 {
     int64_t sec = sb_epoch_now();
     if (sec < SB_VALID_UNIX || sec > SB_VALID_UNIX_MAX) return -1;
-    return (int)(((sec / STANDBY_QUOTE_INTERVAL_S) + s_quote_off)
-                 % CHUANXILU_QUOTE_N);
+    int64_t win = sec / STANDBY_QUOTE_INTERVAL_S;
+    /* 三色屏（无快速局刷，全刷 ~16s，§13.2）：自动轮换停用 ——
+     * 自然窗冻结在最近一次渲染的窗，仅 SET 手动偏移可翻页 */
+    if (!epd_gfx_partial_supported() && s_quote_hold_win >= 0)
+        win = s_quote_hold_win;
+    return (int)((win + s_quote_off) % CHUANXILU_QUOTE_N);
 }
 
 static void sb_time_start(void)
@@ -367,7 +411,34 @@ void standby_init(void)
     memset(&s_wx, 0, sizeof(s_wx));
     s_wx_valid = false;
     sb_wx_load();
-    LOG_I("standby page ready (weather cache %s)", s_wx_valid ? "hit" : "miss");
+
+    /* Phase 5 档位化：按布局档位取引文字库级（SMALL=16px / MID=24px），
+     * 按带尺寸重配影子/抓取缓冲（重启/深睡唤醒重入幂等；epd 几何
+     * 已于 epd_driver_init 就绪，且首调 layout_profile_get 缓存档位） */
+    s_quote_level = layout_profile_get()->quote_level;
+    s_cell = cjk_glyph_cell_size(s_quote_level);
+    int bytes = SB_QUOTE_W / 8 * SB_QUOTE_H;
+    if (bytes != s_quote_bytes || !s_quote_shadow || !s_quote_scratch) {
+        free(s_quote_shadow);
+        free(s_quote_scratch);
+        s_quote_shadow = (uint8_t *)malloc(bytes);
+        s_quote_scratch = (uint8_t *)malloc(bytes);
+        if (s_quote_shadow && s_quote_scratch) {
+            s_quote_bytes = bytes;
+        } else {   /* 分配失败：差分预检降级，轮换恒走全刷（功能不损） */
+            free(s_quote_shadow); s_quote_shadow = NULL;
+            free(s_quote_scratch); s_quote_scratch = NULL;
+            s_quote_bytes = 0;
+            LOG_W("quote shadow alloc %dB failed, rotate degrades to full",
+                  bytes);
+        }
+    }
+    s_shadow_valid = false;   /* 缓冲重建/首绘前影子不可信 */
+
+    LOG_I("standby page ready (weather cache %s, quote level=%d %dpx)",
+          s_wx_valid ? "hit" : "miss", s_quote_level, s_cell);
+    if (!epd_gfx_partial_supported())
+        LOG_I("no fast partial: quote auto-rotate disabled (SET manual only)");
 }
 
 bool standby_is_active(void)
@@ -433,11 +504,15 @@ void standby_render_full(void)
     epd_gfx_flush();   /* 整页全刷 */
 
     s_last_quote = quote;    /* 同步跟踪状态，避免 tick 误判首帧差异 */
+    sb_hold_win_sync();    /* 三色屏：冻结自然窗（自动轮换停用） */
 
-    /* 全刷后屏幕与画布同步，刷新引文带影子（局刷差分新基准） */
-    epd_gfx_read_window(SB_QUOTE_X0, SB_QUOTE_Y0, SB_QUOTE_W, SB_QUOTE_H,
-                        s_quote_shadow);
-    s_shadow_valid = true;
+    /* 全刷后屏幕与画布同步，刷新引文带影子（局刷差分新基准；
+     * 缓冲分配失败时保持 invalid，轮换恒走全刷） */
+    if (s_quote_shadow) {
+        epd_gfx_read_window(SB_QUOTE_X0, SB_QUOTE_Y0, SB_QUOTE_W, SB_QUOTE_H,
+                            s_quote_shadow);
+        s_shadow_valid = true;
+    }
 
     LOG_I("standby page rendered: quote=%d (%s)", quote,
           quote >= 0 ? k_chuanxilu_quotes[quote] : "time not synced");
@@ -470,12 +545,17 @@ static void standby_render_quote(void)
     epd_gfx_read_window(SB_QUOTE_X0, SB_QUOTE_Y0, SB_QUOTE_W, SB_QUOTE_H,
                         s_quote_scratch);
     int diff_px = 0;
-    for (int i = 0; i < SB_QUOTE_BYTES; i++)
+    for (int i = 0; i < s_quote_bytes; i++)
         diff_px += __builtin_popcount(s_quote_shadow[i] ^ s_quote_scratch[i]);
 
-    /* 智能分流：大面积变化（差分超阈值）或局刷计数达阈值 → 全刷 */
+    /* 智能分流：大面积变化（差分超阈值）或局刷计数达阈值 → 全刷。
+     * 阈值默认运行期按带面积 25%（Phase 5 随带尺寸参数化；
+     * 编译期 -D 覆盖正值时以覆盖值为准） */
+    int max_diff = (STANDBY_PARTIAL_MAX_DIFF_PX >= 0)
+                 ? STANDBY_PARTIAL_MAX_DIFF_PX
+                 : SB_QUOTE_W * SB_QUOTE_H / 4;
     const char *mode;
-    if (diff_px > STANDBY_PARTIAL_MAX_DIFF_PX) {
+    if (diff_px > max_diff) {
         mode = "full (large change)";
     } else if (refresh_gfx_before_partial_n(STANDBY_PARTIAL_MAX_N)) {
         mode = "full (partial count threshold)";
@@ -488,13 +568,14 @@ static void standby_render_quote(void)
          * 新字位黑），一次局刷同 pass 驱动两方向翻转像素 */
         epd_gfx_flush_window_passes(SB_QUOTE_X0, SB_QUOTE_Y0,
                                     SB_QUOTE_W, SB_QUOTE_H, 1);
-        memcpy(s_quote_shadow, s_quote_scratch, SB_QUOTE_BYTES);
+        memcpy(s_quote_shadow, s_quote_scratch, s_quote_bytes);
     } else {
         /* 全刷：整页重绘（含出处），影子随 render_full 内部同步 */
         standby_render_full();
     }
 
     s_last_quote = quote;
+    sb_hold_win_sync();    /* 三色屏：冻结自然窗（自动轮换停用） */
     LOG_I("quote rotate: idx=%d, %s, diff=%dpx, partials=%u", quote, mode,
           diff_px, refresh_partial_count());
 }

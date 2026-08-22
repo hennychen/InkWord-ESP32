@@ -50,18 +50,20 @@ static const char *TAG = "WIFI_UI";
 #define C_BLACK  EPD_GFX_BLACK
 #define C_WHITE  EPD_GFX_WHITE
 
-/* ---- 页面布局（横屏 416x240） ---- */
+/* ---- 页面布局（Phase 4 去硬编码：Y 向由屏高/前序元素派生，
+ *      416x240 下与旧字面精确相等；键盘/列表居中已用 SCR_W 动态） ---- */
 #define TITLE_H            30    /* 标题栏高（黑底白字，文字基线 21） */
-#define BOTTOM_LINE_Y      220   /* 底栏分隔线 y（键盘/列表均止于此之上） */
+#define BOTTOM_LINE_Y      (epd_gfx_height() - 20) /* 底栏分隔线 y（键盘/列表均止于此之上；240→220，底边距 20） */
 #define CONTENT_TOP        TITLE_H /* 局刷重绘区顶：标题栏以下全部重绘 */
 
 /* ---- 密码框 ---- */
-#define PWD_BOX_Y          34
+#define PWD_BOX_Y          (TITLE_H + 4)  /* 密码框顶：标题栏下 4（34） */
 #define PWD_BOX_H          32
 #define PWD_SHOW_MAX       36    /* 18pt '*' 掩码最多显示个数（防溢出 400px 框） */
 
-/* ---- 键盘几何（横屏 416 宽重排，4 行均居中） ---- */
-#define KB_START_Y         74    /* 键盘顶：密码框 y[34,66) 之后留 8px */
+/* ---- 键盘几何（4 行均居中，键宽 416 宽设计值；SMALL 档需按档位缩放，
+ *      Phase 7 SMALL 屏接入时处理，见 PANEL_COMPAT_DESIGN §8.2） ---- */
+#define KB_START_Y         (PWD_BOX_Y + PWD_BOX_H + 8) /* 键盘顶：密码框下留 8px（74） */
 #define KB_KEY_W           36    /* 行 0/1 字母键宽 */
 #define KB_KEY_H           32
 #define KB_GAP             3
@@ -70,9 +72,9 @@ static const int kb_w_r2[9] = { 48, 36, 36, 36, 36, 36, 36, 36, 48 };
 /* 行 3 功能行：Mode(64) + Space(180) + OK(112)，总宽 362 */
 static const int kb_w_r3[3] = { 64, 180, 112 };
 
-/* ---- 列表几何（横屏 416x240：4 项完整显示且不压底栏） ---- */
+/* ---- 列表几何（4 项完整显示且不压底栏） ---- */
 #define LIST_ITEM_H        44
-#define LIST_START_Y       34
+#define LIST_START_Y       (TITLE_H + 4) /* 列表顶：标题栏下 4（34） */
 #define LIST_MAX_VISIBLE   4
 
 /* ---- 刷新策略 ---- */
@@ -342,7 +344,7 @@ static void draw_list_body(void)
             strncpy(ssid_buf, (char *)s_ap_list[idx].ssid, 32);
             ssid_buf[32] = 0;
             if (strlen(ssid_buf) == 0) strcpy(ssid_buf, "(hidden)");
-            ellipsize(ssid_buf, FONT_LG, 300);
+            ellipsize(ssid_buf, FONT_LG, SCR_W - 116); /* SSID 可用宽：文本区 30 起至信号条左缘（416→300） */
             ui_text(30, y + 28, ssid_buf, FONT_LG, !sel);
 
             draw_signal_bars(SCR_W - 72, y + 12, s_ap_list[idx].rssi, sel);

@@ -1,16 +1,17 @@
 /**
  * @file gpio_config.h
- * @brief EVK011 转接板引脚映射定义
+ * @brief 板级引脚映射定义（板级轴：EVK011-C 现役 / v1.4 通用板）
  *
- * 硬件：ESP32-S3 + EVK011 升压转接板 + DEPG0370BBU253F33HP-M7 3.7" 墨水屏
+ * 硬件：ESP32-S3 + 转接板 + DEPG0370BBU253F33HP-M7 3.7" 墨水屏
  * 接口：4 线 SPI（BS1=LOW）
  *
- * 升压架构（2026-08 原理图重建结论）：
- *   EVK011 板上分立 boost（Q1 SI1308EDL + L1 47uH + MBR0503）由屏幕 COG
- *   从 FPC pin2(GDR) 自主驱动 —— MCU 不输出 GDR/RESE 信号，
- *   唯一电源职责是向 J2-16 (EPAPER_VCI) 供 3.3V。
+ * 升压架构（2026-08 原理图重建结论，两板均无 MCU 信号职责）：
+ *   - EVK011 板上分立 boost（Q1 SI1308EDL + L1 47uH + MBR0503）由屏幕 COG
+ *     从 FPC pin2(GDR) 自主驱动，MCU 唯一电源职责是供 VCI 3.3V；
+ *   - v1.4 通用板板载自主升压（解耦 COG 时序，上电即工作），同样
+ *     不输出任何 GDR/RESE 信号。
  *
- * J2 排针对应：SCK=pin3, SDO=pin5, D/C#=pin7, RES=pin8, BUSY=pin9,
+ * EVK011 J2 排针对应：SCK=pin3, SDO=pin5, D/C#=pin7, RES=pin8, BUSY=pin9,
  *             BS=pin10, CS=pin6, VCI=pin16(3.3V 供电)
  */
 #ifndef INKWORD_GPIO_CONFIG_H
@@ -21,16 +22,44 @@ extern "C" {
 #endif
 
 /* ============================================================
- * EVK011 墨水屏 EPD 引脚（4 线 SPI 模式）
- * BS1=LOW 选 4 线 SPI（DEPG0370 规格 Note5-5）
- * 注：无 GDR/RESE 定义 —— 升压由屏幕 COG 自主驱动（见文件头）
+ * 板级轴选择（PANEL_COMPAT_DESIGN.md §七，Phase 0）
+ * 两板固件可感知差异仅 BS 一项：EVK011 需 GPIO 驱动 LOW 选 4 线 SPI，
+ * v1.4 板上硬接固定 4 线（无此线）；其余 EPD 信号两板引脚相同。
+ * v1.4 其余差异（24/26/34P 三合一座子、双 CS 预留、0.47R/3R 可选
+ * 采样电阻、板载自主升压）均为硬件属性，固件无感。
  *
- * 省线方案（BS，唯一可去线）：本项目只用 4 线 SPI，BS 永远为 L。
- * 在转接板侧把 J2-10 短接 GND（就近接 J2-1）即可去掉这根线，
- * 并把 EPD_BS_PIN 改为 -1（epd_driver_init 已做条件编译保护）；
- * 释放出的 GPIO11 可改作他用（如状态灯，解决与 KEY_E 的 14 脚冲突）
+ * 切换方式（二选一，优先级：构建期 > 文件内）：
+ *   1. 构建期 -D INKWORD_BOARD_V14=1（Phase 3 构建矩阵 env 落地）；
+ *   2. 上机验证临时取消下行注释（提交前必须还原为 EVK011）。
+ * 未定义任何板宏时默认 EVK011（现役，保证既有 env 零改动）。
  * ============================================================ */
-#define EPD_BS_PIN          (11)    /**< Boot Select：11=J2-10 接 GPIO11，固件驱动 LOW 选 4 线 SPI；-1=已去线（板侧短接 GND） */
+/* #define INKWORD_BOARD_V14 1 */ /* ← v1.4 上机验证时临时启用 */
+#if defined(INKWORD_BOARD_V14)
+#define INKWORD_BOARD_NAME   "v1.4"
+#elif defined(INKWORD_BOARD_EVK011)
+#define INKWORD_BOARD_NAME   "EVK011-C"
+#else
+#define INKWORD_BOARD_EVK011 1     /* 默认板：EVK011-C */
+#define INKWORD_BOARD_NAME   "EVK011-C"
+#endif
+
+/* ============================================================
+ * 墨水屏 EPD 引脚（4 线 SPI 模式，两板共用段）
+ * BS1=LOW 选 4 线 SPI（DEPG0370 规格 Note5-5）
+ * 注：无 GDR/RESE 定义 —— 升压两板均自主驱动（见文件头）
+ * ============================================================ */
+#if defined(INKWORD_BOARD_V14)
+/* v1.4 通用板：BS 板上硬接 4 线 SPI（该线不存在，-1 语义即“已去线”，
+ * epd_driver_init 条件编译跳过驱动）；CS2 为双芯片预留，单芯片场景
+ * 悬空（无 GPIO 分配，固件不定义） */
+#define EPD_BS_PIN          (-1)
+#else
+/* EVK011 省线方案（BS，唯一可去线）：本项目只用 4 线 SPI，BS 永远为 L。
+ * 在转接板侧把 J2-10 短接 GND（就近接 J2-1）即可去掉这根线，
+ * 并把此处改为 -1（epd_driver_init 已做条件编译保护）；
+ * 释放出的 GPIO11 可改作他用（如麦克风 DOUT，见 WIRING §7） */
+#define EPD_BS_PIN          (11)    /**< Boot Select：11=J2-10 接 GPIO11，固件驱动 LOW 选 4 线 SPI；-1=已去线（板侧短接 GND / v1.4 板上硬接） */
+#endif /* INKWORD_BOARD_V14 */
 #define EPD_SCK_PIN         (7)     /**< SPI 时钟 SCK (J2 pin3) */
 #define EPD_MOSI_PIN        (8)     /**< SPI 数据 SDO/MOSI (J2 pin5) */
 #define EPD_DC_PIN          (9)     /**< 数据/命令选择 (J2 pin7) */

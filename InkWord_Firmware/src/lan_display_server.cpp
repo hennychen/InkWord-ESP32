@@ -4,11 +4,14 @@
  *
  * 端点：
  *   GET  /              内嵌上传页：Canvas 渲染 + Floyd-Steinberg 抖动，
- *                       在浏览器端产出竖屏 240x416 1bpp 帧（中文经浏览器字体渲染）；
- *                       文本/图片均支持旋转（自动/0/90/180/270°），
+ *                       在浏览器端产出面板物理 PWxPH 1bpp 帧（中文经浏览器
+ *                       字体渲染，几何按当前面板运行期注入 —— Phase 6
+ *                       多面板）；文本/图片均支持旋转（自动/0/90/180/270°），
  *                       可选横屏排布满幅显示
- *   POST /api/display   原始整帧 12480 字节（行宽 30，MSB first，bit=1 白）
- *                       → epd_full_refresh 整帧直刷
+ *   POST /api/display   原始单平面帧 epd_fb_size() 字节（行宽 PW/8，
+ *                       MSB first，bit=1 白）→ 补零红平面后
+ *                       epd_full_refresh 整帧直刷（多平面色彩面板
+ *                       LAN 内容恒黑白）
  *   GET  /wifi          Wi-Fi 配网页：扫描列表选 SSID + 密码输入（两种模式均可用）
  *   GET  /api/wifi/scan|status、POST /api/wifi/connect（异步连接，状态轮询）
  *   GET  其他任意 URI   302 重定向（captive portal 探测域名 → 弹出配网页）
@@ -42,6 +45,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>    /* malloc/free：页面组装与帧接收缓冲（Phase 6 运行期化） */
 
 static const char *TAG = "LAN";
 
@@ -50,7 +54,9 @@ static const char *TAG = "LAN";
 
 static httpd_handle_t s_server = NULL;
 static bool s_active = false;                  /* 接收页在前台 */
-static uint8_t s_frame[EPD_FB_SIZE];           /* 整帧接收缓冲（12,480 字节） */
+static uint8_t *s_frame = NULL;   /* 整帧接收缓冲：epd_fb_total() 首用分配
+                                   * （Phase 6 多面板；色彩面板含红平面，
+                                   * LAN 协议只填 B/W 平面，余平面清零） */
 
 static bool s_portal_mode = false;             /* AP 配网门户激活 */
 static bool s_portal_provision = false;        /* 无凭据配网场景（连上即自动关）；
@@ -76,8 +82,8 @@ static const char PAGE_HTML[] = R"HTML(<!DOCTYPE html>
 <style>
 body{font-family:sans-serif;max-width:480px;margin:0 auto;padding:12px;background:#f5f5f5}
 h2{margin:8px 0}
-#cv{background:#fff;border:2px solid #333;width:240px;image-rendering:pixelated}
-#dv{background:#fff;border:2px solid #333;width:208px;image-rendering:pixelated}
+#cv{background:#fff;border:2px solid #333;image-rendering:pixelated}
+#dv{background:#fff;border:2px solid #333;image-rendering:pixelated}
 .row{margin:8px 0}
 textarea,input[type=file],select{width:100%;box-sizing:border-box}
 button{padding:12px 24px;font-size:16px;width:100%}
@@ -116,14 +122,17 @@ button{padding:12px 24px;font-size:16px;width:100%}
 &nbsp;&nbsp;
 <label><input type="checkbox" id="inv" onchange="render()">反色</label>
 </div>
-<div class="row"><canvas id="cv" width="240" height="416"></canvas></div>
-<div class="row">设备横屏视角（横持设备时的效果）：<br>
-<canvas id="dv" width="416" height="240"></canvas></div>
+<div class="row"><canvas id="cv"></canvas></div>
+<div class="row">设备视角（横持设备时的效果）：<br>
+<canvas id="dv"></canvas></div>
 <button onclick="send()">发送到墨水屏</button>
-<div id="st">预览上方画布（240x416）→ 点击发送</div>
+<div id="st">预览上方画布（__PW__x__PH__）→ 点击发送</div>
 <script>
-var W=240,H=416,BPR=W/8;
+var W=__PW__,H=__PH__,GW=__GW__,GH=__GH__,BPR=W/8;
 var cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+var dv=document.getElementById('dv');
+cv.width=W;cv.height=H;dv.width=GW;dv.height=GH;
+cv.style.width=W+'px';dv.style.width=(GW/2)+'px';
 var img=null;
 function onMode(){
   var t=document.querySelector('input[name=mode]:checked').value=='text';
@@ -147,7 +156,8 @@ function base(){
   ctx.fillStyle='#000';
 }
 /* 文本渲染：先按旋转后视口宽度断行收集，再整体旋转绘制（垂直居中）。
- * 90°/270° 时视口为 416x240，即横屏排布（与设备 GFX rotation=1 对齐） */
+ * 90°/270° 时视口交换宽高（H x W），即横竖屏互换排布（与设备
+ * gfx 奇数旋转的横屏视角对齐；横向原生面板则互换为竖屏） */
 function renderText(){
   var fs=+document.getElementById('fs').value;
   ctx.font=fs+'px sans-serif';
@@ -188,7 +198,7 @@ function mode(){return document.querySelector('input[name=mode]:checked').value}
 function drawImg(){
   if(!img)return;
   var r=curRot(),aw=W,ah=H;
-  if(r==90||r==270){aw=H;ah=W;} /* 旋转后可用视口变为 416x240 */
+  if(r==90||r==270){aw=H;ah=W;} /* 旋转后可用视口交换宽高 */
   var s=Math.min(aw/img.width,ah/img.height);
   var dw=img.width*s,dh=img.height*s;
   ctx.save();
@@ -197,14 +207,20 @@ function drawImg(){
   ctx.drawImage(img,-dw/2,-dh/2,dw,dh);
   ctx.restore();
 }
-/* 设备横屏视角预览：竖屏缓冲固定旋转 -90°（与固件 GFX rotation=1 一致） */
+/* 设备视角预览：竖置面板（gfx 奇数旋转，GW!=W）缓冲旋 -90° 呈横持
+ * 视角（与固件转置方向互补）；横向原生面板（gfx_rotation=0，GW==W）
+ * gfx 即面板方向，直接呈现 */
 function devView(){
-  var dc=document.getElementById('dv').getContext('2d');
-  dc.fillStyle='#fff';dc.fillRect(0,0,416,240);
+  var dc=dv.getContext('2d');
+  dc.fillStyle='#fff';dc.fillRect(0,0,GW,GH);
   dc.save();
-  dc.translate(208,120);
-  dc.rotate(-Math.PI/2);
-  dc.drawImage(cv,-120,-208);
+  if(GW!=W){
+    dc.translate(GW/2,GH/2);
+    dc.rotate(-Math.PI/2);
+    dc.drawImage(cv,-W/2,-H/2);
+  }else{
+    dc.drawImage(cv,0,0);
+  }
   dc.restore();
 }
 function render(){
@@ -213,7 +229,7 @@ function render(){
   else drawImg();
   devView();
 }
-/* Canvas → 竖屏 1bpp 帧：行宽 30 字节，MSB first，bit=1 白 */
+/* Canvas → 面板物理 1bpp 帧：行宽 W/8 字节，MSB first，bit=1 白 */
 function pack(){
   var d=ctx.getImageData(0,0,W,H).data;
   var g=new Float32Array(W*H);
@@ -349,10 +365,59 @@ scan();
 /* ============================================================
  * HTTP handlers
  * ============================================================ */
+
+/* 上传页几何占位符替换（Phase 6 多面板）：__PW__/__PH__ 面板物理尺寸
+ * （浏览器画布与帧格式），__GW__/__GH__ GFX 几何（设备视角预览）。
+ * 单遍扫描就地展开；缓冲预留 32B 余量（4 个三位数 + NUL） */
+static size_t page_subst(const char *tpl, char *out, size_t out_cap,
+                         const char *vals[4])
+{
+    static const char *const tags[4] = {"__PW__", "__PH__", "__GW__", "__GH__"};
+    size_t o = 0, i = 0;
+    while (tpl[i] && o + 1 < out_cap) {
+        int sub = -1;
+        if (tpl[i] == '_') {
+            for (int k = 0; k < 4; k++) {
+                if (strncmp(tpl + i, tags[k], strlen(tags[k])) == 0) { sub = k; break; }
+            }
+        }
+        if (sub >= 0) {
+            const size_t tl = strlen(tags[sub]), vl = strlen(vals[sub]);
+            if (o + vl >= out_cap) return 0;
+            memcpy(out + o, vals[sub], vl);
+            o += vl; i += tl;
+        } else {
+            out[o++] = tpl[i++];
+        }
+    }
+    if (tpl[i]) return 0; /* 未扫完即触顶：拒绝发送残页 */
+    out[o] = '\0';
+    return o;
+}
+
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
+    /* 按当前面板组装页面（GET / 请求频率低，逐次分配可接受） */
+    char pw[8], ph[8], gw[8], gh[8];
+    snprintf(pw, sizeof(pw), "%d", epd_panel_width());
+    snprintf(ph, sizeof(ph), "%d", epd_panel_height());
+    snprintf(gw, sizeof(gw), "%d", epd_gfx_width());
+    snprintf(gh, sizeof(gh), "%d", epd_gfx_height());
+    const char *vals[4] = {pw, ph, gw, gh};
+
+    const size_t cap = sizeof(PAGE_HTML) + 32;
+    char *page = (char *)malloc(cap);
+    if (!page) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_send(req, NULL, 0);
+    }
+    const size_t len = page_subst(PAGE_HTML, page, cap, vals);
     httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, PAGE_HTML, sizeof(PAGE_HTML) - 1);
+    esp_err_t err = len > 0 ? httpd_resp_send(req, page, len)
+                            : (httpd_resp_set_status(req, "500 Internal Server Error"),
+                               httpd_resp_send(req, NULL, 0));
+    free(page);
+    return err;
 }
 
 static esp_err_t wifi_page_get_handler(httpd_req_t *req)
@@ -494,19 +559,35 @@ static esp_err_t display_post_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, "wifi config ui active");
         return ESP_OK;
     }
-    if (req->content_len != EPD_FB_SIZE) {
+    /* LAN 协议帧 = B/W 单平面（面板物理 PWxPH，行宽 PW/8） */
+    const size_t frame_bytes = epd_fb_size();
+    if (req->content_len != frame_bytes) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "body must be %u bytes (%dx%d 1bpp)",
+                 (unsigned)frame_bytes, epd_panel_width(), epd_panel_height());
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_set_type(req, "text/plain");
-        httpd_resp_sendstr(req, "body must be 12480 bytes (240x416 1bpp)");
+        httpd_resp_sendstr(req, msg);
         return ESP_OK;
     }
 
+    if (!s_frame) { /* 首用分配（epd_driver_init 后几何就绪） */
+        s_frame = (uint8_t *)malloc(epd_fb_total());
+        if (!s_frame) {
+            LOG_E("frame buffer alloc failed (%u B)", (unsigned)epd_fb_total());
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_sendstr(req, "no memory");
+            return ESP_FAIL;
+        }
+    }
+
     int received = 0;
-    while (received < EPD_FB_SIZE) {
+    while (received < (int)frame_bytes) {
         int r = httpd_req_recv(req, (char *)s_frame + received,
-                               EPD_FB_SIZE - received);
+                               (int)frame_bytes - received);
         if (r <= 0) {
-            LOG_E("display upload recv failed at %d/%d", received, EPD_FB_SIZE);
+            LOG_E("display upload recv failed at %d/%d", received, (int)frame_bytes);
             httpd_resp_set_status(req, "500 Internal Server Error");
             httpd_resp_set_type(req, "text/plain");
             httpd_resp_sendstr(req, "recv failed");
@@ -514,8 +595,11 @@ static esp_err_t display_post_handler(httpd_req_t *req)
         }
         received += r;
     }
+    /* 多平面色彩面板：余平面（红）清零 —— LAN 内容恒黑白，直通整帧 */
+    if (epd_fb_total() > frame_bytes)
+        memset(s_frame + frame_bytes, 0x00, epd_fb_total() - frame_bytes);
 
-    /* 整帧直刷（竖屏原生格式），并同步两处“上一帧”语义：
+    /* 整帧直刷（面板物理原生格式），并同步两处“上一帧”语义：
      * 1) 残影调度局刷计数归零（外部全刷等价于一次全刷）；
      * 2) 学习界面下次渲染强制全刷（GFX previous 缓冲已失配） */
     epd_full_refresh(s_frame);
@@ -623,10 +707,11 @@ void lan_server_enter_receive_page(void)
 
     s_active = true;
 
-    /* GFX 横屏 416x240，ASCII（FreeSans 无 CJK 字形） */
+    /* GFX 显示层（epd_gfx_width() x height()，面板无关），ASCII
+     * （FreeSans 无 CJK 字形） */
     epd_gfx_fill_screen(EPD_GFX_WHITE);
 
-    epd_gfx_fill_rect(0, 0, EPD_GFX_WIDTH, 36, EPD_GFX_BLACK);
+    epd_gfx_fill_rect(0, 0, epd_gfx_width(), 36, EPD_GFX_BLACK);
     epd_gfx_draw_text(16, 26, "LAN Receive", EPD_GFX_WHITE, 2);
 
     char ip[20];
@@ -769,7 +854,7 @@ static void portal_monitor_task(void *arg)
 
         if (lan_server_is_active()) {
             epd_gfx_fill_screen(EPD_GFX_WHITE);
-            epd_gfx_fill_rect(0, 0, EPD_GFX_WIDTH, 36, EPD_GFX_BLACK);
+            epd_gfx_fill_rect(0, 0, epd_gfx_width(), 36, EPD_GFX_BLACK);
             epd_gfx_draw_text(16, 26, "WiFi Connected", EPD_GFX_WHITE, 2);
             epd_gfx_draw_text(16, 84, "Device IP:", EPD_GFX_BLACK, 1);
             epd_gfx_draw_text(16, 116, ip, EPD_GFX_BLACK, 3);
@@ -814,7 +899,7 @@ void lan_portal_enter(void)
 
     /* 屏幕提示页（ASCII） */
     epd_gfx_fill_screen(EPD_GFX_WHITE);
-    epd_gfx_fill_rect(0, 0, EPD_GFX_WIDTH, 36, EPD_GFX_BLACK);
+    epd_gfx_fill_rect(0, 0, epd_gfx_width(), 36, EPD_GFX_BLACK);
     epd_gfx_draw_text(16, 26, s_portal_provision ? "WiFi Setup" : "AP Direct",
                       EPD_GFX_WHITE, 2);
 

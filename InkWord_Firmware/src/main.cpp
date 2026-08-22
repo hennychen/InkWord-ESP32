@@ -124,22 +124,27 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
  *     + 真全刷低频保养（局刷自身无残影，全刷仅防累积）
  * ============================================================ */
 
+/* Phase 4 去硬编码：位置类宏由 epd_gfx_width()/height() 运行期派生
+ * （416x240 下与旧字面精确相等，视觉零变化）；尺寸/行距类保留语义
+ * 常量（与字体档联动，Phase 5/档位 profile 参数化）。完整三档布局
+ * 参数表（layout_profile）见 PANEL_COMPAT_DESIGN §8.1，SMALL/LARGE
+ * 档实际接入时再建。 */
 #define UI_STATUS_H     32    /* 状态栏高度（内容区顶 y；无窗口差分下不再要求 8 对齐） */
 #define UI_MARGIN_X     16    /* 左右留白 */
-#define UI_STATUS_BASE  22    /* 状态栏文字基线 y */
-#define UI_WORD_BASE    100   /* 单词基线 y（左栏，24pt 超宽自动降级） */
-#define UI_PHON_BASE    132   /* 音标基线 y（左栏，9pt） */
-#define UI_VSEP_X       248   /* 左右分栏竖线 x */
-#define UI_MEAN_X       264   /* 释义起始 x（右栏） */
-#define UI_MEAN_TOP     48    /* 释义首行顶 y（右栏，16px 点阵顶左语义） */
+#define UI_STATUS_BASE  (UI_STATUS_H - 10)             /* 状态栏文字基线（22） */
+#define UI_WORD_BASE    (epd_gfx_height() * 100 / 240) /* 单词基线 y（左栏，24pt 超宽自动降级；100） */
+#define UI_PHON_BASE    (UI_WORD_BASE + 32)            /* 音标基线：单词下 32（132） */
+#define UI_VSEP_X       (epd_gfx_width() * 248 / 416)  /* 左右分栏竖线 x（248，约 60% 宽） */
+#define UI_MEAN_X       (UI_VSEP_X + 16)               /* 释义起始 x：分隔线右 16（264） */
+#define UI_MEAN_TOP     (UI_STATUS_H + 16)             /* 释义首行顶：状态栏下 16（48） */
 #define UI_MEAN_LH      26    /* 释义行距 */
 #define UI_MEAN_LINES   6     /* 释义最大行数（超出截断） */
-#define UI_MEAN_MAX_W   (EPD_GFX_WIDTH - UI_MEAN_X - UI_MARGIN_X) /* 右栏文本宽 */
-#define UI_WORD_MAX_W   (UI_VSEP_X - 2 * UI_MARGIN_X)             /* 左栏文本宽 */
-#define UI_FOOT_BASE    224   /* 左栏底部标签基线 y（9pt，纯 ASCII tag） */
-#define UI_FOOT_TOP     206   /* 中文 tag 16px 点阵顶 y（UI_FOOT_BASE-16-2） */
-#define UI_MEAN_HINT_BASE 62  /* 遮蔽态 FreeSans 提示基线（沿用旧释义基线） */
-#define UI_ROOT_TOP     156   /* 词根行顶 y（左栏，音标下空白区；≤2 行） */
+#define UI_MEAN_MAX_W   (epd_gfx_width() - UI_MEAN_X - UI_MARGIN_X) /* 右栏文本宽（136） */
+#define UI_WORD_MAX_W   (UI_VSEP_X - 2 * UI_MARGIN_X)             /* 左栏文本宽（216） */
+#define UI_FOOT_BASE    (epd_gfx_height() - 16)        /* 左栏底部标签基线：底边距 16（224） */
+#define UI_FOOT_TOP     (UI_FOOT_BASE - 18)             /* 中文 tag 16px 点阵顶：基线上 16+2（206） */
+#define UI_MEAN_HINT_BASE (UI_MEAN_TOP + 14)            /* 遮蔽态提示基线（沿用旧释义基线，62） */
+#define UI_ROOT_TOP     (UI_PHON_BASE + 24)             /* 词根行顶：音标下 24（156；≤2 行） */
 #define UI_ROOT_LINES   2     /* 词根行数上限（超出截断） */
 #define UI_ROOT_LH      20    /* 词根行距（16px 字 + 4 间距） */
 
@@ -159,7 +164,7 @@ static int ui_fit_font(const char *text, int start_size, int max_w)
 /* 绘制状态栏：模式名（左）+ 序号（右，错词本=序号/错词数）+ 分隔线 */
 static void ui_draw_status(study_mode_t mode)
 {
-    epd_gfx_fill_rect(0, 0, EPD_GFX_WIDTH, UI_STATUS_H, EPD_GFX_WHITE);
+    epd_gfx_fill_rect(0, 0, epd_gfx_width(), UI_STATUS_H, EPD_GFX_WHITE);
 
     epd_gfx_draw_text(UI_MARGIN_X, UI_STATUS_BASE,
                       study_mode_name(mode), EPD_GFX_BLACK, 1);
@@ -170,18 +175,18 @@ static void ui_draw_status(study_mode_t mode)
     snprintf(buf, sizeof(buf), "%d/%d",
              total ? study_mode_seq_pos() + 1 : 0, total);
     epd_gfx_text_bounds(buf, 1, &tw, &th);
-    epd_gfx_draw_text(EPD_GFX_WIDTH - UI_MARGIN_X - tw, UI_STATUS_BASE,
+    epd_gfx_draw_text(epd_gfx_width() - UI_MARGIN_X - tw, UI_STATUS_BASE,
                       buf, EPD_GFX_BLACK, 1);
 
     epd_gfx_draw_hline(UI_MARGIN_X, UI_STATUS_H,
-                       EPD_GFX_WIDTH - 2 * UI_MARGIN_X, EPD_GFX_BLACK);
+                       epd_gfx_width() - 2 * UI_MARGIN_X, EPD_GFX_BLACK);
 }
 
 /* 绘制内容区：左栏单词卡片 + 竖分隔线 + 右栏释义 */
 static void ui_draw_content(const WordEntry *w)
 {
-    epd_gfx_fill_rect(0, UI_STATUS_H, EPD_GFX_WIDTH,
-                      EPD_GFX_HEIGHT - UI_STATUS_H, EPD_GFX_WHITE);
+    epd_gfx_fill_rect(0, UI_STATUS_H, epd_gfx_width(),
+                      epd_gfx_height() - UI_STATUS_H, EPD_GFX_WHITE);
 
     epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, w->text, EPD_GFX_BLACK,
                       ui_fit_font(w->text, 4, UI_WORD_MAX_W));
@@ -199,7 +204,7 @@ static void ui_draw_content(const WordEntry *w)
     }
 
     epd_gfx_draw_vline(UI_VSEP_X, UI_STATUS_H + 16,
-                       EPD_GFX_HEIGHT - UI_STATUS_H - 32, EPD_GFX_BLACK);
+                       epd_gfx_height() - UI_STATUS_H - 32, EPD_GFX_BLACK);
 
     /* 释义：16px 点阵混排（中文按字断/ASCII 按词断，超宽自动换行，
      * 超 6 行截断）；遮蔽态仍走 FreeSans 英文提示 */
@@ -271,8 +276,8 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
         if (!need_full && refresh_gfx_before_partial()) need_full = true;
 
         if (need_full) ui_draw_status(mode);
-        epd_gfx_fill_rect(0, UI_STATUS_H, EPD_GFX_WIDTH,
-                          EPD_GFX_HEIGHT - UI_STATUS_H, EPD_GFX_WHITE);
+        epd_gfx_fill_rect(0, UI_STATUS_H, epd_gfx_width(),
+                          epd_gfx_height() - UI_STATUS_H, EPD_GFX_WHITE);
         reader_render_page(index);
 
         if (need_full)
@@ -280,7 +285,7 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
         else
             /* 仅局刷内容区（无窗口整屏双 RAM 差分，窗口参数仅做合法性检查） */
             epd_gfx_flush_window(0, UI_STATUS_H,
-                                 EPD_GFX_WIDTH, EPD_GFX_HEIGHT - UI_STATUS_H);
+                                 epd_gfx_width(), epd_gfx_height() - UI_STATUS_H);
         s_last_mode = mode;
         return;
     }
@@ -307,7 +312,7 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
         ui_draw_content(w);
         /* 仅局刷内容区（无窗口整屏双 RAM 差分，窗口参数仅做合法性检查） */
         epd_gfx_flush_window(0, UI_STATUS_H,
-                             EPD_GFX_WIDTH, EPD_GFX_HEIGHT - UI_STATUS_H);
+                             epd_gfx_width(), epd_gfx_height() - UI_STATUS_H);
     }
     s_last_mode = mode;
 

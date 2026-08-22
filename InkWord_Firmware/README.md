@@ -7,7 +7,7 @@
 | 组件 | 型号 / 规格 | 接口 |
 |------|-------------|------|
 | 主控 | ESP32-S3-DevKitC-1 (16MB Flash, 8MB PSRAM) | — |
-| 屏幕 | DKE DEPG0370 3.7" 240×416 (UC8253 类 COG) | 4 线 SPI 直驱 (GxEPD2) |
+| 屏幕 | DKE DEPG0370 3.7" 240×416 BW（UC8253）/ Hink E042A13-A0 4.2" 400×300 三色（SSD1619，均已真机验证） | 4 线 SPI，多屏切换见下文「多屏切换」节 |
 | 驱动板 | **EVK011-C**（现役）/ **v1.4 通用驱动板**（多屏兼容，见 §1.1） | 见 §1.2 接线图 |
 | 音频 | MAX98357A 功放 | I2S（待接线验证） |
 | 存储 | MicroSD 卡 | SPI + FAT（未接线） |
@@ -152,6 +152,55 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 > (CS/BUSY/RST)，SD 必须用 GPIO16/17/18/47。
 > v1.4 方案下 GPIO11 释放（BS 硬接），可改作 INMP441 麦克风 DOUT。
 
+## 多屏切换与新屏适配（2026-08-22）
+
+多屏兼容架构 = **面板注册表**（静态数组，`src/epd_panel.c`）+ **构建矩阵**（platformio env，编译期选默认面板）。同一份代码支持多块屏，接线完全相同（24P FPC 标准 9 线，见 §1.2），**换屏只换固件，硬件零改动**。
+
+### 已支持面板
+
+| 面板 | 注册名 | 规格 | 控制器 | 驱动单元 | 刷新特性 | 状态 |
+|------|--------|------|--------|----------|----------|------|
+| DKE DEPG0370 | `depg0370_uc8253` | 3.7" 240×416 黑白 | UC8253 | [`panels/panel_depg0370_uc8253.cpp`](src/panels/panel_depg0370_uc8253.cpp) | 全刷 ~1.5s / 局刷 ~0.4s | ✅ 在用 |
+| Hink E042A13-A0 | `e042a13_ssd1619` | 4.2" 400×300 黑白红 | SSD1619 | [`panels/panel_e042a13_ssd1619.cpp`](src/panels/panel_e042a13_ssd1619.cpp) | 全刷 ~14.6s（三色物理下限，无局刷） | ✅ 真机验证 |
+
+### 切换屏幕（一条命令）
+
+```bash
+cd InkWord_Firmware
+# 切到 3.7" 黑白屏（默认 env）
+~/.platformio/penv/bin/pio run -e inkword-s3 -t upload --upload-port /dev/cu.usbserial-0001
+# 切到 4.2" 三色屏
+~/.platformio/penv/bin/pio run -e inkword-s3-e042 -t upload --upload-port /dev/cu.usbserial-0001
+```
+
+VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `inkword-s3-e042` 后点 Upload 等效。
+
+**切换后自检**（串口 115200）：
+- 启动日志出现 `EPD driver initialized: panel 'depg0370_uc8253' ...` 或 `panel 'e042a13_ssd1619' 400x300 dual-plane color` = 面板识别正确；
+- 4.2" 屏开机首刷 ~14.6s 属正常（三色全刷），待机页文字应正常显示。
+
+**注意事项**：
+- 三色屏 UX 降级自动生效：无快速局刷（所有局刷请求自动降级全刷 ~14.6s）、待机引文自动轮换停用（SET 手动翻页保留）——固件按 desc 字段自动路由，无需手动配置；
+- 两屏刷新速度差异显著属物理常态（红色粒子多相位翻转耗时），非故障；
+- 烧错 env 不会损坏硬件（命令集不匹配的屏只是无显示），重烧正确 env 即可。
+
+### 适配新屏幕（SOP）
+
+架构设计见 [`../docs/PANEL_COMPAT_DESIGN.md`](../docs/PANEL_COMPAT_DESIGN.md)（注册表 §5.3 / bring-up SOP §十六）。三步注册：
+
+1. **建面板单元** `src/panels/panel_<型号>.cpp`：定义 `const epd_panel_desc_t`（几何/色彩/时序/调色板/ops 函数表），驱动序列一比一移植官方 demo 或规格书（GxEPD2 无对应类时手写 SPI 序列，参见 4.2" 单元）；
+2. **注册** [`src/epd_panel.c`](src/epd_panel.c)：extern 声明 + `s_registry[]` 追加一行；
+3. **加 env** [`platformio.ini`](platformio.ini)：复制 `inkword-s3-e042` 段改宏名，[`src/epd_panel.h`](src/epd_panel.h) 加 `EPD_PANEL_DEFAULT_ID` 条件分支。
+
+**bring-up 铁律**（4.2" 屏实战沉淀，全部真机实证）：
+- **BUSY 极性先核对**：UC8253/UC8xxx 系 LOW=忙，SSD16xx 系 HIGH=忙——判反极性会把「空闲正常态」误读为「无响应/卡死」，`desc.busy_level` 必须首验；
+- **版本读验通路**：SSD16xx 读 0x2F（需 50ms 延时）→ 0x01；UC8xxx 读 0x71 → 0x02；读到预期值 = SPI 双向闭环 + COG 在场铁证；
+- **ESP32-S3 `SPI.writeBytes` 批量写 RAM 静默不落地**：面板单元批量写一律用事务内 `SPI.transfer` 逐字节连发（参见 `epd_write_buf`）；
+- **快刷能力由 OTP 波形库决定而非命令集**：同族控制器移植快刷序列前先跑 BUSY profile 定性（亚秒级 BUSY 释放 = 空转铁证）；
+- 屏显恒定纯色 ≠ 接触不良：优先怀疑 RAM 写入未生效（先驱动内构造测试图验证写入路径，再查上层渲染管线）。
+
+---
+
 ## 软件架构
 
 固件采用模块化设计，每个模块对应一个 Task (F-xx)，源码位于 [`src/`](src/)。
@@ -162,7 +211,7 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 |------|------|------|
 | **主入口** | [`main.cpp`](src/main.cpp) | 启动流程编排、按键路由、单词卡片 UI 渲染（局刷/全刷策略）、后台心跳/OTA任务 |
 | **日志** | [`debug_log`](src/debug_log.h) | 统一 LOG_I / LOG_W / LOG_E / LOG_D 宏封装 |
-| **屏幕驱动** | [`epd_driver`](src/epd_driver.h) + [`GxEPD2_374_DEPG0370`](src/GxEPD2_374_DEPG0370.h) | GxEPD2 自有面板类: 全刷/局刷/清屏/深睡; C 薄适配层 epd_gfx_*; 双坐标体系（底层竖屏 240×416 直通 / GFX 层横屏 416×240） |
+| **屏幕驱动** | [`epd_driver`](src/epd_driver.h) + [`epd_panel`](src/epd_panel.h) + `src/panels/*` | 多屏注册表架构：面板单元自包含驱动序列（ops 函数表），L3 渲染层（canvas 转置/双平面展开/局刷调度）面板无关；epd_gfx_* C 接口；双坐标体系（面板物理坐标 / GFX 层横屏坐标，gfx_rotation 派生） |
 | **音频** | [`audio_player`](src/audio_player.h) | I2S + MAX98357A, 44.1kHz/16bit, WAV/MP3 播放 |
 | **按键** | [`button_handler`](src/button_handler.h) | 五向导航开关轮询去抖, 区分短按 / 长按 (1.5s) |
 | **存储** | [`storage_manager`](src/storage_manager.h) | SD 卡 SPI 挂载至 `/sdcard`, 文件读写 |

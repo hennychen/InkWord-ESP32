@@ -14,6 +14,7 @@
 #include "reader_engine.h"
 #include "cjk_font.h"
 #include "epd_driver.h"
+#include "layout_profile.h" /* Phase 5：档位→字库级映射（默认档/占位页） */
 #include "debug_log.h"
 
 #include <stdio.h>
@@ -27,15 +28,17 @@
 
 static const char *TAG = "READER";
 
-/* ---- 布局常量（与 main.cpp UI_STATUS_H / epd_gfx 横屏尺寸对应） ---- */
+/* ---- 布局常量（与 main.cpp UI_STATUS_H / epd_gfx 横屏尺寸对应；
+ *      Phase 4 去硬编码：可用宽高运行期派生，416x240 下 R_MAX_W=400/R_MAX_H=204 不变） ---- */
 #define R_AREA_Y       32     /* 内容区顶 = 状态栏高 */
 #define R_MARGIN_X     8      /* 左右边距 */
 #define R_MARGIN_TOP   4      /* 内容区上边距 */
-#define R_MAX_W        (EPD_GFX_WIDTH - 2 * R_MARGIN_X)    /* 400 */
-#define R_MAX_H        (EPD_GFX_HEIGHT - R_AREA_Y - 4)     /* 204 */
+#define R_MAX_W        (epd_gfx_width() - 2 * R_MARGIN_X)    /* 400 */
+#define R_MAX_H        (epd_gfx_height() - R_AREA_Y - 4)     /* 204 */
 #define R_SPACING      2      /* 字距 */
 #define R_MAX_BOOK     (4 * 1024 * 1024)   /* 单书上限 4MB */
-#define R_DEF_LEVEL    1      /* 默认 20px */
+#define R_DEF_LEVEL    1      /* 静态兜底（MID 档默认 20px）；运行期默认
+                              * 按布局档位（SMALL=0 16px / MID=1 / LARGE=2） */
 
 /* ---- 运行时状态 ---- */
 static char     *s_book = NULL;        /* 书全文（PSRAM，含 NUL 哨兵） */
@@ -287,7 +290,7 @@ static void font_level_restore(void)
     nvs_handle_t h;
     if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) return;
     uint32_t sig = 0;
-    uint8_t fnt = R_DEF_LEVEL;
+    uint8_t fnt = (uint8_t)layout_profile_get()->reader_level;  /* 档位默认 */
     bool hit = nvs_get_u32(h, "rd_sig", &sig) == ESP_OK && sig == s_sig;
     if (hit && nvs_get_u8(h, "rd_font", &fnt) == ESP_OK && fnt >= CJK_FONT_LEVELS)
         fnt = R_DEF_LEVEL;
@@ -380,17 +383,18 @@ void reader_render_page(int page)
         x += adv;
     }
 
-    /* 页脚进度（右下角，小字） */
+    /* 页脚进度（右下角，小字）：80 = 9pt "999/999" 数字串预估宽含余量
+     * （实测右缘留白约 40px；换字号档时按 text_bounds 实测调整） */
     char buf[24];
     snprintf(buf, sizeof(buf), "%d/%d", page + 1, s_page_n);
-    epd_gfx_draw_text(EPD_GFX_WIDTH - R_MARGIN_X - 80,
-                      EPD_GFX_HEIGHT - 6, buf, EPD_GFX_BLACK, 1);
+    epd_gfx_draw_text(epd_gfx_width() - R_MARGIN_X - 80,
+                      epd_gfx_height() - 6, buf, EPD_GFX_BLACK, 1);
 
     progress_save(page);
 }
 
 /* 字符数（UTF-8 逐字计数；ASCII 与中文混排时 strlen/3 会算错） */
-static int str_cells24(const char *s)
+static int str_cells(const char *s)
 {
     int n = 0;
     while (*s) {
@@ -403,21 +407,21 @@ static int str_cells24(const char *s)
     return n;
 }
 
-/* 24px 点阵整字绘制（占位页中文提示：GFX 内置字体无中文，ASCII 与
+/* 点阵整字绘制（占位页中文提示：GFX 内置字体无中文，ASCII 与
  * 中文同在字库内等宽步进；返回绘制宽度供居中计算） */
-static int draw_str24(int x, int y, const char *s)
+static int draw_str_cells(int x, int y, int level, const char *s)
 {
-    const int step = CJK_GLYPH_W + 2;
+    const int cell = cjk_glyph_cell_size(level);
+    const int step = cell + 2;
     int cx = x;
     while (*s) {
         uint32_t cp;
         int n = utf8_next(s, 4, &cp);
         if (n <= 0) break;
         s += n;
-        const uint8_t *bits = cjk_glyph_lookup(cp);
+        const uint8_t *bits = cjk_glyph_lookup_level(cp, level);
         if (bits)
-            epd_gfx_draw_bitmap(cx, y, CJK_GLYPH_W, CJK_GLYPH_H,
-                                bits, EPD_GFX_BLACK);
+            epd_gfx_draw_bitmap(cx, y, cell, cell, bits, EPD_GFX_BLACK);
         cx += step;
     }
     return cx - x;
@@ -425,21 +429,24 @@ static int draw_str24(int x, int y, const char *s)
 
 void reader_render_placeholder(void)
 {
-    /* 内置 GFX 字体仅 ASCII：中文提示用 24px 点阵等宽绘制，水平居中 */
+    /* 内置 GFX 字体仅 ASCII：中文提示用档位大字级点阵等宽绘制（MID 档
+     * 24px 与旧硬宏一致，视觉零变化；无书时无 NVS 字号可用，取档位
+     * 大字级而非正文默认级——占位提示属大字场景），水平居中 */
     static const char *l1 = "阅读模式";
     static const char *l2 = "未找到书籍";
     static const char *l3 = "请将UTF-8文本放入";
     static const char *l4 = "SD卡books目录后重启";
+    const int level = layout_profile_get()->quote_level;
+    const int step = cjk_glyph_cell_size(level) + 2;
     int y = R_AREA_Y + 36;
-    const int step = CJK_GLYPH_W + 2;
 
-    int x = (EPD_GFX_WIDTH - str_cells24(l1) * step) / 2;
-    draw_str24(x, y, l1);
-    x = (EPD_GFX_WIDTH - str_cells24(l2) * step) / 2;
-    draw_str24(x, y + 2 * step, l2);
-    x = (EPD_GFX_WIDTH - str_cells24(l3) * step) / 2;
-    draw_str24(x, y + 4 * step, l3);
-    x = (EPD_GFX_WIDTH - str_cells24(l4) * step) / 2;
-    draw_str24(x, y + 5 * step, l4);
+    int x = (epd_gfx_width() - str_cells(l1) * step) / 2;
+    draw_str_cells(x, y, level, l1);
+    x = (epd_gfx_width() - str_cells(l2) * step) / 2;
+    draw_str_cells(x, y + 2 * step, level, l2);
+    x = (epd_gfx_width() - str_cells(l3) * step) / 2;
+    draw_str_cells(x, y + 4 * step, level, l3);
+    x = (epd_gfx_width() - str_cells(l4) * step) / 2;
+    draw_str_cells(x, y + 5 * step, level, l4);
     LOG_I("reader placeholder rendered");
 }

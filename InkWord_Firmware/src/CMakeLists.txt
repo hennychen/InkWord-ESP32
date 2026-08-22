@@ -10,6 +10,9 @@ idf_component_register(
     SRCS
         "debug_log.c"
         "epd_driver.cpp"
+        "epd_panel.c"
+        "panels/panel_depg0370_uc8253.cpp"
+        "panels/panel_e042a13_ssd1619.cpp"   # Phase 6：4.2" 三色面板单元（SSD1619 手写序列，与 arduino 自动递归编译双轨同步）
         "audio_player.c"
         "button_handler.c"
         "haptic.c"
@@ -19,6 +22,7 @@ idf_component_register(
         "srs_engine.c"
         "learning_state.c"
         "study_mode_machine.c"
+        "layout_profile.c"   # P5+Phase5：L4 布局档位层（档位→字库级映射）
         "standby_page.c"
         "cjk_font.c"
         "cjk_text.c"
