@@ -8,10 +8,14 @@
  *                       字体渲染，几何按当前面板运行期注入 —— Phase 6
  *                       多面板）；文本/图片均支持旋转（自动/0/90/180/270°），
  *                       可选横屏排布满幅显示
- *   POST /api/display   原始单平面帧 epd_fb_size() 字节（行宽 PW/8，
- *                       MSB first，bit=1 白）→ 补零红平面后
- *                       epd_full_refresh 整帧直刷（多平面色彩面板
- *                       LAN 内容恒黑白）
+ *   POST /api/display   协议 v2 双长度（2026-08-22 彩色传图）：
+ *                       v1 单平面 epd_fb_size() 字节（行宽 PW/8，MSB
+ *                       first，bit=1 白）——多平面面板余平面（红）设备侧
+ *                       补零，旧客户端/脚本兼容，行为与历史版一致；
+ *                       v2 双平面 epd_fb_total() 字节（[0]=B/W bit=1
+ *                       白 + [1]=红 bit=1 红，与面板 plane 布局直通），
+ *                       三色面板彩色传图；两者均 epd_full_refresh 整帧
+ *                       直刷。BW 面板两长度相等自然退化 v1
  *   GET  /wifi          Wi-Fi 配网页：扫描列表选 SSID + 密码输入（两种模式均可用）
  *   GET  /api/wifi/scan|status、POST /api/wifi/connect（异步连接，状态轮询）
  *   GET  其他任意 URI   302 重定向（captive portal 探测域名 → 弹出配网页）
@@ -55,8 +59,8 @@ static const char *TAG = "LAN";
 static httpd_handle_t s_server = NULL;
 static bool s_active = false;                  /* 接收页在前台 */
 static uint8_t *s_frame = NULL;   /* 整帧接收缓冲：epd_fb_total() 首用分配
-                                   * （Phase 6 多面板；色彩面板含红平面，
-                                   * LAN 协议只填 B/W 平面，余平面清零） */
+                                   * （Phase 6 多面板；协议 v2 双平面填满，
+                                   * v1 单平面余平面清零） */
 
 static bool s_portal_mode = false;             /* AP 配网门户激活 */
 static bool s_portal_provision = false;        /* 无凭据配网场景（连上即自动关）；
@@ -112,7 +116,11 @@ button{padding:12px 24px;font-size:16px;width:100%}
 <select id="fs">
 <option>16</option><option selected>24</option>
 <option>32</option><option>48</option>
-</select></div>
+</select>
+<span id="tcRow" style="display:none">　字色：
+<label><input type="radio" name="tc" value="0" checked onchange="render()">黑</label>
+<label><input type="radio" name="tc" value="1" onchange="render()">红</label>
+</span></div>
 </div>
 <div id="imgPanel" class="row" style="display:none">
 <input type="file" id="fi" accept="image/*" onchange="onFile()">
@@ -122,13 +130,16 @@ button{padding:12px 24px;font-size:16px;width:100%}
 &nbsp;&nbsp;
 <label><input type="checkbox" id="inv" onchange="render()">反色</label>
 </div>
+<div class="row" id="colRow" style="display:none">
+<label><input type="checkbox" id="col" checked onchange="render()">彩色（黑白红最近色量化）</label>
+</div>
 <div class="row"><canvas id="cv"></canvas></div>
 <div class="row">设备视角（横持设备时的效果）：<br>
 <canvas id="dv"></canvas></div>
 <button onclick="send()">发送到墨水屏</button>
 <div id="st">预览上方画布（__PW__x__PH__）→ 点击发送</div>
 <script>
-var W=__PW__,H=__PH__,GW=__GW__,GH=__GH__,BPR=W/8;
+var W=__PW__,H=__PH__,GW=__GW__,GH=__GH__,BPR=W/8,COLOR=__COLOR__;
 var cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 var dv=document.getElementById('dv');
 cv.width=W;cv.height=H;dv.width=GW;dv.height=GH;
@@ -161,6 +172,8 @@ function base(){
 function renderText(){
   var fs=+document.getElementById('fs').value;
   ctx.font=fs+'px sans-serif';
+  var tc=document.querySelector('input[name=tc]:checked');
+  ctx.fillStyle=(COLOR&&tc&&tc.value=='1')?'#f00':'#000';
   var r=curRot(),vw=W,vh=H;
   if(r==90||r==270){vw=H;vh=W;}
   var maxW=vw-16,lh=fs*1.3,li,ci;
@@ -209,17 +222,57 @@ function drawImg(){
 }
 /* 设备视角预览：竖置面板（gfx 奇数旋转，GW!=W）缓冲旋 -90° 呈横持
  * 视角（与固件转置方向互补）；横向原生面板（gfx_rotation=0，GW==W）
- * gfx 即面板方向，直接呈现 */
+ * gfx 即面板方向，直接呈现。彩色模式预览量化结果（WYSIWYG） */
+var s_quant=null;
+function colOn(){return COLOR&&document.getElementById('col').checked;}
+/* 三色量化（2026-08-22 彩色传图）：{黑,白,红} RGB 最近色 + Floyd-
+ * Steinberg 三通道误差扩散（dith）；误差按 inv 映射后显示色算（屏
+ * 幕实际呈现色）。输出 s_quant={bw,rd,q}：双平面帧 + 量化预览画布 */
+function quantize(){
+  var d=ctx.getImageData(0,0,W,H).data;
+  var buf=new Float32Array(W*H*3);
+  for(var i=0;i<W*H;i++){buf[i*3]=d[i*4];buf[i*3+1]=d[i*4+1];buf[i*3+2]=d[i*4+2];}
+  var inv=document.getElementById('inv').checked;
+  var dith=document.getElementById('dith').checked;
+  var bw=new Uint8Array(BPR*H),rd=new Uint8Array(BPR*H);
+  var PAL=[[0,0,0],[255,255,255],[255,0,0]];
+  var q=document.createElement('canvas');q.width=W;q.height=H;
+  var qc=q.getContext('2d'),im=qc.createImageData(W,H);
+  for(var y=0;y<H;y++)for(var x=0;x<W;x++){
+    var i=y*W+x,r=buf[i*3],g=buf[i*3+1],b=buf[i*3+2];
+    var best=0,bd=1e12;
+    for(var p=0;p<3;p++){var dr=r-PAL[p][0],dg=g-PAL[p][1],db=b-PAL[p][2],
+      dist=dr*dr+dg*dg+db*db;if(dist<bd){bd=dist;best=p;}}
+    var cls=best;if(inv&&cls!=2)cls=1-cls; /* 反色：黑白互换红保持 */
+    if(cls==1)bw[y*BPR+(x>>3)]|=0x80>>(x&7);
+    if(cls==2)rd[y*BPR+(x>>3)]|=0x80>>(x&7);
+    var c=PAL[cls];
+    im.data[i*4]=c[0];im.data[i*4+1]=c[1];im.data[i*4+2]=c[2];im.data[i*4+3]=255;
+    if(dith){
+      var er=r-c[0],eg=g-c[1],eb=b-c[2];
+      if(x+1<W){buf[(i+1)*3]+=er*7/16;buf[(i+1)*3+1]+=eg*7/16;buf[(i+1)*3+2]+=eb*7/16;}
+      if(y+1<H){
+        if(x>0){buf[(i+W-1)*3]+=er*3/16;buf[(i+W-1)*3+1]+=eg*3/16;buf[(i+W-1)*3+2]+=eb*3/16;}
+        buf[(i+W)*3]+=er*5/16;buf[(i+W)*3+1]+=eg*5/16;buf[(i+W)*3+2]+=eb*5/16;
+        if(x+1<W){buf[(i+W+1)*3]+=er/16;buf[(i+W+1)*3+1]+=eg/16;buf[(i+W+1)*3+2]+=eb/16;}
+      }
+    }
+  }
+  qc.putImageData(im,0,0);
+  s_quant={bw:bw,rd:rd,q:q};
+}
 function devView(){
+  var src=cv;
+  if(colOn()){quantize();src=s_quant.q;}
   var dc=dv.getContext('2d');
   dc.fillStyle='#fff';dc.fillRect(0,0,GW,GH);
   dc.save();
   if(GW!=W){
     dc.translate(GW/2,GH/2);
     dc.rotate(-Math.PI/2);
-    dc.drawImage(cv,-W/2,-H/2);
+    dc.drawImage(src,-W/2,-H/2);
   }else{
-    dc.drawImage(cv,0,0);
+    dc.drawImage(src,0,0);
   }
   dc.restore();
 }
@@ -262,10 +315,16 @@ function pack(){
 function send(){
   var st=document.getElementById('st');
   st.textContent='发送中...';
+  var body;
+  if(colOn()){ /* 协议 v2：双平面（B/W bit=1 白 + 红 bit=1 红）拼接 */
+    quantize();
+    body=new Uint8Array(s_quant.bw.length+s_quant.rd.length);
+    body.set(s_quant.bw,0);body.set(s_quant.rd,s_quant.bw.length);
+  }else body=pack();
   fetch('/api/display',{
     method:'POST',
     headers:{'Content-Type':'application/octet-stream'},
-    body:pack()
+    body:body
   }).then(function(r){
     return r.text().then(function(t){
       st.textContent=(r.status==200?'已显示: ':'失败(' + r.status + '): ')+t;
@@ -276,6 +335,10 @@ function send(){
 }
 document.getElementById('txt').oninput=render;
 document.getElementById('fs').onchange=render;
+if(COLOR){ /* 三色面板：彩色 UI 显现（BW 面板零变化） */
+  document.getElementById('colRow').style.display='';
+  document.getElementById('tcRow').style.display='';
+}
 render();
 </script>
 </body>
@@ -367,17 +430,19 @@ scan();
  * ============================================================ */
 
 /* 上传页几何占位符替换（Phase 6 多面板）：__PW__/__PH__ 面板物理尺寸
- * （浏览器画布与帧格式），__GW__/__GH__ GFX 几何（设备视角预览）。
- * 单遍扫描就地展开；缓冲预留 32B 余量（4 个三位数 + NUL） */
+ * （浏览器画布与帧格式），__GW__/__GH__ GFX 几何（设备视角预览），
+ * __COLOR__ 色彩能力（fb_total>fb_size 即多平面，彩色 UI 注入）。
+ * 单遍扫描就地展开；缓冲预留 32B 余量（5 个占位符均短） */
 static size_t page_subst(const char *tpl, char *out, size_t out_cap,
-                         const char *vals[4])
+                         const char *vals[5])
 {
-    static const char *const tags[4] = {"__PW__", "__PH__", "__GW__", "__GH__"};
+    static const char *const tags[5] =
+        {"__PW__", "__PH__", "__GW__", "__GH__", "__COLOR__"};
     size_t o = 0, i = 0;
     while (tpl[i] && o + 1 < out_cap) {
         int sub = -1;
         if (tpl[i] == '_') {
-            for (int k = 0; k < 4; k++) {
+            for (int k = 0; k < 5; k++) {
                 if (strncmp(tpl + i, tags[k], strlen(tags[k])) == 0) { sub = k; break; }
             }
         }
@@ -398,12 +463,14 @@ static size_t page_subst(const char *tpl, char *out, size_t out_cap,
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
     /* 按当前面板组装页面（GET / 请求频率低，逐次分配可接受） */
-    char pw[8], ph[8], gw[8], gh[8];
+    char pw[8], ph[8], gw[8], gh[8], col[8];
     snprintf(pw, sizeof(pw), "%d", epd_panel_width());
     snprintf(ph, sizeof(ph), "%d", epd_panel_height());
     snprintf(gw, sizeof(gw), "%d", epd_gfx_width());
     snprintf(gh, sizeof(gh), "%d", epd_gfx_height());
-    const char *vals[4] = {pw, ph, gw, gh};
+    snprintf(col, sizeof(col), "%d",
+             epd_fb_total() > epd_fb_size() ? 1 : 0); /* 多平面=彩色 */
+    const char *vals[5] = {pw, ph, gw, gh, col};
 
     const size_t cap = sizeof(PAGE_HTML) + 32;
     char *page = (char *)malloc(cap);
@@ -413,6 +480,9 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     }
     const size_t len = page_subst(PAGE_HTML, page, cap, vals);
     httpd_resp_set_type(req, "text/html");
+    /* 发送页随面板能力/版本变化（2026-08-22 彩色升级后旧缓存页致首测
+     * 误报无色），禁缓存保证每次拿到当前面板的注入页 */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t err = len > 0 ? httpd_resp_send(req, page, len)
                             : (httpd_resp_set_status(req, "500 Internal Server Error"),
                                httpd_resp_send(req, NULL, 0));
@@ -559,17 +629,24 @@ static esp_err_t display_post_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, "wifi config ui active");
         return ESP_OK;
     }
-    /* LAN 协议帧 = B/W 单平面（面板物理 PWxPH，行宽 PW/8） */
+    /* LAN 协议 v2 双长度（2026-08-22 彩色传图）：单平面 fb_size()（v1
+     * 兼容，多平面面板余平面补零）或双平面 fb_total()（[0]=B/W bit=1
+     * 白 + [1]=红 bit=1 红，与面板 plane 布局直通） */
     const size_t frame_bytes = epd_fb_size();
-    if (req->content_len != frame_bytes) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "body must be %u bytes (%dx%d 1bpp)",
-                 (unsigned)frame_bytes, epd_panel_width(), epd_panel_height());
+    const size_t total_bytes = epd_fb_total();
+    const bool color_frame = req->content_len == (size_t)total_bytes &&
+                             total_bytes > frame_bytes;
+    if (req->content_len != frame_bytes && !color_frame) {
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "body must be %u (1bpp bw) or %u bytes (bw+red planes)",
+                 (unsigned)frame_bytes, (unsigned)total_bytes);
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_set_type(req, "text/plain");
         httpd_resp_sendstr(req, msg);
         return ESP_OK;
     }
+    const size_t recv_len = color_frame ? total_bytes : frame_bytes;
 
     if (!s_frame) { /* 首用分配（epd_driver_init 后几何就绪） */
         s_frame = (uint8_t *)malloc(epd_fb_total());
@@ -583,11 +660,11 @@ static esp_err_t display_post_handler(httpd_req_t *req)
     }
 
     int received = 0;
-    while (received < (int)frame_bytes) {
+    while (received < (int)recv_len) {
         int r = httpd_req_recv(req, (char *)s_frame + received,
-                               (int)frame_bytes - received);
+                               (int)recv_len - received);
         if (r <= 0) {
-            LOG_E("display upload recv failed at %d/%d", received, (int)frame_bytes);
+            LOG_E("display upload recv failed at %d/%d", received, (int)recv_len);
             httpd_resp_set_status(req, "500 Internal Server Error");
             httpd_resp_set_type(req, "text/plain");
             httpd_resp_sendstr(req, "recv failed");
@@ -595,9 +672,9 @@ static esp_err_t display_post_handler(httpd_req_t *req)
         }
         received += r;
     }
-    /* 多平面色彩面板：余平面（红）清零 —— LAN 内容恒黑白，直通整帧 */
-    if (epd_fb_total() > frame_bytes)
-        memset(s_frame + frame_bytes, 0x00, epd_fb_total() - frame_bytes);
+    /* v1 单平面 → 多平面面板余平面（红）清零；v2 双平面已填满直通 */
+    if (!color_frame && total_bytes > frame_bytes)
+        memset(s_frame + frame_bytes, 0x00, total_bytes - frame_bytes);
 
     /* 整帧直刷（面板物理原生格式），并同步两处“上一帧”语义：
      * 1) 残影调度局刷计数归零（外部全刷等价于一次全刷）；
@@ -606,7 +683,8 @@ static esp_err_t display_post_handler(httpd_req_t *req)
     refresh_notify_full_done();
     ui_force_full_refresh_next();
 
-    LOG_I("LAN frame displayed (%d bytes)", received);
+    LOG_I("LAN frame displayed (%d bytes%s)", received,
+          color_frame ? ", color" : "");
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
@@ -753,8 +831,13 @@ void lan_server_leave_receive_page(void)
 static void dns_hijack_task(void *arg)
 {
     (void)arg;
-    char qbuf[512];
-    char rbuf[560];
+    /* 2026-08-22 栈溢出勘误：两缓冲共 1072B 原在栈上，叠加 lwIP
+     * socket 调用链（socket/bind/recvfrom ~2KB）超出 3072 栈金丝雀，
+     * AP portal 启动即 Stack canary panic 重启循环（真机日志实证，
+     * dnshijack 任务名点名）。任务单例无重入 → 挪 static（BSS），
+     * 栈同时加大至 4096 双保险 */
+    static char qbuf[512];
+    static char rbuf[560];
 
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
@@ -828,7 +911,7 @@ static void dns_start(void)
 {
     if (s_dns_task) return;
     s_dns_run = true;
-    if (xTaskCreate(dns_hijack_task, "dnshijack", 3072, NULL, 5,
+    if (xTaskCreate(dns_hijack_task, "dnshijack", 4096, NULL, 5,
                     &s_dns_task) != pdPASS) {
         s_dns_task = NULL;
         LOG_E("dns hijack task create failed");
