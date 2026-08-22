@@ -23,10 +23,19 @@ extern const epd_panel_desc_t g_panel_depg0370;
 /* panels/panel_e042a13_ssd1619.cpp（4.2" BWR 三色，SSD1619 手写序列，
  * 2026-08-22 真机勘误：初判 IL0398 有误，IC 实为 SSD1619） */
 extern const epd_panel_desc_t g_panel_e042a13;
+/* panels/panel_wf0270_ssd1680.cpp（2.7" BWR 三色，SSD1680 手写序列，
+ * 22Pin 0.5mm FPC，维峰 WEIFENG WF0270T1PCZ2200E4；到货前未经真机） */
+extern const epd_panel_desc_t g_panel_wf0270;
+/* panels/panel_gdew027c44_il91874.cpp（2.7" BWR 三色，IL91874 手写序列，
+ * 24Pin；2026-08-22 真机 bring-up 完成：原判 WF0270 型号有误，实物
+ * IL91874/EK79652 家族，GxEPD2_270c 序列点亮，全刷 14720ms） */
+extern const epd_panel_desc_t g_panel_gdew027c44;
 
 static const epd_panel_desc_t *const s_registry[] = {
     &g_panel_depg0370,
     &g_panel_e042a13,
+    &g_panel_wf0270,
+    &g_panel_gdew027c44,
 };
 
 const epd_panel_desc_t *epd_panel_get_by_id(const char *id)

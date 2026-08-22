@@ -321,22 +321,31 @@ int epd_driver_init(void)
                   t_rel_ms >= 0 ? "released (COG reset self-test done)" :
                                   "STUCK busy >600ms (COG boot stuck / BUSY shorted)");
 
-    /* 2d. 状态读（面板分支：SSD1619 0x2F 版本读 / UC8176 0x71 FLG）：
+    /* 2d. 状态读（面板分支：SSD16xx 0x2F 版本读 / UC8176 0x71 FLG）：
      *     SPI 通路闭环判据，见 epd_diag_read_status 注释；连读两次看
      *     稳定性。注：本诊断在面板 ops.init 之前执行，读到的是复位
-     *     自检后的待机态 */
-    const bool is_ssd16 = s_panel->controller == EPD_CTRL_SSD1619;
-    const uint8_t st1 = is_ssd16 ? epd_diag_read_status(0x2F, true)
-                                 : epd_diag_read_status(0x71, false);
-    const uint8_t st2 = is_ssd16 ? epd_diag_read_status(0x2F, true)
-                                 : epd_diag_read_status(0x71, false);
-    const uint8_t expect = is_ssd16 ? 0x01 : 0x02;
-    Serial.printf("[EPD-DIAG] status read(0x%02X): 0x%02X/0x%02X %s\n",
-                  is_ssd16 ? 0x2F : 0x71, st1, st2,
-                  st1 == expect || st2 == expect ? "(EXPECTED: SPI LOOP OK, COG responded)" :
-                  st1 == 0xFF && st2 == 0xFF ? "(floating: cmd lost / no COG drive / read timing)" :
-                  st1 == 0x00 && st2 == 0x00 ? "(stuck LOW: short / no drive)" :
-                                               "(unexpected value: check controller)");
+     *     自检后的待机态；SSD1680 0x2F 返回值待 WF0270 bring-up 实测
+     *     （expect 0x01 为 SSD1619 实证值，仅供参考比对）。
+     *     IL91874 无 FLG/版本读寄存器，跳过（2026-08-22 GDEW027C44
+     *     真机实证：0x71 位掩读恒 0x00 而屏工作正常，硬套 UC 系判据
+     *     会误报「stuck LOW」误导排查） */
+    const bool is_ssd16 = (s_panel->controller == EPD_CTRL_SSD1619 ||
+                           s_panel->controller == EPD_CTRL_SSD1680);
+    if (is_ssd16 || s_panel->controller != EPD_CTRL_IL91874) {
+        const uint8_t st1 = is_ssd16 ? epd_diag_read_status(0x2F, true)
+                                     : epd_diag_read_status(0x71, false);
+        const uint8_t st2 = is_ssd16 ? epd_diag_read_status(0x2F, true)
+                                     : epd_diag_read_status(0x71, false);
+        const uint8_t expect = is_ssd16 ? 0x01 : 0x02;
+        Serial.printf("[EPD-DIAG] status read(0x%02X): 0x%02X/0x%02X %s\n",
+                      is_ssd16 ? 0x2F : 0x71, st1, st2,
+                      st1 == expect || st2 == expect ? "(EXPECTED: SPI LOOP OK, COG responded)" :
+                      st1 == 0xFF && st2 == 0xFF ? "(floating: cmd lost / no COG drive / read timing)" :
+                      st1 == 0x00 && st2 == 0x00 ? "(stuck LOW: short / no drive)" :
+                                                   "(unexpected value: check controller)");
+    } else {
+        Serial.printf("[EPD-DIAG] status read: skipped (IL91874 has no FLG/version register)\n");
+    }
 
     /* 3. 硬件 SPI（EVK011 J2: SCK=pin3, SDO=pin5）。
      * GxEPD2 内部 SPI.beginTransaction 使用 GPIO matrix，任意引脚可用 */

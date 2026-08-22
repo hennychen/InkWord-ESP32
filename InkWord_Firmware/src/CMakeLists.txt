@@ -13,6 +13,8 @@ idf_component_register(
         "epd_panel.c"
         "panels/panel_depg0370_uc8253.cpp"
         "panels/panel_e042a13_ssd1619.cpp"   # Phase 6：4.2" 三色面板单元（SSD1619 手写序列，与 arduino 自动递归编译双轨同步）
+        "panels/panel_wf0270_ssd1680.cpp"    # 2.7" 三色面板单元（SSD1680 手写序列，维峰 WF0270，双轨同步）
+        "panels/panel_gdew027c44_il91874.cpp" # 2.7" 三色面板单元（IL91874 手写序列，真机验证，双轨同步）
         "audio_player.c"
         "button_handler.c"
         "haptic.c"

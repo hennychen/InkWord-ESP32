@@ -98,6 +98,11 @@ typedef struct epd_panel_desc {
  * 新增面板：在此追加一个 elif 分支 + platformio.ini 对应 env */
 #if defined(INKWORD_PANEL_E042A13)
 #define EPD_PANEL_DEFAULT_ID "e042a13_ssd1619"  /* 4.2" 400x300 BWR 三色 */
+#elif defined(INKWORD_PANEL_WF0270)
+#define EPD_PANEL_DEFAULT_ID "wf0270_ssd1680"  /* 2.7" 264x176 BWR 三色 */
+#elif defined(INKWORD_PANEL_GDEW027C44)
+#define EPD_PANEL_DEFAULT_ID "gdew027c44_il91874"  /* 2.7" 264x176 BWR
+                                                     * 三色（真机验证面板） */
 #else
 #define EPD_PANEL_DEFAULT_ID "depg0370_uc8253"  /* 默认：3.7" 240x416 BW */
 #endif

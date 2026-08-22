@@ -7,7 +7,7 @@
 | 组件 | 型号 / 规格 | 接口 |
 |------|-------------|------|
 | 主控 | ESP32-S3-DevKitC-1 (16MB Flash, 8MB PSRAM) | — |
-| 屏幕 | DKE DEPG0370 3.7" 240×416 BW（UC8253）/ Hink E042A13-A0 4.2" 400×300 三色（SSD1619，均已真机验证） | 4 线 SPI，多屏切换见下文「多屏切换」节 |
+| 屏幕 | DKE DEPG0370 3.7" 240×416 BW（UC8253）/ Hink E042A13-A0 4.2" 400×300 三色（SSD1619）/ GDEW027C44 同族 2.7" 264×176 三色（IL91874，24Pin，均已真机验证）/ WEIFENG WF0270 2.7" 264×176 三色（SSD1680，22Pin，待到货验证） | 4 线 SPI，多屏切换见下文「多屏切换」节 |
 | 驱动板 | **EVK011-C**（现役）/ **v1.4 通用驱动板**（多屏兼容，见 §1.1） | 见 §1.2 接线图 |
 | 音频 | MAX98357A 功放 | I2S（待接线验证） |
 | 存储 | MicroSD 卡 | SPI + FAT（未接线） |
@@ -162,6 +162,8 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 |------|--------|------|--------|----------|----------|------|
 | DKE DEPG0370 | `depg0370_uc8253` | 3.7" 240×416 黑白 | UC8253 | [`panels/panel_depg0370_uc8253.cpp`](src/panels/panel_depg0370_uc8253.cpp) | 全刷 ~1.5s / 局刷 ~0.4s | ✅ 在用 |
 | Hink E042A13-A0 | `e042a13_ssd1619` | 4.2" 400×300 黑白红 | SSD1619 | [`panels/panel_e042a13_ssd1619.cpp`](src/panels/panel_e042a13_ssd1619.cpp) | 全刷 ~14.6s（三色物理下限，无局刷） | ✅ 真机验证 |
+| WEIFENG WF0270 | `wf0270_ssd1680` | 2.7" 264×176 黑白红（COG 竖屏 176×264 + rotation=1） | SSD1680 | [`panels/panel_wf0270_ssd1680.cpp`](src/panels/panel_wf0270_ssd1680.cpp) | 全刷 ~15s（同族估计，实测后回填），无局刷 | 🧪 待到货验证（22Pin） |
+| GDEW027C44 同族 | `gdew027c44_il91874` | 2.7" 264×176 黑白红（COG 竖屏 176×264 + rotation=1） | IL91874/EK79652 | [`panels/panel_gdew027c44_il91874.cpp`](src/panels/panel_gdew027c44_il91874.cpp) | 全刷 ~14.7s（实测 14730ms），无局刷；RAM 须逐字节独立 CS 事务（家族铁律） | ✅ 真机验证 |
 
 ### 切换屏幕（一条命令）
 
@@ -171,13 +173,17 @@ cd InkWord_Firmware
 ~/.platformio/penv/bin/pio run -e inkword-s3 -t upload --upload-port /dev/cu.usbserial-0001
 # 切到 4.2" 三色屏
 ~/.platformio/penv/bin/pio run -e inkword-s3-e042 -t upload --upload-port /dev/cu.usbserial-0001
+# 切到 2.7" 三色屏（IL91874，24Pin，真机在用）
+~/.platformio/penv/bin/pio run -e inkword-s3-gdew027c44 -t upload --upload-port /dev/cu.usbserial-0001
+# 切到 2.7" 三色屏（WF0270，22Pin FPC 需转接板，待到货）
+~/.platformio/penv/bin/pio run -e inkword-s3-wf0270 -t upload --upload-port /dev/cu.usbserial-0001
 ```
 
-VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `inkword-s3-e042` 后点 Upload 等效。
+VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `inkword-s3-e042` / `inkword-s3-gdew027c44` / `inkword-s3-wf0270` 后点 Upload 等效。
 
 **切换后自检**（串口 115200）：
-- 启动日志出现 `EPD driver initialized: panel 'depg0370_uc8253' ...` 或 `panel 'e042a13_ssd1619' 400x300 dual-plane color` = 面板识别正确；
-- 4.2" 屏开机首刷 ~14.6s 属正常（三色全刷），待机页文字应正常显示。
+- 启动日志出现 `EPD driver initialized: panel 'depg0370_uc8253' ...` 或 `panel 'e042a13_ssd1619' 400x300 dual-plane color` / `panel 'gdew027c44_il91874' 176x264 rot=1 dual-plane color` = 面板识别正确；
+- 三色屏开机首刷 ~14.6-14.7s 属正常（三色全刷），待机页文字应正常显示。
 
 **注意事项**：
 - 三色屏 UX 降级自动生效：无快速局刷（所有局刷请求自动降级全刷 ~14.6s）、待机引文自动轮换停用（SET 手动翻页保留）——固件按 desc 字段自动路由，无需手动配置；
@@ -600,10 +606,13 @@ STA 模式同时注册 mDNS（`inkword.local`，iOS/macOS 支持佳，Android �
 手机浏览器                          ESP32-S3
 ──────────                          ─────────
 Canvas 渲染 (系统字体/图片缩放)
-  → Floyd-Steinberg 抖动
-  → 打包竖屏 1bpp 帧 (12480B,
-    行宽 30B, MSB first, bit=1 白)
-  → POST /api/display    ──────→  校验长度 → 整帧直刷 epd_full_refresh()
+  → 黑白：Floyd-Steinberg 抖动
+  → 彩色（三色面板，2026-08-22）：{黑,白,红}
+    RGB 最近色量化 + FS 误差扩散（WYSIWYG
+    预览，文本可选红字）
+  → 打包面板物理 1bpp 帧 (BW 面板 12480B /
+    三色双平面 30000B, MSB first, bit=1 白/红)
+  → POST /api/display    ──────→  双长度校验 → 整帧直刷 epd_full_refresh()
                                     + 残影计数归零
                                     + 学习页下次强制全刷
 ```
@@ -618,7 +627,7 @@ httpd_uri_match_wildcard`），POST 精确注册；captive portal 探测域名 3
 |------|------|------|
 | GET | `/` | 发送页（内嵌 HTML） |
 | GET | `/wifi` | Wi-Fi 配网页（扫描/连接/状态轮询） |
-| POST | `/api/display` | 整帧 1bpp 位图（Content-Length 必须 = 12480） |
+| POST | `/api/display` | 整帧位图：`epd_fb_size()` 单平面（v1，多平面面板红补零）或 `epd_fb_total()` 双平面（v2 彩色：[0]=BW bit=1 白 + [1]=红 bit=1 红）；3.7" 屏两者相等 = 12480 |
 | POST | `/api/wifi/connect` | 异步连接 `{"ssid":..,"pass":..}` |
 | GET | `/api/wifi/scan` | AP 扫描列表 JSON |
 | GET | `/api/wifi/status` | 连接状态 JSON（idle/connecting/ok/fail + IP） |
