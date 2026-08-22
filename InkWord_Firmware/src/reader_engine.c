@@ -436,7 +436,14 @@ void reader_render_placeholder(void)
     static const char *l2 = "未找到书籍";
     static const char *l3 = "请将UTF-8文本放入";
     static const char *l4 = "SD卡books目录后重启";
-    const int level = layout_profile_get()->quote_level;
+    int level = layout_profile_get()->quote_level;
+    /* 档位大字级按可用高度自适应降级（2026-08-22 SMALL 档配套）：
+     * 2.7" 176px 高下 24px 底缘 222px/20px 198px 均溢出，降至 16px
+     * （174px）才放得下；MID(240px)/LARGE 验算不降级，视觉零变化 */
+    while (level > 0 &&
+           R_AREA_Y + 36 + 5 * (cjk_glyph_cell_size(level) + 2) +
+               cjk_glyph_cell_size(level) > epd_gfx_height())
+        level--;
     const int step = cjk_glyph_cell_size(level) + 2;
     int y = R_AREA_Y + 36;
 

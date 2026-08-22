@@ -105,10 +105,13 @@ static const char *TAG = "STANDBY";
  * 影子/抓取缓冲按运行期带尺寸堆分配（standby_init），static 数组
  * 尺寸约束解除（Phase 4 遗留注释同步作废） */
 #define SB_QUOTE_COLS      8     /* 每行字数上限（引文数据约束 <=8 字/行） */
-#define SB_QUOTE_Y0        8     /* 引文带顶：屏上部满幅可用（顶部边距语义常量） */
-#define SB_QUOTE_LINE_GAP  8     /* 行间距：字格之外追加（松排版，不侵入出处带） */
-#define SB_ATTR_BOTTOM     24    /* 出处底边距（视觉对称留白） */
-#define SB_ATTR_GAP        8     /* 引文带底与出处带顶间隙 */
+/* 布局常量 SMALL 档紧化（2026-08-22 升 24px 配套）：2.7" 176px 短边下
+ * 五行引文块 128px + 出处带 36px 需带高 ≥132px，原 MID 参数（8/8/8/24）
+ * 仅 112px 装不下。三元取值：MID/LARGE 保持原值（视觉零变化铁律） */
+#define SB_QUOTE_Y0        (s_tight ? 4 : 8)   /* 引文带顶 */
+#define SB_QUOTE_LINE_GAP  (s_tight ? 2 : 8)   /* 行间距：字格之外追加 */
+#define SB_ATTR_BOTTOM     (s_tight ? 12 : 24) /* 出处底边距 */
+#define SB_ATTR_GAP        (s_tight ? 4 : 8)   /* 引文带底与出处带顶间隙 */
 #define SB_QUOTE_W         (SB_QUOTE_COLS * s_cell)
 #define SB_QUOTE_X0        ((epd_gfx_width() - SB_QUOTE_W) / 2)
 #define SB_ATTR_Y0         (epd_gfx_height() - SB_ATTR_BOTTOM - s_cell)
@@ -154,6 +157,9 @@ static int s_last_quote = -2;         /* 引文下标（5 分钟窗；-1=无效�
  * 初值为 epd 未初始化前的兜底，绘制前必经 standby_init 覆盖） */
 static int s_quote_level = 2;
 static int s_cell = CJK_GLYPH_H;
+static bool s_tight = false;  /* SMALL 档紧排版（standby_init 置位）：
+                               * 176px 短边容纳 24px 五行引文需压行距/边距
+                               *（见下方布局常量三元分支，MID/LARGE 原值） */
 
 /* 引文带影子缓存（局刷智能分流的差分基准；Phase 5 改运行期按带
  * 尺寸堆分配，LARGE 档带高增长不再受编译期上限约束）：
@@ -417,6 +423,7 @@ void standby_init(void)
      * 已于 epd_driver_init 就绪，且首调 layout_profile_get 缓存档位） */
     s_quote_level = layout_profile_get()->quote_level;
     s_cell = cjk_glyph_cell_size(s_quote_level);
+    s_tight = (layout_profile_get()->kind == LAYOUT_SMALL);
     int bytes = SB_QUOTE_W / 8 * SB_QUOTE_H;
     if (bytes != s_quote_bytes || !s_quote_shadow || !s_quote_scratch) {
         free(s_quote_shadow);

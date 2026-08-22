@@ -10,9 +10,9 @@
  *
  * 字库级映射（§11.2 三级字号映射表；MID 列 = 现役 416x240 视觉基线）：
  *   quote_level —— 大字场景（待机引文出处 / 阅读占位提示）：
- *     SMALL=0(16px) / MID=2(24px) / LARGE=2(24px，32px 级生成后升 3)
+ *     SMALL=2(24px，待机页紧排版配合)/ MID=2(24px) / LARGE=2(24px，32px 级生成后升 3)
  *   reader_level —— 阅读正文默认级（用户 NVS 字号优先，此处仅 miss 默认）：
- *     SMALL=0(16px) / MID=1(20px) / LARGE=2(24px)
+ *     SMALL=1(20px) / MID=1(20px) / LARGE=2(24px)
  * 学习页释义恒 level 0（16px 为字库下限，全档适用，无映射必要）。
  */
 #ifndef INKWORD_LAYOUT_PROFILE_H

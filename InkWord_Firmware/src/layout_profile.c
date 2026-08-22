@@ -11,7 +11,12 @@
  * Phase 5 接线以现状值为准——设计文档 §8.1 示例 MID=2(24px) 指
  * 大字场景；阅读正文现状默认 20px，按视觉零变化铁律取 1） */
 static const layout_profile_t k_profiles[] = {
-    [LAYOUT_SMALL] = { LAYOUT_SMALL, 0, 0 },  /* 2.7"：16px 全场景 */
+    [LAYOUT_SMALL] = { LAYOUT_SMALL, 2, 1 },  /* 2.7"：引文 24px（待机页
+                                  * SMALL 紧排版配合，见 standby_page.c
+                                  * s_tight）/ 正文 20px。2026-08-22 真机
+                                  * 勘误：初版全 16px 字小笔画糊（16px/
+                                  * 117PPI≈3.5mm，低于 3.7" 基线现感），
+                                  * 升 24px(5.2mm)/20px(4.3mm) 后改善 */
     [LAYOUT_MID]   = { LAYOUT_MID,   2, 1 },  /* 引文 24px / 正文 20px（现状） */
     [LAYOUT_LARGE] = { LAYOUT_LARGE, 2, 2 },  /* 32px 级生成后升 3（§11.2） */
 };
