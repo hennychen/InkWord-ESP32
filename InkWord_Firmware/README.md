@@ -163,7 +163,7 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 | DKE DEPG0370 | `depg0370_uc8253` | 3.7" 240×416 黑白 | UC8253 | [`panels/panel_depg0370_uc8253.cpp`](src/panels/panel_depg0370_uc8253.cpp) | 全刷 ~1.5s / 局刷 ~0.4s | ✅ 在用 |
 | Hink E042A13-A0 | `e042a13_ssd1619` | 4.2" 400×300 黑白红 | SSD1619 | [`panels/panel_e042a13_ssd1619.cpp`](src/panels/panel_e042a13_ssd1619.cpp) | 全刷 ~14.6s（三色物理下限，无局刷） | ✅ 真机验证 |
 | WEIFENG WF0270 | `wf0270_ssd1680` | 2.7" 264×176 黑白红（COG 竖屏 176×264 + rotation=1） | SSD1680 | [`panels/panel_wf0270_ssd1680.cpp`](src/panels/panel_wf0270_ssd1680.cpp) | 全刷 ~15s（同族估计，实测后回填），无局刷 | 🧪 待到货验证（22Pin） |
-| GDEW027C44 同族 | `gdew027c44_il91874` | 2.7" 264×176 黑白红（COG 竖屏 176×264 + rotation=1） | IL91874/EK79652 | [`panels/panel_gdew027c44_il91874.cpp`](src/panels/panel_gdew027c44_il91874.cpp) | 全刷 ~14.7s（实测 14730ms），无局刷；RAM 须逐字节独立 CS 事务（家族铁律） | ✅ 真机验证 |
+| GDEW027C44 同族 | `gdew027c44_il91874` | 2.7" 264×176 黑白红（COG 竖屏 176×264 + rotation=1） | IL91874/EK79652 | [`panels/panel_gdew027c44_il91874.cpp`](src/panels/panel_gdew027c44_il91874.cpp) | 快刷 ~4.4s（E4 LUT 压缩，实测 4361ms）+ 每 8 次插 1 次官方深刷 ~14.7s 抗残影，无局刷；RAM 须逐字节独立 CS 事务（家族铁律） | ✅ 真机验证 |
 
 ### 切换屏幕（一条命令）
 
@@ -183,7 +183,7 @@ VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `i
 
 **切换后自检**（串口 115200）：
 - 启动日志出现 `EPD driver initialized: panel 'depg0370_uc8253' ...` 或 `panel 'e042a13_ssd1619' 400x300 dual-plane color` / `panel 'gdew027c44_il91874' 176x264 rot=1 dual-plane color` = 面板识别正确；
-- 三色屏开机首刷 ~14.6-14.7s 属正常（三色全刷），待机页文字应正常显示。
+- 三色屏全刷时长：2.7" 快刷 ~4.4s（每 9 次含 1 次深刷 ~14.7s，日志 `FAST/DEEP LUT` 可辨）；4.2" ~14.6s（三色物理下限）；待机页文字应正常显示。
 
 **注意事项**：
 - 三色屏 UX 降级自动生效：无快速局刷（所有局刷请求自动降级全刷 ~14.6s）、待机引文自动轮换停用（SET 手动翻页保留）——固件按 desc 字段自动路由，无需手动配置；

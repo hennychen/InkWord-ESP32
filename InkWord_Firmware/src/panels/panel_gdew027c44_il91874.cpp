@@ -29,8 +29,13 @@
  * 反证）。driver 层 plane 约定 bit=1 白（epd_driver.cpp canvas_to_panel
  * 注释），故本单元发 0x14 前按字节取反；0x15 bit=1=红 语义一致直通。
  *
- * 时序（2026-08-22 真机实测）：全刷 0x12 后 BUSY LOW 14720ms；
+ * 时序（2026-08-22 真机实测）：官方 LUT 全刷 0x12 后 BUSY LOW 14720ms；
  * RST 脉冲 20ms；busy_level=0（LOW=忙，UC/IL 系）。
+ * 快刷（2026-08-22 LUT 提速实验定档 E4）：五组 LUT 重复数 byte5 等比例
+ * 25% 压缩（1157→341 帧），BUSY 4359ms，四象限/全白目验无残影；刷新
+ * 时长 = 帧数 x 12.72ms 线性模型（datasheet §8.2.16 格式破译 + ink_test
+ * E0~E4 五档真机实测拟合误差 <0.5%）。默认每 8 次快刷插 1 次官方深刷
+ * 抗残影累积（Kindle 式全刷周期，G027_FAST_PER_DEEP 可调）。
  *
  * 无状态设计（desc 头注释铁律）：do_refresh 前置 s_ready 检查，
  * power_off/deep_sleep 后归零，下次刷新自动 RST 唤醒 + 完整重配
@@ -106,8 +111,13 @@ static void wait_refresh_done(void)
                   (unsigned)(millis() - t0), (unsigned)(millis() - t1));
 }
 
-/* —— 五组 LUT（GxEPD2_270c lut_20~24 原值，GDEW027C44 官方波形；
- * IL91874 无 OTP 三色波形，PSR 0xaf 选 register LUT 后必须显式下发） —— */
+/* —— 五组 LUT（IL91874 无 OTP 三色波形，PSR 0xaf 选 register LUT 后
+ * 必须显式下发）。两组：
+ *   LUT_*（原名）= GxEPD2_270c lut_20~24 原值，GDEW027C44 官方波形
+ *     （1157 帧 / 14.7s）——深刷与上电默认；
+ *   LUT_*_FAST = E4 快刷表：仅重复数 byte5 压缩（S2=2 S3=4 S4=2
+ *     S5=1 S6=2，341 帧 / 4.4s），其余字节与官方逐字节一致
+ *     （2026-08-22 ink_test 五档真机实验+目验定档，见文件头）。 —— */
 static const uint8_t LUT_VCOM[] = {          /* 0x20 vcom */
     0x00, 0x00, 0x00, 0x1A, 0x1A, 0x00, 0x00, 0x01,
     0x00, 0x0A, 0x0A, 0x00, 0x00, 0x08, 0x00, 0x0E, 0x01, 0x0E, 0x01, 0x10,
@@ -138,6 +148,37 @@ static const uint8_t LUT_BLACK[] = {         /* 0x24 bb b */
     0x00, 0x04, 0x10, 0x00, 0x00, 0x05, 0x00, 0x03, 0x0E, 0x00, 0x00, 0x0A,
     0x00, 0x23, 0x00, 0x00, 0x00, 0x01,
 };
+/* E4 快刷表（byte5: S2 08→02 S3 10→04 S4 08→02 S5 05→01 S6 0A→02） */
+static const uint8_t LUT_VCOM_FAST[] = {
+    0x00, 0x00, 0x00, 0x1A, 0x1A, 0x00, 0x00, 0x01,
+    0x00, 0x0A, 0x0A, 0x00, 0x00, 0x02, 0x00, 0x0E, 0x01, 0x0E, 0x01, 0x04,
+    0x00, 0x0A, 0x0A, 0x00, 0x00, 0x02, 0x00, 0x04, 0x10, 0x00, 0x00, 0x01,
+    0x00, 0x03, 0x0E, 0x00, 0x00, 0x02, 0x00, 0x23, 0x00, 0x00, 0x00, 0x01,
+};
+static const uint8_t LUT_WW_FAST[] = {
+    0x90, 0x1A, 0x1A, 0x00, 0x00, 0x01, 0x40, 0x0A, 0x0A, 0x00, 0x00, 0x02,
+    0x84, 0x0E, 0x01, 0x0E, 0x01, 0x04, 0x80, 0x0A, 0x0A, 0x00, 0x00, 0x02,
+    0x00, 0x04, 0x10, 0x00, 0x00, 0x01, 0x00, 0x03, 0x0E, 0x00, 0x00, 0x02,
+    0x00, 0x23, 0x00, 0x00, 0x00, 0x01,
+};
+static const uint8_t LUT_RED_FAST[] = {
+    0xA0, 0x1A, 0x1A, 0x00, 0x00, 0x01, 0x00, 0x0A, 0x0A, 0x00, 0x00, 0x02,
+    0x84, 0x0E, 0x01, 0x0E, 0x01, 0x04, 0x90, 0x0A, 0x0A, 0x00, 0x00, 0x02,
+    0xB0, 0x04, 0x10, 0x00, 0x00, 0x01, 0xB0, 0x03, 0x0E, 0x00, 0x00, 0x02,
+    0xC0, 0x23, 0x00, 0x00, 0x00, 0x01,
+};
+static const uint8_t LUT_WHITE_FAST[] = {
+    0x90, 0x1A, 0x1A, 0x00, 0x00, 0x01, 0x40, 0x0A, 0x0A, 0x00, 0x00, 0x02,
+    0x84, 0x0E, 0x01, 0x0E, 0x01, 0x04, 0x80, 0x0A, 0x0A, 0x00, 0x00, 0x02,
+    0x00, 0x04, 0x10, 0x00, 0x00, 0x01, 0x00, 0x03, 0x0E, 0x00, 0x00, 0x02,
+    0x00, 0x23, 0x00, 0x00, 0x00, 0x01,
+};
+static const uint8_t LUT_BLACK_FAST[] = {
+    0x90, 0x1A, 0x1A, 0x00, 0x00, 0x01, 0x20, 0x0A, 0x0A, 0x00, 0x00, 0x02,
+    0x84, 0x0E, 0x01, 0x0E, 0x01, 0x04, 0x10, 0x0A, 0x0A, 0x00, 0x00, 0x02,
+    0x00, 0x04, 0x10, 0x00, 0x00, 0x01, 0x00, 0x03, 0x0E, 0x00, 0x00, 0x02,
+    0x00, 0x23, 0x00, 0x00, 0x00, 0x01,
+};
 
 static void il_write_lut(uint8_t cmd, const uint8_t *lut, size_t n)
 {
@@ -158,10 +199,10 @@ static void set_full_window(uint8_t cmd)
     epd_dat((uint8_t)(g_panel_gdew027c44.panel_h & 0xFF)); /* h = 264 (0x108) */
 }
 
-static int panel_init(void)
+static int panel_init_impl(bool fast)
 {
     /* GxEPD2_270c _InitDisplay + _Init_Full + _PowerOn 一比一
-     * （Info/ink_test 真机验证口径） */
+     * （Info/ink_test 真机验证口径；fast=true 选 E4 快刷 LUT） */
     pinMode(EPD_RESET_PIN, OUTPUT);
     pinMode(EPD_CS_PIN, OUTPUT);
     pinMode(EPD_DC_PIN, OUTPUT);
@@ -196,11 +237,19 @@ static int panel_init(void)
     epd_cmd(0x82); epd_dat(0x12);             /* VCOM_DC */
     epd_cmd(0x50); epd_dat(0x87);             /* CDI VCOM 与边框 */
 
-    il_write_lut(0x20, LUT_VCOM,   sizeof(LUT_VCOM));
-    il_write_lut(0x21, LUT_WW,     sizeof(LUT_WW));
-    il_write_lut(0x22, LUT_RED,    sizeof(LUT_RED));
-    il_write_lut(0x23, LUT_WHITE,  sizeof(LUT_WHITE));
-    il_write_lut(0x24, LUT_BLACK,  sizeof(LUT_BLACK));
+    if (fast) {   /* E4 快刷表（LUT 区注释：仅 byte5 重复数压缩） */
+        il_write_lut(0x20, LUT_VCOM_FAST,   sizeof(LUT_VCOM_FAST));
+        il_write_lut(0x21, LUT_WW_FAST,     sizeof(LUT_WW_FAST));
+        il_write_lut(0x22, LUT_RED_FAST,    sizeof(LUT_RED_FAST));
+        il_write_lut(0x23, LUT_WHITE_FAST,  sizeof(LUT_WHITE_FAST));
+        il_write_lut(0x24, LUT_BLACK_FAST,  sizeof(LUT_BLACK_FAST));
+    } else {      /* 官方深刷表（GxEPD2_270c 原值） */
+        il_write_lut(0x20, LUT_VCOM,   sizeof(LUT_VCOM));
+        il_write_lut(0x21, LUT_WW,     sizeof(LUT_WW));
+        il_write_lut(0x22, LUT_RED,    sizeof(LUT_RED));
+        il_write_lut(0x23, LUT_WHITE,  sizeof(LUT_WHITE));
+        il_write_lut(0x24, LUT_BLACK,  sizeof(LUT_BLACK));
+    }
 
     epd_cmd(0x04);                            /* power on */
     panel_wait_idle(5000);
@@ -209,13 +258,40 @@ static int panel_init(void)
     return 0;
 }
 
+/* ops.init：上电默认官方深刷表（保守；desc.full_ms=快刷口径仅为日志
+ * 提示，上电首刷走深刷无妨） */
+static int panel_init(void)
+{
+    return panel_init_impl(false);
+}
+
 /* 双平面写入 + 真全刷（GxEPD2 writeImage + _Update_Full 一比一）：
  * planes[0] = B/W 平面（driver 语义 bit=1 白）→ 取反发 0x14（RAM 1=黑）；
  * planes[1] = 红位平面（bit=1 红）→ 直通发 0x15（RAM 1=红）；
  * 刷新 0x12 直接激活（UC/IL 系标准，非 SSD16xx 的 0x22/0x20 序列） */
+/* 快/深刷调度：每 G027_FAST_PER_DEEP 次快刷插 1 次官方深刷，抗残影
+ * 累积（E4 单次目验无残影，长期累积未验证，Kindle 式全刷周期保守
+ * 设计；宏改 0 = 恒快刷，调用点 deep 写死 true = 恒深刷回退） */
+#define G027_FAST_PER_DEEP  8
+static uint32_t s_refresh_seq = 0;
+
+static bool refresh_pick_deep(void)
+{
+    const bool deep = (G027_FAST_PER_DEEP > 0) &&
+        (s_refresh_seq % (G027_FAST_PER_DEEP + 1) == G027_FAST_PER_DEEP);
+    s_refresh_seq++;
+    return deep;
+}
+
 static int do_refresh(const uint8_t *bw_plane, const uint8_t *red_plane)
 {
-    if (!s_ready && panel_init() != 0) return -1;
+    /* 换 LUT 须 RST 重配整套下发（无状态铁律；重配 ~150ms 相对波形
+     * 4.4s/14.7s 可忽略），每刷重 init（GxEPD2 每次 _reset 同风格） */
+    const bool deep = refresh_pick_deep();
+    Serial.printf("[G027] refresh #%u: %s LUT\n",
+                  (unsigned)(s_refresh_seq - 1),
+                  deep ? "DEEP (official 14.7s)" : "FAST (E4 4.4s)");
+    if (panel_init_impl(!deep) != 0) return -1;
     const size_t plane_bytes =
         (size_t)(g_panel_gdew027c44.panel_w / 8) * g_panel_gdew027c44.panel_h;
 
@@ -245,7 +321,8 @@ static int panel_write_full(const uint8_t *frame)
      * 注：本路径不维护 prev 帧一致性，调用方须强制下一次全刷
      * （ui_force_full_refresh_next 已保证） */
     if (!frame) {
-        if (!s_ready && panel_init() != 0) return -1;
+        const bool deep = refresh_pick_deep();  /* 清白同享快/深调度 */
+        if (panel_init_impl(!deep) != 0) return -1;
         const size_t plane_bytes =
             (size_t)(g_panel_gdew027c44.panel_w / 8) * g_panel_gdew027c44.panel_h;
         set_full_window(0x14);
@@ -310,12 +387,14 @@ const epd_panel_desc_t g_panel_gdew027c44 = {
     .rst_pulse_ms = 20,           /* GxEPD2 默认复位脉宽（真机验证） */
     .busy_level = 0,              /* BUSY=LOW 忙（UC/IL 系，与
                                    * SSD16xx HIGH=忙相反） */
-    .busy_timeout_ms = 20000,     /* 实测忙 14720ms + 余量 */
+    .busy_timeout_ms = 20000,     /* 深刷忙 14720ms + 余量（快刷 4359ms
+                                   * 远在内，单字段覆盖两档） */
     .power_on_ms  = 50,           /* 0x04 后自检，保守近似值 */
     .power_off_ms = 50,
-    .full_ms    = 15000,          /* 真机实测 14720ms（2026-08-22
-                                   * bring-up 多轮一致）+余量 */
-    .partial_ms = 15000,          /* 无快速局刷：partial==full */
+    .full_ms    = 5000,           /* E4 快刷实测 4359ms（2026-08-22 LUT
+                                   * 提速定档）+余量；每 9 次刷新含 1 次
+                                   * 官方深刷 14720ms（见文件头/LUT 注释） */
+    .partial_ms = 5000,           /* 无快速局刷：partial==full */
     .partial_enabled = false,     /* 三色面板一律 false（§13.2） */
     .passes     = 1,
     .partial_count_full_refresh = 1, /* 无局刷：阈值不参与调度，保守 1 */
