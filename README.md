@@ -43,7 +43,11 @@
 |:---|:---|:---:|:---|
 | 固件（生产/演示双环境） | `pio run -e inkword-s3 -e inkword-s3-demo` | ✅ | 2026-08-22（Flash 55% / RAM 17%；native-test 对拍 2/2 绿） |
 | 固件算法单测（host） | `pio test -e native-test` | ✅ 2/2 | 2026-08-22（FSRS 12 序列 76 向量对拍 + 锚点） |
+| 固件音标修复（IPA 点阵） | clean 全量零警告 + wf0270 抽查 + native-test 2/2；真机 2407 词条 `/səˈsaɪəti/` 重音符/斜杠直渲（详见 InkWord_Firmware/README.md） | ✅ | 2026-08-24 |
 | 后端 | `dotnet build`（0 错误）＋ `dotnet test` 8/8 ＋ 本机运行冒烟（登录/影子链路/发音评测/AI 失败标记与复位闭环） | ✅ | 2026-08-23 |
+| M1 AI 真实生成验收 | Ollama qwen2.5:1.5b（brew 原生，Metal）：生成→待审→应用→驳回→导出全链路；Example≤108B / Root≤20B 红线合规 | ✅ | 2026-08-23 |
+| 云端 LLM 接入 | Provider=openai + CloudEndpoint（DeepSeek/Qwen/智谱三家实测）；kind=2 辨析链路通过 | ✅ | 2026-08-23 |
+| 管理后台 UI 实测 | 登录/看板对比图/词表 AI 徽标（含失败+复位交互）/生成弹窗/审核台空态浏览器全过 | ✅ | 2026-08-23 |
 | 管理后台 | `ng build`（16.3s 零警告）＋ AI 审核台/对比图表 | ✅ | 2026-08-22 |
 
 ---
@@ -202,6 +206,20 @@ export ConnectionStrings__Postgres="Host=localhost;Port=5432;Database=inkword;Us
 dotnet run --project src/InkWord.API --urls http://localhost:5090
 # API: http://localhost:5090/swagger（前端 environment.development 直连 5090）
 ```
+
+##### LLM Provider 切换（Ai:Provider）
+
+> key 只走环境变量 / dotnet user-secrets，**绝不入仓库**（appsettings*.json 均被 git 跟踪）。
+
+| Provider | 环境变量 | 质量实测（词根） |
+|:---|:---|:---|
+| `ollama`（默认） | 无需 key；`Ai__OllamaUrl` / `Ai__Model` | 1.5b 差（`视→review 复习`）；7b 可用但慢 |
+| DeepSeek ⭐ | `Ai__Provider=openai Ai__Model=deepseek-chat Ai__CloudEndpoint=https://api.deepseek.com/v1 Ai__CloudApiKey=<key>` | `re=再次; view=看` 最佳 |
+| Qwen 云 | `Ai__Provider=openai Ai__Model=qwen-turbo Ai__CloudEndpoint=https://dashscope.aliyuncs.com/compatible-mode/v1 Ai__CloudApiKey=<key>` | `rev=回; view=看` 良好 |
+| 智谱（免费档） | `Ai__Provider=openai Ai__Model=glm-4-flash Ai__CloudEndpoint=https://open.bigmodel.cn/api/paas/v4 Ai__CloudApiKey=<key>` | 可用，格式略生硬 |
+
+2026-08-23 实测：DeepSeek deepseek-chat 走后端全链路（生成→审核→应用→导出 43B 合红线上）通过；
+云端为批量词库生成首选（质量/速度/磁盘均优于本地小模型，公开教辅数据无隐私顾虑）。
 
 #### 管理后台
 
