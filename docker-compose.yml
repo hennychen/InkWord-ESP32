@@ -62,11 +62,13 @@ services:
       Jwt__Issuer: "InkWord"
       Jwt__Audience: "InkWordAdmin"
       Jwt__Secret: "${JWT_SECRET:-InkWord_Super_Secret_Key_2024_ChangeMe_Please_32+}"
-      # M1 AI 内容生成（Ai__* → Ai:*）：容器内经服务名访问 ollama
+      # M1 AI 内容生成（Ai__* → Ai:*）：容器内经服务名访问 ollama；
+      # 切云端（OpenAI 兼容）：AI_PROVIDER=openai + AI_CLOUD_ENDPOINT + AI_CLOUD_API_KEY（.env，不入库）
       Ai__Provider: "${AI_PROVIDER:-ollama}"
       Ai__OllamaUrl: "http://ollama:11434"
       Ai__Model: "${AI_MODEL:-qwen2.5:7b}"
       Ai__CloudApiKey: "${AI_CLOUD_API_KEY:-}"
+      Ai__CloudEndpoint: "${AI_CLOUD_ENDPOINT:-}"
       Ai__Concurrency: "${AI_CONCURRENCY:-2}"
       # M3 FSRS 引擎开关：sm2（默认，影子运行）| fsrs（FSRS 生效）
       Srs__Engine: "${SRS_ENGINE:-sm2}"

@@ -16,6 +16,7 @@ using Microsoft.OpenApi.Models;
 using OpenAI;
 using Serilog;
 using StackExchange.Redis;
+using System.ClientModel;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -62,8 +63,15 @@ if (string.Equals(aiCfg["Provider"], "openai", StringComparison.OrdinalIgnoreCas
     var apiKey = aiCfg["CloudApiKey"];
     if (string.IsNullOrEmpty(apiKey))
         throw new InvalidOperationException("Ai:Provider=openai 需配置 Ai:CloudApiKey");
-    builder.Services.AddSingleton<IChatClient>(_ =>
-        new OpenAIClient(apiKey).GetChatClient(aiModel).AsIChatClient());
+    // 云端 OpenAI 兼容端点（空则官方 api.openai.com）：
+    // DeepSeek https://api.deepseek.com/v1 ｜ Qwen 兼容模式 https://dashscope.aliyuncs.com/compatible-mode/v1
+    // ｜ 智谱 https://open.bigmodel.cn/api/paas/v4 —— key 走环境变量/user-secrets，不入仓库
+    var endpoint = aiCfg["CloudEndpoint"];
+    var oaClient = string.IsNullOrEmpty(endpoint)
+        ? new OpenAIClient(apiKey)
+        : new OpenAIClient(new ApiKeyCredential(apiKey),
+            new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+    builder.Services.AddSingleton<IChatClient>(_ => oaClient.GetChatClient(aiModel).AsIChatClient());
 }
 else
 {
@@ -188,6 +196,26 @@ if (app.Environment.IsDevelopment())
             Role = "Admin",
         });
         await db.SaveChangesAsync();
+    }
+}
+
+// ---- 系统默认词库种子（2026-08-23）：Words 表为空时自动导入
+// SeedData/default_words.csv（开源中小学词库/古诗词 ≈2400 条，设备端
+// 全库同步上限 4000，见 tools/default_vocab/README.md）。开发/生产一致
+// 生效；表未就绪或文件缺失仅告警不阻断启动。
+using (var seedScope = app.Services.CreateScope())
+{
+    try
+    {
+        var seedDb = seedScope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+        var seeded = await InkWord.API.DefaultWordSeeder.SeedAsync(seedDb);
+        if (seeded > 0)
+            Log.Information("默认词库已导入 {Count} 条", seeded);
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "默认词库种子跳过（表未就绪或文件缺失）");
     }
 }
 

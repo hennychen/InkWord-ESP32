@@ -24,4 +24,10 @@
     <ProjectReference Include="..\InkWord.Jobs\InkWord.Jobs.csproj" />
   </ItemGroup>
 
+  <!-- 系统默认词库种子数据（2026-08-23）：随发布输出，运行时由
+       DefaultWordSeeder 读取；tools/default_vocab 可重新生成 -->
+  <ItemGroup>
+    <None Update="SeedData\default_words.csv" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

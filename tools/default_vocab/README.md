@@ -1,0 +1,90 @@
+# 系统默认词库（GitHub 开源中小学词库/古诗词）
+
+InkWord 系统默认词库的**数据源下载、格式转换与产物说明**。默认组合已随
+后端启动自动导入（`SeedData/default_words.csv`，Words 表为空时幂等执行，
+见 `InkWord_Backend/src/InkWord.API/SeedDefaultWords.cs`）。
+
+## 目录结构
+
+```
+tools/default_vocab/
+├── .raw/                    # 原始数据（不入 git；download.py 重新下载）
+│   └── download.py          # 数据源批量下载（走本机 7897 代理）
+├── gen_default_vocab.py     # 转换脚本：原始数据 → 系统 CSV
+└── out/
+    ├── default_words.csv    # 默认组合 2407 条（后端 SeedData 的正本来源）
+    └── subdicts/            # 教材分册词库 25 册（按需经管理端导入）
+```
+
+## 数据源与许可证
+
+| 内容 | 来源 | 许可证 | 规模 |
+|---|---|---|---|
+| 中考核心词汇 | [qwerty-learner](https://github.com/RealKai42/qwerty-learner) `ZhongKaoHeXin.json` | GPL-3.0 | 2140 词 |
+| 高考 3500 词 | 同上 `GaoKao_3500.json` | GPL-3.0 | 3877 词 |
+| 人教版教材分册词汇（小学 8 册/初中 5 册/高中 11 册） | 同上 `PEP*.json` | GPL-3.0 | 10920 词 |
+| 小学必背古诗词 | [AncientPoemsPrimary](https://github.com/MIZHANG08/AncientPoemsPrimary) | 无（注明来源） | 90 首 |
+| 初中古诗文 | [Junior-Middle-School-poetry](https://github.com/tangyuan0821/Junior-Middle-School-poetry) | CC-BY-SA-4.0 | 117 篇 |
+| 高考古诗文 60 篇 | [gaokao-poetry](https://github.com/clover-yan/gaokao-poetry) | CC-BY-SA-4.0 | 60 篇 |
+
+> 词表/篇目本身属于事实性考纲数据；各仓库许可如上，再分发时保留本表出处。
+> 备选全量库：[chinese-poetry](https://github.com/chinese-poetry/chinese-poetry)（MIT，34 万+ 篇）。
+
+## 默认组合（2407 条）
+
+| Tag | 条数 | Grade | 难度 |
+|---|---|---|---|
+| 中考核心 | 2140 | 初中 | 2 |
+| 小学古诗 | 90 | 小学 | 1 |
+| 初中古诗文 | 117 | 初中 | 2 |
+| 高考古诗文 | 60 | 高中 | 3 |
+
+## 硬约束（务必遵守）
+
+- **设备端全库同步上限 4000 词**：`/api/device/sync/words` 按 Version 增量
+  拉取全库（无 Tag 过滤），固件 `MAX_WORDS=4000`。**默认组合 2407 条已占用
+  额度；导入任何分册前先核算总量**（如默认组合 + 人教版三上 64 条 = 2471 ✓，
+  再叠加高考 3500 则 6284 ✗ 超限，设备学习状态将整体作废重建）。
+- **CSV 为 Split(',') 简单格式**：后端 `AdminWordController.ImportCsv` 逐行
+  `Split(',')`，**无引号转义**。生成端已把字段内英文逗号→中文逗号、引号→
+  单引号、换行→空格。手工编辑 CSV 时同样不得引入英文逗号。
+- **字段字节上限**（固件 `word_parser.h` 各宏 -4B 余量）：text 60 /
+  phonetic 60 / meaning 252 / example 252 / tag 28 / source 60 / grade 20。
+  语文长文（《阿房宫赋》等）超限自动截断加"……"。
+
+## 字段映射
+
+英语（qwerty-learner）：`name→Text`，`usphone(无则 ukphone)→Phonetic`，
+`trans 用"；"连接→Meaning`，`Tag/Source/Grade 按词库元数据`。
+
+语文（诗词）：`title→Text`，`author→Phonetic`（单词卡音标栏显示作者），
+`content→Meaning`（超限截断），`首句→Example`。
+
+## 使用方法
+
+```bash
+# 1. 下载原始数据（需本机 7897 代理；改 PROXY 常量可换）
+cd tools/default_vocab/.raw && python3 download.py
+
+# 2. 生成 CSV（自动校验：列数/字节上限/无英文逗号撕裂/4000 总量）
+cd tools/default_vocab && python3 gen_default_vocab.py
+
+# 3. 同步默认词库到后端 SeedData（后端启动 seed 读取该副本）
+cp out/default_words.csv ../../InkWord_Backend/src/InkWord.API/SeedData/
+
+# 3b. 同步内嵌兜底词库到固件（embed 进固件 rodata，无 SD 卡开箱即用；
+#     固件重烧后生效。与 CSV 同源同序生成，id/difficulty 数字契约对齐
+#     后端 export；无 cloudId = 本地词条，评分/收藏不上报）
+cp out/default_words.json ../../InkWord_Firmware/src/
+
+# 4. 分册按需导入：管理端「词库管理 → 导入 CSV」上传 out/subdicts/*.csv
+#    （导入前核算全库总量 ≤ 4000，见上节硬约束）
+
+# 5. 固件侧端到端验证（可选，双端对拍纪律）：后端导出 words.json
+#    后喂给固件原生解析器，断言 2407 条×11 字段逐字节一致
+#    cd InkWord_Backend && dotnet run   # 另一终端登录后：
+#    curl -H "Authorization: Bearer $TOKEN" localhost:5228/api/admin/words/export -o /tmp/words.json
+#    cd InkWord_Firmware && WORDS_JSON=/tmp/words.json /opt/homebrew/bin/pio test -e native-test
+#    （缺 WORDS_JSON 时该用例 IGNORE；注意 PATH 里的 ~/Library/Python/3.9/bin/pio
+#     是旧版，须用 penv 的 /opt/homebrew/bin/pio）
+```

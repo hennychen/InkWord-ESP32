@@ -113,9 +113,11 @@ public class AdminWordController : ControllerBase
     }
 
     /// <summary>B-14 批量导入 CSV（首行表头：text,phonetic,meaning,example,audio,tag,difficulty,
-    ///     root,inflections,source,grade —— 后四列可缺省，列序固定）</summary>
+    ///     root,inflections,source,grade —— 后四列可缺省，列序固定）。tag 查询参数
+    /// 可选：缺省时回退 CSV 第 6 列（管理端导入弹窗不传 tag，2026-08-23
+    /// 实测 .NET 8 非可空 string 隐式必填致 UI 导入全 400，改 string? 修复）</summary>
     [HttpPost("import")]
-    public async Task<IActionResult> ImportCsv(IFormFile file, [FromQuery] string tag, CancellationToken ct)
+    public async Task<IActionResult> ImportCsv(IFormFile file, [FromQuery] string? tag, CancellationToken ct)
     {
         if (file == null || file.Length == 0)
             return BadRequest(ApiResponse.Fail(400, "empty file"));
@@ -136,7 +138,12 @@ public class AdminWordController : ControllerBase
             if (f.Length < 3) { fail++; errors.Add($"字段不足: {line}"); continue; }
 
             var text = f[0].Trim();
-            if (await _wordRepo.ExistsByTextAsync(text, tag, ct))
+            // 行级 Tag（查询参数优先，否则 CSV 第 6 列兜底）：查重与落库
+            // 同源。不能拿原始 tag（可能为 null）去查重 —— ExistsByTextAsync
+            // 对空 tag 跳过过滤成全库按 text 判重，会误拒跨 Tag 合法词条
+            //（唯一索引为 Text+Tag，如《论语》十二章分属初中/高考）。
+            var rowTag = !string.IsNullOrEmpty(tag) ? tag : (f.Length > 5 ? f[5].Trim() : "");
+            if (await _wordRepo.ExistsByTextAsync(text, rowTag, ct))
             { fail++; errors.Add($"重复: {text}"); continue; }
 
             var word = new Word
@@ -146,7 +153,7 @@ public class AdminWordController : ControllerBase
                 Meaning = f.Length > 2 ? f[2].Trim() : "",
                 Example = f.Length > 3 ? f[3].Trim() : "",
                 Audio = f.Length > 4 ? f[4].Trim() : "",
-                Tag = !string.IsNullOrEmpty(tag) ? tag : (f.Length > 5 ? f[5].Trim() : ""),
+                Tag = rowTag,
                 Difficulty = f.Length > 6 && int.TryParse(f[6], out var d) ? d : 1,
                 Root = f.Length > 7 ? f[7].Trim() : "",
                 Inflections = f.Length > 8 ? f[8].Trim() : "",
