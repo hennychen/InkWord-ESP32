@@ -4,6 +4,7 @@
  *
  * 流程：检查更新 -> esp_https_ota 下载写入 OTA 分区 ->
  *       重启切到新分区 -> 启动正常则 ota_mark_valid 防回滚。
+ * 检查与下载均复用 sync_client 配置的 Base URL（NVS/宏三级优先级）。
  */
 #include "ota_manager.h"
 #include "sync_client.h"
@@ -44,21 +45,35 @@ static esp_err_t ota_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+/* 按 URL 前缀选传输：http: 明文 TCP（本地开发后端），其余 TLS + 证书包
+ * （与 sync_client fill_cfg 同策略） */
+static void ota_fill_cfg(esp_http_client_config_t *cfg, const char *url,
+                         int timeout_ms)
+{
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->url = url;
+    cfg->timeout_ms = timeout_ms;
+    cfg->keep_alive_enable = true;
+    if (strncmp(url, "http:", 5) == 0) {
+        cfg->transport_type = HTTP_TRANSPORT_OVER_TCP;
+    } else {
+        cfg->transport_type = HTTP_TRANSPORT_OVER_SSL;
+        cfg->crt_bundle_attach = arduino_esp_crt_bundle_attach;
+    }
+}
+
 bool ota_check_for_update(char *out_url, int url_len, char *out_md5, int md5_len, int *out_size)
 {
     char url[256];
-    snprintf(url, sizeof(url), "%s/api/device/ota/check", "https://api.inkword.example.com");
+    snprintf(url, sizeof(url), "%s/api/device/ota/check", sync_get_base_url());
 
     static char buf[1024];
     ota_recv_t r = { .buf = buf, .size = sizeof(buf), .offset = 0 };
     s_ota_ctx = &r;
 
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
-        .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .event_handler = ota_event_handler,
-    };
+    esp_http_client_config_t cfg;
+    ota_fill_cfg(&cfg, url, 15000);
+    cfg.event_handler = ota_event_handler;
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     esp_err_t err = esp_http_client_perform(client);
     s_ota_ctx = NULL;
@@ -94,13 +109,8 @@ int ota_perform_upgrade(const char *url, const char *expect_md5)
     if (!url) return -1;
     LOG_I("starting OTA from %s", url);
 
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .crt_bundle_attach = arduino_esp_crt_bundle_attach,
-        .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .timeout_ms = 30000,
-        .keep_alive_enable = true,
-    };
+    esp_http_client_config_t cfg;
+    ota_fill_cfg(&cfg, url, 30000);
 
     esp_https_ota_config_t ota_cfg = {
         .http_config = &cfg,

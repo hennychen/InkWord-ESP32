@@ -82,7 +82,7 @@ static const char *TAG = "MAIN";
  * 或经 NVS "inkword"/"api_url" 覆盖（配网 UI 扩展后可写）；
  * http: 前缀自动走明文 TCP（本地开发后端，见 sync_client fill_cfg） */
 #ifndef INKWORD_API_BASE
-#define INKWORD_API_BASE "https://api.inkword.example.com"
+#define INKWORD_API_BASE "https://api.einkword.com"
 #endif
 
 /* 演示词库开关：inkword-s3-demo 环境置 1；无 SD 词库时加载内嵌 5 词，

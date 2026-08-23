@@ -16,7 +16,7 @@
 
 static const char *TAG = "SYNC";
 
-static char s_base_url[128] = "https://api.inkword.example.com";
+static char s_base_url[128] = "https://api.einkword.com";
 static char s_device_key[64] = "";
 
 void sync_set_base_url(const char *url)
@@ -25,6 +25,11 @@ void sync_set_base_url(const char *url)
         strncpy(s_base_url, url, sizeof(s_base_url) - 1);
         s_base_url[sizeof(s_base_url) - 1] = '\0';
     }
+}
+
+const char *sync_get_base_url(void)
+{
+    return s_base_url;
 }
 
 void sync_set_device_key(const char *key)

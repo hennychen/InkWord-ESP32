@@ -29,10 +29,15 @@ typedef struct {
 } ProgressItem;
 
 /**
- * @brief 设置后端 Base URL，如 "https://api.inkword.example.com"。
+ * @brief 设置后端 Base URL，如 "https://api.einkword.com"。
  *        http: 前缀自动降级明文 TCP（本地开发后端）。
  */
 void sync_set_base_url(const char *url);
+
+/**
+ * @brief 读取当前后端 Base URL（ota_manager 等复用同一配置源）。
+ */
+const char *sync_get_base_url(void);
 
 /**
  * @brief 设置设备认证 Key（写入 X-Device-Key 头）。
