@@ -16,6 +16,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <math.h> /* TEMP 2026-08-23 测试音 sinf()（验证后移除） */
 
 /* 轻量 MP3 解码（libhelix-mp3，可选组件） */
 #ifdef HAVE_LIBHELIX_MP3
@@ -278,4 +279,24 @@ void audio_stop(void)
 bool audio_is_playing(void)
 {
     return s_playing;
+}
+
+/* TEMP 2026-08-23 测试音（验证后移除）：440Hz/1s 正弦波，8kHz 采样率（BCLK 256kHz，扩展板可稳定传输） */
+void audio_play_test_tone(void)
+{
+    if (!s_inited) audio_init();
+    const int sr = 8000, nsamp = sr; /* 1 秒 @8kHz */
+    i2s_set_clk(I2S_PORT_NUM, sr, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
+    int16_t *tone = (int16_t *)malloc(nsamp * sizeof(int16_t));
+    if (!tone) {
+        LOG_E("test tone alloc failed");
+        return;
+    }
+    for (int i = 0; i < nsamp; i++) {
+        tone[i] = (int16_t)(sinf(2.0f * (float)M_PI * 440.0f * i / sr) * 12000.0f);
+    }
+    size_t wr = 0;
+    esp_err_t ret = i2s_write(I2S_PORT_NUM, tone, nsamp * sizeof(int16_t), &wr, portMAX_DELAY);
+    free(tone);
+    LOG_I("TEST TONE: 440Hz/1s @8kHz done, wrote %u B, ret=%d", (unsigned)wr, (int)ret);
 }

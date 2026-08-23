@@ -3,9 +3,10 @@
  * @brief 学习模式状态机 (Task F-16；P1 增错词本)
  *
  * 模式：闪卡(FLASH) / 听写(DICTATION) / 复习(REVIEW) / 阅读(READER) /
- * 错词本(WRONGBOOK)。语义动作由五向导航键映射：上下=翻词/翻页，
- * 中=发音，SET=揭晓/确认，RST=回第一条；长按下=循环切换模式
- * （错词本为临时视图不入循环，由 RST 长按进出，见 V2.1 交互总表）。
+ * 错词本(WRONGBOOK) / 收藏浏览(COLLECTION)。语义动作由五向导航键映射：
+ * 上下=翻词/翻页，中=发音，SET=揭晓/确认，RST=回第一条；长按下=循环
+ * 切换模式（错词本与收藏浏览为临时视图不入循环，分别由 RST 长按 /
+ * 快捷菜单进出，见 V2.1 交互总表）。
  * 阅读模式（P3）下游标=页码，序列长度=总页数（reader_engine）；
  * 进入时自动恢复上次阅读页，左/右短按切字号（保持阅读位置）。
  * 序列抽象：默认全词库；错词本模式下序列换为 ConsecutiveWrong>0
@@ -27,6 +28,8 @@ typedef enum {
     MODE_REVIEW,         /**< 复习：SRS 到期词 */
     MODE_READER,         /**< 阅读：整本书分页阅读（P3；游标=页码，序列=页序列） */
     MODE_WRONGBOOK,      /**< 错词本：连错词专项（RST 长按进出，不入切换循环） */
+    MODE_COLLECTION,     /**< 收藏浏览：收藏词临时视图（快捷菜单进入，不入循环
+                              不 NVS 恢复；枚举值固定 5，last_mode 兼容） */
     MODE_COUNT
 } study_mode_t;
 
@@ -47,7 +50,8 @@ study_mode_t study_mode_current(void);
 study_mode_t study_mode_switch_next(void);
 
 /**
- * @brief 直接设置模式。
+ * @brief 直接设置模式（游标归零/READER 进度恢复/遮蔽复位/持久化，
+ *        与长按下循环切换副作用一致；临时视图（错词本/收藏）拒绝）。
  */
 void study_mode_set(study_mode_t mode);
 
@@ -84,6 +88,27 @@ bool study_mode_enter_wrongbook(void);
  * @brief 退出错词本回闪卡模式（错词本内 RST 长按）。
  */
 void study_mode_exit_wrongbook(void);
+
+/* ---- 收藏浏览临时视图（P 快捷菜单，错词本同构） ---- */
+
+/**
+ * @brief 进入收藏浏览（快捷菜单「收藏列表」项；临时视图，不持久化）。
+ * @return true 成功；false 空收藏（调用方提示边界反馈）。
+ */
+bool study_mode_enter_collection(void);
+
+/**
+ * @brief 退出收藏浏览回闪卡模式（收藏视图内 RST 长按）。
+ */
+void study_mode_exit_collection(void);
+
+/**
+ * @brief 取消收藏（SET 长按 toggle）之后的序列收缩钳位：当前词移出收藏
+ *        序列，后词前移；序列清空自动退回闪卡；游标越界钳到 n-1
+ *        （取消末词时显示前一词不跳跃，与 after_quality 回绕 0 略异）。
+ * @return true 表示游标/模式变化，需重绘当前页。
+ */
+bool study_mode_after_uncollect(void);
 
 /**
  * @brief 当前显示词的词库索引（评分/收藏的目标词）。

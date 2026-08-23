@@ -6,8 +6,8 @@
  *          WiFi -> 词库 -> 进入上次模式 -> 主循环（事件驱动）。
  *
  * 五向导航按键映射（2026-08 取代 6 独立按键；SET/RST 侧键同月接入）：
- *   上 短按=上一条 / 长按=清残影全刷；
- *   下 短按=下一条 / 长按=切换学习模式；
+ *   上 短按=上一条（释义多页时先翻上一释义页）/ 长按=清残影全刷；
+ *   下 短按=下一条（释义多页时先翻下一释义页）/ 长按=切换学习模式；
  *   中 短按=发音 / 长按=进入 Wi-Fi 配置；
  *   左 短按=自评「忘记」Q1（SM-2 质量分 1：连错+1，>0 入错词本）/ 长按=进入 AP 直连/配网门户
  *        （手机连 InkWord-Setup 热点直传，绕开路由器隔离；任意键退出）；
@@ -26,7 +26,7 @@
  *
  * 深睡与定时唤醒（P5，power_manager.c）：无操作 10 分钟入睡（引文轮换/
  * 后台心跳随交互模式冻结，墨水屏驻留末帧零功耗）；中键唤醒恢复交互
- * （自治钟 RTC 慢钟差分恢复 + 联网 HTTP Date 校准兑底）；RTC TIMER
+ * （自治钟 RTC 慢钟差分恢复 + 联网 HTTP Date 校准兜底）；RTC TIMER
  * 每 2h 静默心跳会话（Wi-Fi 快连 → 校时 → 上报/心跳/OTA → 回睡，
  * 全程不碰屏）。唤醒即重启，setup 最早期按唤醒原因分流。
  */
@@ -42,6 +42,7 @@
 #include "refresh_scheduler.h"
 #include "word_parser.h"
 #include "cjk_text.h"     /* 词卡释义/tag 中文点阵混排（P3 字库资产） */
+#include "layout_profile.h" /* 布局档位：SMALL 单列 / MID 双栏分档（§8.1） */
 #include "srs_engine.h"
 #include "learning_state.h"
 #include "study_mode_machine.h"
@@ -70,6 +71,8 @@
 
 static const char *TAG = "MAIN";
 #define FW_VERSION  "1.0.0"
+/* 固件版本 getter（快捷菜单设备信息页跨模块取用；FW_VERSION 为文件内宏） */
+extern "C" const char *fw_version(void) { return FW_VERSION; }
 /* 词库容量（PRD §7.2 容量红线 2026-08-20 解除）：词池迁 PSRAM 后
  * 上限 4000 词（词库扩展四字段后 sizeof(WordEntry)≈1096B，
  * 4000 词 ≈ 4.2MB；与阅读器单书上限 4MB 并发最坏 ≈ 8.2MB——仅
@@ -108,12 +111,17 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
 /* ============================================================
  * 单词卡片 UI 渲染 + 局部刷新策略 (Task F-16)
  *
- * 布局（GFX 横屏 416x240，rotation=1；FreeSans 基线 y / 点阵顶左 y）：
- *   y[0,32)    状态栏：模式名（左）/ 序号（右）/ 分隔线
- *   左栏 x[16,248)  单词(24pt 超宽自动降级) + 音标(9pt) + 底部标签
- *                  （tag 含中文时走 16px 点阵，见 cjk_text）
- *   竖分隔线 x=248；右栏 x[264,400) 释义(16px 点阵混排自动断行 ≤6 行，
- *                  中文释义可渲染——真实词库释义为中文，FreeSans 仅 ASCII)
+ * 布局按屏分档（PANEL_COMPAT_DESIGN §8.1；FreeSans 基线 y / 点阵顶左 y）：
+ *   MID 双栏（视觉基线 416x240，rotation=1；4.2" 400x300 同族）：
+ *     y[0,32)    状态栏：模式名（左）/ 序号（右）/ 分隔线
+ *     左栏 x[16,248)  单词(24pt 超宽自动降级) + 音标(9pt) + 底部标签
+ *                    （tag 含中文时走 16px 点阵，见 cjk_text）
+ *     竖分隔线 x=248；右栏 x[264,400) 释义(16px 点阵混排自动断行，
+ *                    行数按屏高派生，超出一屏分页上下键词内翻页；
+ *                    中文释义可渲染——真实词库释义为中文，FreeSans 仅 ASCII)
+ *   SMALL 单列（短边 <200px，2.7" 264x176 首例，2026-08-23 接入）：
+ *     头部单词(全宽自适应)+音标固定 → 释义+词根全宽分页正文流 →
+ *     底部标签行（双栏右栏仅 75px ≈ 4 字/行不可用，故降单列）
  *
  * 刷新策略（2026-08-20 无窗口方案定稿，见 README「局部刷新方案」）：
  *   - 首帧 / 模式切换 / 保养：整屏重绘 + 全刷（epd_gfx_flush）
@@ -126,29 +134,92 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
 
 /* Phase 4 去硬编码：位置类宏由 epd_gfx_width()/height() 运行期派生
  * （416x240 下与旧字面精确相等，视觉零变化）；尺寸/行距类保留语义
- * 常量（与字体档联动，Phase 5/档位 profile 参数化）。完整三档布局
+ * 常量（与字体档联动，Phase 5/档位 profile 参数化）。完整四档布局
  * 参数表（layout_profile）见 PANEL_COMPAT_DESIGN §8.1，SMALL/LARGE
  * 档实际接入时再建。 */
-#define UI_STATUS_H     32    /* 状态栏高度（内容区顶 y；无窗口差分下不再要求 8 对齐） */
-#define UI_MARGIN_X     16    /* 左右留白 */
-#define UI_STATUS_BASE  (UI_STATUS_H - 10)             /* 状态栏文字基线（22） */
-#define UI_WORD_BASE    (epd_gfx_height() * 100 / 240) /* 单词基线 y（左栏，24pt 超宽自动降级；100） */
-#define UI_PHON_BASE    (UI_WORD_BASE + 32)            /* 音标基线：单词下 32（132） */
-#define UI_VSEP_X       (epd_gfx_width() * 248 / 416)  /* 左右分栏竖线 x（248，约 60% 宽） */
-#define UI_MEAN_X       (UI_VSEP_X + 16)               /* 释义起始 x：分隔线右 16（264） */
-#define UI_MEAN_TOP     (UI_STATUS_H + 16)             /* 释义首行顶：状态栏下 16（48） */
-#define UI_MEAN_LH      26    /* 释义行距 */
-#define UI_MEAN_LINES   6     /* 释义最大行数（超出截断） */
-#define UI_MEAN_MAX_W   (epd_gfx_width() - UI_MEAN_X - UI_MARGIN_X) /* 右栏文本宽（136） */
-#define UI_WORD_MAX_W   (UI_VSEP_X - 2 * UI_MARGIN_X)             /* 左栏文本宽（216） */
-#define UI_FOOT_BASE    (epd_gfx_height() - 16)        /* 左栏底部标签基线：底边距 16（224） */
+/* LAYOUT_TINY（2026-08-23 新增档：2.13" 122x250 / 2.9" 128x296 电子
+ * 标签屏竖持）：超紧凑头部——状态栏 24、边距 8、头部行距收紧，
+ * 正文 level 0 同 SMALL；竖屏高向充裕（250/296px 存 7/9 行） */
+#define UI_TINY         (layout_profile_get()->kind == LAYOUT_TINY)
+#define UI_STATUS_H     (UI_TINY ? 24 : 32)  /* 状态栏高度（内容区顶 y；无窗口差分下不再要求 8 对齐） */
+#define UI_MARGIN_X     (UI_TINY ? 8 : 16)   /* 左右留白 */
+#define UI_STATUS_BASE  (UI_STATUS_H - 10)             /* 状态栏文字基线（22/14） */
+/* ---- 学习页单列版式（全档位统一，2026-08-23 重设计）----
+ * 上下结构：头部单词（全宽大字自适应）+ 音标 + 收藏星标；正文流 =
+ * 释义+词根全宽分页；底部标签行全宽。双栏版式退役（真机反馈 136px
+ * 右栏 7 字/行阅读体验差，416x240 全宽 21 字/行提升 3 倍）；
+ * 字号档位派生：TINY/SMALL 16px / MID+ 20px */
+#define UI_MEAN_LEVEL   (layout_profile_get()->kind <= LAYOUT_SMALL \
+                         ? 0 : 1)  /* 正文字号级：TINY/SMALL 16px / 其余 20px */
+#define UI_WORD_BASE    (UI_STATUS_H + (UI_TINY ? 24 \
+                         : (UI_MEAN_LEVEL ? 36 : 32)))  /* 单词基线（68/64/48） */
+#define UI_PHON_BASE    (UI_WORD_BASE + (UI_TINY ? 16 : 22))   /* 音标基线（90/86/64） */
+#define UI_BODY_TOP     (UI_PHON_BASE + (UI_TINY ? 10 : 14))   /* 正文流首行顶（104/100/74） */
+#define UI_BODY_LH      (UI_MEAN_LEVEL ? 24 : 20)  /* 正文行距：字级 +4（reader 惯例） */
+/* 行数按屏高派生：底部预留 30 = 标签行 + 余量（末行文字底与标签顶
+ * 错开，MID 末行底 196 < 标签顶 206）；416x240=4 行、400x300=6、
+ * 264x176=2、122x250 竖屏=7、128x296 竖屏=9（TINY 预留收至 26） */
+#define UI_BODY_RESERVE (UI_TINY ? 26 : 30)
+#define UI_BODY_LINES   ((epd_gfx_height() - UI_BODY_RESERVE - UI_BODY_TOP) / UI_BODY_LH)
+#define UI_BODY_MAX_W   (epd_gfx_width() - 2 * UI_MARGIN_X)   /* 全宽正文（392/232/106/112） */
+#define UI_FOOT_BASE    (epd_gfx_height() - 16)        /* 底部标签基线：底边距 16（224） */
 #define UI_FOOT_TOP     (UI_FOOT_BASE - 18)             /* 中文 tag 16px 点阵顶：基线上 16+2（206） */
-#define UI_MEAN_HINT_BASE (UI_MEAN_TOP + 14)            /* 遮蔽态提示基线（沿用旧释义基线，62） */
-#define UI_ROOT_TOP     (UI_PHON_BASE + 24)             /* 词根行顶：音标下 24（156；≤2 行） */
-#define UI_ROOT_LINES   2     /* 词根行数上限（超出截断） */
-#define UI_ROOT_LH      20    /* 词根行距（16px 字 + 4 间距） */
+
+/* 音标 IPA→ASCII 近似（2026-08-23）：内嵌词库真实 IPA 音标含 19 个
+ * 扩展字符（实测频次表，前四：ˈ x1281 / ə x1019 / ɪ x939 / ɛ x380），
+ * FreeSans 字形缺失被 draw_text 逐字符跳过（真机 W: non-ASCII
+ * 'ˈizi'，重音符丢失）。显示层转换——词池保持原始 IPA（LAN/网页
+ * 端字体可正常渲染），映射取词典 ASCII 音标惯例；未命中字符
+ * （如个别词条误填的中文人名，生成链待清洗）原样保留交
+ * draw_text 跳过，不炸行 */
+static void phonetic_ascii(const char *in, char *out, size_t out_max)
+{
+    static const struct { const char *ipa, *ascii; } k_ipa[] = {
+        { "\xCB\x88", "'"  },  /* ˈ 重音 */
+        { "\xC9\x99", "e"  },  /* ə */
+        { "\xC9\xAA", "i"  },  /* ɪ */
+        { "\xC9\x9B", "e"  },  /* ɛ */
+        { "\xC3\xA6", "a"  },  /* æ */
+        { "\xCB\x8C", ","  },  /* ˌ 次重音 */
+        { "\xCA\x8A", "u"  },  /* ʊ */
+        { "\xC9\x91", "a"  },  /* ɑ */
+        { "\xC9\x94", "o"  },  /* ɔ */
+        { "\xCA\x8C", "u"  },  /* ʌ */
+        { "\xC9\xA1", "g"  },  /* ɡ（IPA g） */
+        { "\xCA\x83", "sh" },  /* ʃ */
+        { "\xCA\xA4", "j"  },  /* ʤ */
+        { "\xC5\x8B", "ng" },  /* ŋ */
+        { "\xC9\x9C", "er" },  /* ɜ */
+        { "\xCA\xA7", "ch" },  /* ʧ */
+        { "\xCE\xB8", "th" },  /* θ */
+        { "\xC3\xB0", "th" },  /* ð */
+        { "\xCA\x92", "zh" },  /* ʒ */
+        { "\xCB\x90", ":"  },  /* ː 长音（本库未见，备用） */
+        { "\xC9\x92", "o"  },  /* ɒ（备用） */
+    };
+    size_t o = 0;
+    while (*in && o + 1 < out_max) {
+        bool hit = false;
+        for (size_t i = 0; i < sizeof(k_ipa) / sizeof(k_ipa[0]); i++) {
+            size_t l = strlen(k_ipa[i].ipa);
+            if (strncmp(in, k_ipa[i].ipa, l) == 0) {
+                for (const char *s = k_ipa[i].ascii; *s && o < out_max - 1; s++)
+                    out[o++] = *s;
+                in += l; hit = true; break;
+            }
+        }
+        if (!hit) out[o++] = *in++;  /* ASCII/未命中原样 */
+    }
+    out[o] = '\0';
+}
 
 static study_mode_t s_last_mode = MODE_COUNT; /* 无效值：首帧强制全刷 */
+
+/* 释义分页游标（2026-08-23）：与词绑定——换词/换模式（含错词本进出、
+ * RST 回首、自评移词）给 ui_render_word 检测到词变化即归零，同词
+ * SET 翻义保持页位；页数由排版几何实时派生（见 ui_mean_total_pages） */
+static int s_mean_page = 0;      /* 当前释义页（0 基） */
+static int s_mean_word = -1;     /* 页游标绑定的词库索引（错词本=映射后） */
 
 /* 字号自适应：从 start_size 逐级降到能放进 max_w 的字号 */
 static int ui_fit_font(const char *text, int start_size, int max_w)
@@ -161,13 +232,125 @@ static int ui_fit_font(const char *text, int start_size, int max_w)
     return 1;
 }
 
+/* ============================================================
+ * 释义分页基建（2026-08-23）：排版几何按屏幕尺寸/档位运行期派生，
+ * 释义超一屏分页，上下键词内翻页（边界处交状态机翻词）。
+ * 量测（cjk_text_wrap_lines）与绘制（cjk_text_draw_wrap_page）共用
+ * 同一断行核心，页数与渲染行严格一致（reader_engine 建页同策略）。
+ * ============================================================ */
+extern "C" void ui_render_word(study_mode_t mode, int index);  /* 下方定义 */
+extern "C" void ui_render_current(void);  /* 下方定义（menu_ui 恢复退出用） */
+
+/* 释义正文流（全档位单列）：释义 + 全角空格(U+3000) + 词根（单列无
+ * 独立词根槽，词根随释义滚动分页；空释义时前导空白被断行核心
+ * 行首吞掉） */
+static const char *ui_body_stream(const WordEntry *w)
+{
+    if (!w->root[0])
+        return w->meaning;
+    static char stream[WORD_MEANING_MAX + WORD_ROOT_MAX + 8];
+    snprintf(stream, sizeof(stream), "%s\xE3\x80\x80%s",
+             w->meaning, w->root);
+    return stream;
+}
+
+/* 页数 = 总行数向上取整 / 每页行数（空文 1 页兜底） */
+static int ui_page_count(const char *s, int max_w, int lines)
+{
+    int need = cjk_text_wrap_lines(max_w, UI_MEAN_LEVEL, s);
+    int pages = (need + lines - 1) / lines;
+    return pages < 1 ? 1 : pages;
+}
+
+/* 释义区几何（单列统一，档位字号派生）：全宽正文流；strip>0 表示
+ * 多页时页码指示与正文首行同行，正文右侧须预留指示条并按缩窄宽度
+ * 重建页数（量测与绘制同宽，断行一致）；ind_* = 指示器右缘 x / 基线 y */
+static void ui_mean_geom(int *x, int *top, int *max_w, int *lh, int *lines,
+                         int *ind_rx, int *ind_by, int *strip)
+{
+    int n = UI_BODY_LINES;
+    if (n < 1) n = 1;
+    *x = UI_MARGIN_X; *top = UI_BODY_TOP;
+    *max_w = UI_BODY_MAX_W; *lh = UI_BODY_LH;
+    *lines = n;
+    *ind_rx = epd_gfx_width() - UI_MARGIN_X;
+    *ind_by = UI_BODY_TOP + (UI_MEAN_LEVEL ? 20 : 14); /* 正文首行基线（右缘同行） */
+    /* 多页页码指示条预留：TINY 加宽（106px 正文下每行仅 3~4 字，
+     * 页数易破十→“10/11” 5 字符 size1 ≈40px>30 会压首行末字） */
+    *strip = UI_TINY ? 44 : 30;
+}
+
+/* 当前布局下释义流总页数（含 SMALL 指示条缩窄重建，与绘制同口径） */
+static int ui_mean_total_pages(const WordEntry *w)
+{
+    int x, top, max_w, lh, lines, ind_rx, ind_by, strip;
+    ui_mean_geom(&x, &top, &max_w, &lh, &lines, &ind_rx, &ind_by, &strip);
+    const char *s = ui_body_stream(w);
+    int pages = ui_page_count(s, max_w, lines);
+    if (pages > 1 && strip > 0)
+        pages = ui_page_count(s, max_w - strip, lines);
+    return pages;
+}
+
+/* 释义分页渲染：页数派生 + 游标钳位 + 当前页绘制 + 多页页码指示 */
+static void ui_draw_mean_paged(const WordEntry *w)
+{
+    int x, top, max_w, lh, lines, ind_rx, ind_by, strip;
+    ui_mean_geom(&x, &top, &max_w, &lh, &lines, &ind_rx, &ind_by, &strip);
+    const char *s = ui_body_stream(w);
+
+    int pages = ui_page_count(s, max_w, lines);
+    if (pages > 1 && strip > 0) {        /* 正文缩窄重建页数（同宽一致） */
+        max_w -= strip;
+        pages = ui_page_count(s, max_w, lines);
+    }
+    if (s_mean_page >= pages) s_mean_page = pages - 1;
+    if (s_mean_page < 0) s_mean_page = 0;
+
+    cjk_text_draw_wrap_page(x, top, max_w, UI_MEAN_LEVEL, lh, lines,
+                            s_mean_page, s, EPD_GFX_BLACK);
+
+    if (pages > 1) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%d/%d", s_mean_page + 1, pages);
+        int tw, th;
+        epd_gfx_text_bounds(buf, 1, &tw, &th);
+        epd_gfx_draw_text(ind_rx - tw, ind_by, buf, EPD_GFX_BLACK, 1);
+    }
+}
+
+/* 上下键词内翻页：当前词释义多页且未越界时翻释义页（true=已消费）；
+ * 单页/遮蔽态/越界（首尾页）返回 false 交状态机翻词——与阅读模式
+ * 「上下=翻页」游标语义同族，翻词后页游标自动归零 */
+static bool ui_mean_page_step(int dir)
+{
+    if (study_mode_current() == MODE_READER) return false;
+    if (!study_mode_is_revealed()) return false;   /* 遮蔽自测态无页可翻 */
+
+    const WordEntry *w = word_parser_get(study_mode_current_word_index());
+    if (!w) return false;
+
+    int np = s_mean_page + dir;
+    if (np < 0 || np >= ui_mean_total_pages(w)) return false;
+    s_mean_page = np;
+    ui_render_word(study_mode_current(), study_mode_current_word_index());
+    return true;
+}
+
 /* 绘制状态栏：模式名（左）+ 序号（右，错词本=序号/错词数）+ 分隔线 */
 static void ui_draw_status(study_mode_t mode)
 {
     epd_gfx_fill_rect(0, 0, epd_gfx_width(), UI_STATUS_H, EPD_GFX_WHITE);
 
-    epd_gfx_draw_text(UI_MARGIN_X, UI_STATUS_BASE,
-                      study_mode_name(mode), EPD_GFX_BLACK, 1);
+    /* 模式名：中文（收藏视图）走 16px 点阵（顶左坐标垂直居中），
+     * ASCII 模式名保持 FreeSans 基线路径视觉不变 */
+    const char *name = study_mode_name(mode);
+    if (cjk_text_has_wide(name))
+        cjk_text_draw(UI_MARGIN_X, (UI_STATUS_H - 16) / 2,
+                      0, name, EPD_GFX_BLACK);
+    else
+        epd_gfx_draw_text(UI_MARGIN_X, UI_STATUS_BASE,
+                          name, EPD_GFX_BLACK, 1);
 
     char buf[24];
     int total = study_mode_seq_total();
@@ -182,52 +365,11 @@ static void ui_draw_status(study_mode_t mode)
                        epd_gfx_width() - 2 * UI_MARGIN_X, EPD_GFX_BLACK);
 }
 
-/* 绘制内容区：左栏单词卡片 + 竖分隔线 + 右栏释义 */
-static void ui_draw_content(const WordEntry *w)
+/* 底部标签行：tag·grade·source 非空项以间隔号拼接（间隔号在
+ * 字库全角标点集内）；含中文走 16px 点阵单行截断，纯 ASCII
+ * 且无扩展字段时保持 FreeSans 9pt（max_w：双栏=左栏宽，单列=全宽） */
+static void ui_draw_foot(const WordEntry *w, int max_w)
 {
-    epd_gfx_fill_rect(0, UI_STATUS_H, epd_gfx_width(),
-                      epd_gfx_height() - UI_STATUS_H, EPD_GFX_WHITE);
-
-    epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, w->text, EPD_GFX_BLACK,
-                      ui_fit_font(w->text, 4, UI_WORD_MAX_W));
-
-    if (w->phonetic[0])
-        epd_gfx_draw_text(UI_MARGIN_X, UI_PHON_BASE,
-                          w->phonetic, EPD_GFX_BLACK, 1);
-
-    /* 收藏标记（P1）：已收藏词在左栏音标行右侧显示 *（SET 长按切换） */
-    if (learning_state_is_collected(study_mode_current_word_index())) {
-        int sw, sh;
-        epd_gfx_text_bounds("*", 2, &sw, &sh);
-        epd_gfx_draw_text(UI_VSEP_X - UI_MARGIN_X - sw, UI_PHON_BASE,
-                          "*", EPD_GFX_BLACK, 2);
-    }
-
-    epd_gfx_draw_vline(UI_VSEP_X, UI_STATUS_H + 16,
-                       epd_gfx_height() - UI_STATUS_H - 32, EPD_GFX_BLACK);
-
-    /* 释义：16px 点阵混排（中文按字断/ASCII 按词断，超宽自动换行，
-     * 超 6 行截断）；遮蔽态仍走 FreeSans 英文提示 */
-    if (study_mode_is_revealed()) {
-        cjk_text_draw_wrap(UI_MEAN_X, UI_MEAN_TOP, UI_MEAN_MAX_W,
-                           /*level*/0, UI_MEAN_LH, UI_MEAN_LINES,
-                           w->meaning, EPD_GFX_BLACK);
-    } else {
-        /* 遮蔽自测态：右栏仅提示，不画释义（SET 揭晓） */
-        epd_gfx_draw_text(UI_MEAN_X, UI_MEAN_HINT_BASE,
-                          "[SET] to reveal", EPD_GFX_BLACK, 1);
-    }
-
-    /* 词根行（左栏音标下空白区）：root 非空才画，≤2 行截断；
-     * 词根本文自带 “=” 语义不加前缀（与音标裸文本一致） */
-    if (w->root[0])
-        cjk_text_draw_wrap(UI_MARGIN_X, UI_ROOT_TOP, UI_WORD_MAX_W,
-                           /*level*/0, UI_ROOT_LH, UI_ROOT_LINES,
-                           w->root, EPD_GFX_BLACK);
-
-    /* 底部标签行：tag·grade·source 非空项以间隔号拼接（间隔号在
-     * 字库全角标点集内）；含中文走 16px 点阵单行截断，纯 ASCII
-     * 且无扩展字段时保持 FreeSans 9pt */
     char foot[160];
     int  fl = 0;
     const char *parts[3] = { w->tag, w->grade, w->source };
@@ -241,12 +383,50 @@ static void ui_draw_content(const WordEntry *w)
     foot[fl] = '\0';
     if (foot[0]) {
         if (cjk_text_has_wide(foot))
-            cjk_text_draw_wrap(UI_MARGIN_X, UI_FOOT_TOP, UI_WORD_MAX_W,
+            cjk_text_draw_wrap(UI_MARGIN_X, UI_FOOT_TOP, max_w,
                                /*level*/0, 0, 1, foot, EPD_GFX_BLACK);
         else
             epd_gfx_draw_text(UI_MARGIN_X, UI_FOOT_BASE, foot,
                               EPD_GFX_BLACK, 1);
     }
+}
+
+/* 单列版式（全档位统一，2026-08-23 重设计）：头部单词（全宽大字
+ * 自适应）+ 音标 + 收藏星标；正文流 = 释义+词根全宽分页；底部标签行 */
+static void ui_draw_content(const WordEntry *w)
+{
+    epd_gfx_fill_rect(0, UI_STATUS_H, epd_gfx_width(),
+                      epd_gfx_height() - UI_STATUS_H, EPD_GFX_WHITE);
+
+    epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, w->text, EPD_GFX_BLACK,
+                      ui_fit_font(w->text, 4, UI_BODY_MAX_W));
+
+    if (w->phonetic[0]) {
+        char ph[WORD_PHONETIC_MAX * 2];  /* 替换最长 2 字符/项，不膨胀 */
+        phonetic_ascii(w->phonetic, ph, sizeof(ph));
+        if (ph[0])
+            epd_gfx_draw_text(UI_MARGIN_X, UI_PHON_BASE,
+                              ph, EPD_GFX_BLACK, 1);
+    }
+
+    /* 收藏标记（P1）：已收藏词在音标行右缘显示 *（SET 长按切换） */
+    if (learning_state_is_collected(study_mode_current_word_index())) {
+        int sw, sh;
+        epd_gfx_text_bounds("*", 2, &sw, &sh);
+        epd_gfx_draw_text(epd_gfx_width() - UI_MARGIN_X - sw, UI_PHON_BASE,
+                          "*", EPD_GFX_BLACK, 2);
+    }
+
+    /* 正文：cjk 点阵混排（中文按字断/ASCII 按词断，超宽自动换行），
+     * 行数按屏高派生，超出一屏分页（多页时首行右缘页码指示）；
+     * 遮蔽态走 FreeSans 英文提示 */
+    if (study_mode_is_revealed())
+        ui_draw_mean_paged(w);
+    else
+        epd_gfx_draw_text(UI_MARGIN_X, UI_BODY_TOP + (UI_MEAN_LEVEL ? 20 : 14),
+                          "[SET] to reveal", EPD_GFX_BLACK, 1);
+
+    ui_draw_foot(w, UI_BODY_MAX_W);
 }
 
 /* LAN 直传外部内容整帧直刷后调用：GFX previous 缓冲已失配，
@@ -293,6 +473,13 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
     int total = word_parser_get_count();
     const WordEntry *w = total ? word_parser_get(index % total) : NULL;
 
+    /* 释义页游标与词绑定：换词/换模式（含错词本进出、RST 回首、
+     * 自评移词）自动归零；同词 SET 翻义保持页位 */
+    if (index != s_mean_word) {
+        s_mean_page = 0;
+        s_mean_word = index;
+    }
+
     if (!w) { /* 词库为空：切换到待机页（时钟/日历/天气） */
         standby_render_full();
         s_last_mode = MODE_COUNT; /* 保证日后有词时首帧全刷 */
@@ -320,8 +507,8 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
 }
 
 /* 当前应显示页面的统一渲染入口：有词库走学习页，无词库走待机页
- * （LAN/配网退出与模式切换后的恢复路径均经此路由） */
-static void ui_render_current(void)
+ * （LAN/配网退出与模式切换后的恢复路径均经此路由；menu_ui 恢复退出同） */
+extern "C" void ui_render_current(void)
 {
     study_mode_t m = study_mode_current();
     if (m == MODE_READER)
@@ -423,7 +610,8 @@ static void on_button(nav_key_t id, button_event_t event)
         }
     }
 
-    /* 短按：上/下翻词，中=发音，SET=遮蔽/揭晓释义，RST=回第一条；
+    /* 短按：上/下翻词（释义多页时先词内翻释义页），中=发音，
+     * SET=遮蔽/揭晓释义，RST=回第一条；
      * 左=自评「忘记」Q1，右=自评「简单」Q5（SM-2 评分入 learning_state，
      * 错词本内答对自动移出，序列清空自动退回闪卡） */
     if (event != BUTTON_EVENT_SHORT_PRESS) return;
@@ -455,9 +643,11 @@ static void on_button(nav_key_t id, button_event_t event)
 
     switch (id) {
     case NAV_UP:
+        if (ui_mean_page_step(-1)) return;  /* 释义多页：词内上一页 */
         study_mode_handle_action(0);   /* prev */
         return;
     case NAV_DOWN:
+        if (ui_mean_page_step(+1)) return;  /* 释义多页：词内下一页 */
         study_mode_handle_action(1);   /* next */
         return;
     case NAV_CENTER:
@@ -771,11 +961,26 @@ void setup()
     if (s_word_pool && storage_file_exists(word_file)) {
         int n = word_parser_load(word_file, s_word_pool, s_word_cap);
         LOG_I("word DB loaded: %d entries", n);
+    } else if (s_word_pool) {
+        /* 出厂内嵌兜底（2026-08-23）：无 SD 卡开箱即用。词库随固件烧入
+         * rodata（platformio.ini embed_files，生成链见
+         * tools/default_vocab），load_mem 零拷贝直吃。SD 词库存在时仍
+         * 优先（可更新、可携带 cloudId）；内嵌版本无 cloudId（本地词条，
+         * 评分/收藏不上报），在线同步/导出路径下发的词库才携带 */
+        extern const uint8_t _binary_src_default_words_json_start[];
+        extern const uint8_t _binary_src_default_words_json_end[];
+        size_t len = (size_t)(_binary_src_default_words_json_end -
+                              _binary_src_default_words_json_start);
+        int n = word_parser_load_mem(
+            (const char *)_binary_src_default_words_json_start, len,
+            s_word_pool, s_word_cap);
+        LOG_I("embedded word DB loaded: %d entries (%u bytes)",
+              n, (unsigned)len);
     } else {
         LOG_W("words.json not found on SD card");
     }
 #if INKWORD_DEMO_WORDS
-    /* 测试构建：无 SD 词库时内嵌演示词，验证学习页按键 */
+    /* 测试构建：内嵌词库也被排除时（如裁剪验证）的最后一道演示词 */
     if (s_word_pool && word_parser_get_count() == 0) {
         word_parser_load_demo(s_word_pool, s_word_cap);
     }

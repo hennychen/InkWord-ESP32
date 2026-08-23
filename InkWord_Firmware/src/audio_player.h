@@ -52,6 +52,12 @@ void audio_stop(void);
  */
 bool audio_is_playing(void);
 
+/**
+ * @brief TEMP 2026-08-23 测试音（验证后移除）：生成 440Hz/1s 正弦波。
+ *        SD 卡未挂载时用于验证功放链路。
+ */
+void audio_play_test_tone(void);
+
 #ifdef __cplusplus
 }
 #endif
