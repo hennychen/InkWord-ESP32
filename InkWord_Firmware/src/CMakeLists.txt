@@ -15,6 +15,9 @@ idf_component_register(
         "panels/panel_e042a13_ssd1619.cpp"   # Phase 6：4.2" 三色面板单元（SSD1619 手写序列，与 arduino 自动递归编译双轨同步）
         "panels/panel_wf0270_ssd1680.cpp"    # 2.7" 三色面板单元（SSD1680 手写序列，维峰 WF0270，双轨同步）
         "panels/panel_gdew027c44_il91874.cpp" # 2.7" 三色面板单元（IL91874 手写序列，真机验证，双轨同步）
+        "panels/panel_wft0290.cpp"           # 2.9" 128x296 BW 骨架（WFT0290CZ10，bring-up 待硬件，2026-08-23）
+        "panels/panel_opm021eb.cpp"          # 2.13" 122x250 BW 骨架（OPM021EB，bring-up 待硬件，2026-08-23）
+        "panels/panel_e042a13bw.cpp"         # 4.2" 400x300 BW 骨架（E042A13-A0 黑白版，bring-up 待硬件，2026-08-23）
         "audio_player.c"
         "button_handler.c"
         "haptic.c"
@@ -31,6 +34,7 @@ idf_component_register(
         "reader_engine.c"
         "wifi_manager.c"
         "wifi_config_ui.c"
+        "menu_ui.c"          # P 快捷菜单：长按中进入的功能菜单（收藏/模式/配网/门户/LAN/设备信息）
         "sync_client.c"
         "ota_manager.c"
         "lan_display_server.cpp"

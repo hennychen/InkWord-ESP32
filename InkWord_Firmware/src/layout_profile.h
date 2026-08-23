@@ -10,10 +10,16 @@
  *
  * 字库级映射（§11.2 三级字号映射表；MID 列 = 现役 416x240 视觉基线）：
  *   quote_level —— 大字场景（待机引文出处 / 阅读占位提示）：
- *     SMALL=2(24px，待机页紧排版配合)/ MID=2(24px) / LARGE=2(24px，32px 级生成后升 3)
+ *     TINY=0(16px)/ SMALL=2(24px，待机页紧排版配合)/ MID=2(24px) /
+ *     LARGE=2(24px，32px 级生成后升 3)
  *   reader_level —— 阅读正文默认级（用户 NVS 字号优先，此处仅 miss 默认）：
- *     SMALL=1(20px) / MID=1(20px) / LARGE=2(24px)
+ *     TINY=0(16px，122~128px 宽下 20px 每行仅 4~5 字)/ SMALL=1(20px) /
+ *     MID=1(20px) / LARGE=2(24px)
  * 学习页释义恒 level 0（16px 为字库下限，全档适用，无映射必要）。
+ *
+ * 2026-08-23 新增 TINY 档（三块在途屏适配前置）：2.13" 122x250 /
+ * 2.9" 128x296 电子标签屏竖屏形态（用户选型竖持），短边 122~128px
+ * 下 SMALL 头部几何（状态栏 32+头部 72）正文区趋零，拆独立档。
  */
 #ifndef INKWORD_LAYOUT_PROFILE_H
 #define INKWORD_LAYOUT_PROFILE_H
@@ -23,7 +29,8 @@ extern "C" {
 #endif
 
 typedef enum {
-    LAYOUT_SMALL = 0,   /**< 短边 <200px：2.7" 264x176 */
+    LAYOUT_TINY = 0,    /**< 短边 <140px：2.13" 122x250 / 2.9" 128x296 竖屏 */
+    LAYOUT_SMALL,       /**< 140~199px：2.7" 264x176 */
     LAYOUT_MID,         /**< 200~319px：3.7" 416x240 / 4.2" 400x300 */
     LAYOUT_LARGE,       /**< >=320px：7.5" 800x480 */
 } layout_kind_t;

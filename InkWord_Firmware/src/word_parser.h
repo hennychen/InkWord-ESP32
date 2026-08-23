@@ -60,6 +60,20 @@ typedef struct {
 int word_parser_load(const char *path, WordEntry *out_array, int max_count);
 
 /**
+ * @brief 从内存解析词库 JSON（words.json 同格式）。
+ *        与 word_parser_load 同源填充逻辑；用 cJSON_ParseWithLength
+ *        吃精确长度，不要求 NUL 结尾，可直接吃固件内嵌 rodata
+ *        （_binary_src_default_words_json_*，无 SD 卡兜底，2026-08-23）。
+ * @param json       JSON 缓冲首地址（无需 NUL 结尾）。
+ * @param len        有效字节数。
+ * @param out_array  输出数组（调用方分配）。
+ * @param max_count  数组容量。
+ * @return 实际解析到的词条数；<0 失败。
+ */
+int word_parser_load_mem(const char *json, size_t len,
+                         WordEntry *out_array, int max_count);
+
+/**
  * @brief 加载内嵌演示词库（5 条，无 SD 卡时验证学习页按键用）。
  *        仅测试构建（INKWORD_DEMO_WORDS=1）调用，正式构建不编入调用点。
  * @param out_array  输出数组（调用方分配）。

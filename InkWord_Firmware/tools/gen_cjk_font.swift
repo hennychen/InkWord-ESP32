@@ -66,11 +66,32 @@ let ATTRIB = "——王阳明《传习录》"
 let PUNCT = "，。、；：？！“”‘’（）《》〈〉【】「」『』…—·～‰℃°＋－×÷＝／　"
              // 尾字符为 U+3000 全角空格（渲染为空格宽）
 
+/* IPA 音标字符集（词卡音标行 16px 点阵渲染，2026-08-23）：内嵌词库
+ * phonetic 实测 19 扩展字符 + 词典备用（ː ɒ）。FreeSans 仅 0x20-0x7E
+ * 真机 IPA 全跳过，音标行改点阵整行渲染后由本表兜底覆盖 */
+let IPA = "ˈˌəɪɛæʊɑɔʌɡʃʤŋɜʧθðʒːɒ"
+
 var charset = Set<Character>()
 for q in quotes { for line in q { for ch in line { charset.insert(ch) } } }
 for ch in ATTRIB { charset.insert(ch) }
 for ch in PUNCT { charset.insert(ch) }
+for ch in IPA { charset.insert(ch) }
 for cp in 0x20...0x7E { charset.insert(Character(UnicodeScalar(cp)!)) }   // ASCII
+
+/* 词卡音标行全量字符收集（src/default_words.json phonetic 列）：诗词类
+ * 词条该列填中文作者名（生成端语义，点阵一并渲染），人名生僻字
+ * （翃燮夔等）不在 GB 一级库，不收录则真机画空心框 */
+var phonCps = Set<Character>()
+if let jsonData = try? Data(contentsOf: URL(fileURLWithPath: "src/default_words.json")),
+   let obj = try? JSONSerialization.jsonObject(with: jsonData),
+   let dict = obj as? [String: Any],
+   let words = dict["words"] as? [[String: Any]] {
+    for w in words {
+        guard let ph = w["phonetic"] as? String else { continue }
+        for ch in ph { if ch != "/" && ch != "[" && ch != "]" { phonCps.insert(ch) } }
+    }
+}
+for ch in phonCps { charset.insert(ch) }
 
 /* GB2312 一级字库 3755 字（区位 16-55），GBK 双字节解码取 Unicode。
  * 注：GB_2312_80(0x0630) 在新 macOS 解码失效（逐字节返回 nil，实测
@@ -97,35 +118,107 @@ for cp in cps {
     precondition(cp < 0x10000, "non-BMP codepoint U+\(String(cp, radix: 16)) unsupported")
 }
 
-// ---------- 3. 选字体家族（覆盖全部字符的第一个）+ Bold 能力 ----------
-let fontNames = ["Kaiti SC", "Kaiti TC", "Songti SC", "STHeiti SC", "Hiragino Sans GB"]
-var fontFamily = ""
-for name in fontNames {
-    guard let f = CTFontCreateWithName(name as CFString, 16, nil) as CTFont? else { continue }
-    let u16 = Array(String(charset).utf16)
-    var glyphs = [CGGlyph](repeating: 0, count: u16.count)
-    if u16.isEmpty || CTFontGetGlyphsForCharacters(f, u16, &glyphs, u16.count) {
-        fontFamily = name; break
+// ---------- 3. 选字体家族（分级链）+ Bold 能力 ----------
+/* 字体链分级（2026-08-23 真机「虚感」修正）：小字级 16/20px 用黑体——
+ * 笔画均匀、二值点阵最实；楷体 Bold 的横细竖粗在 1bit 小字下横画仍
+ * 断续发虚，此为虚感主因。大字级 24px 保持楷体（待机页《传习录》
+ * 引文书卷气、阅读器大字号楷韵不受影响）。PingFang 的 traitBold 在
+ * macOS 映射 Semibold 半粗字重，正是小字点阵想要的浓度。 */
+let SMALL_CHAIN = ["PingFang SC", "Heiti SC", "Hiragino Sans GB",
+                   "Songti SC", "Kaiti SC"]   /* "Heiti SC" 方为实际家族名，
+                   "STHeiti SC" 解析落 Helvetica（2026-08-23 探测实测） */
+let LARGE_CHAIN = ["Kaiti SC", "Kaiti TC", "Songti SC", "STHeiti SC", "Hiragino Sans GB"]
+
+/* 覆盖全部字符的第一个家族 + Bold 能力（原单链逻辑提取，两链各调）。
+ * 白名单：纯 CJK 家族不含但无需该家族自带的字符——
+ * ÷°℃‰×（全角符号，系统字体级联补）+ U+E810~E81F（GBK 解码一级库时
+ * 未定义槽映射出的 PUA 噪音字，设备端永不显示；若不白名单，黑体/楷体
+ * 链会被一票否决落到宋体）+ IPA/音标列生僻人名（PingFang 缺 IPA 全套
+ * 与部分人名用字，实测 STHeiti SC 全覆盖；渲染走 CTLine 级联补，
+ * 2026-08-23 音标行点阵化引入） */
+func fallbackOK(_ cp: UInt16) -> Bool {
+    [0x00F7, 0x00B0, 0x2103, 0x2030, 0x00D7].contains(cp) ||
+    (0xE810...0xE81F).contains(cp) ||
+    (0x0250...0x02AF).contains(cp) ||           // IPA 扩展
+    (0x02C0...0x02DF).contains(cp) ||           // IPA 修饰符（ˈ ˌ ː）
+    phonCps.contains(Character(UnicodeScalar(cp)!))  // 音标列收集集（人名等）
+}
+func pickFont(_ chain: [String]) -> (name: String, bold: Bool) {
+    for name in chain {
+        guard let f = CTFontCreateWithName(name as CFString, 16, nil) as CTFont? else { continue }
+        let u16 = Array(String(charset).utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: u16.count)
+        /* Bold 能力检测（全有/白名单两路径共用）：白名单路径原硬编码 false，
+         * PingFang(→Semibold)/Kaiti(→Bold) 明明有真字重却被漏检落入 3x3
+         * 膨胀——膨胀外扩 1px 与渲染后闭环互搏恶性缩字（16px 级 15pt→10pt，
+         * 2026-08-23 实测教训） */
+        let bold = CTFontCreateCopyWithSymbolicTraits(
+            f, 16, nil,
+            CTFontSymbolicTraits.traitBold, CTFontSymbolicTraits.traitBold) != nil
+        if u16.isEmpty || CTFontGetGlyphsForCharacters(f, u16, &glyphs, u16.count) {
+            return (name, bold)
+        }
+        /* 缺字诊断：白名单外的缺字才视为真缺口（print+String(radix:) 纯
+         * Swift 路径——FileHandle.write+String(format:) 在 swift JIT 模式
+         * 下实测 segfault，2026-08-23） */
+        var missing = ""
+        for (i, g) in glyphs.enumerated() where g == 0 && !fallbackOK(u16[i]) {
+            if missing.isEmpty { missing = "... missing: " }
+            if missing.count > 40 { break }
+            missing += "U+" + String(u16[i], radix: 16, uppercase: true) + " "
+        }
+        if missing.isEmpty { return (name, bold) }   /* 仅白名单缺口：级联可补 */
+        print("font '\(name)' skipped \(missing)")
     }
+    preconditionFailure("no covering CJK font found")
 }
-precondition(!fontFamily.isEmpty, "no covering CJK font found")
+let smallFont = pickFont(SMALL_CHAIN)
+let largeFont = pickFont(LARGE_CHAIN)
 
-/* 加粗（墨水屏笔画细则发虚，全级 Bold）：优先真 Bold 变体；无则渲染后 3x3 膨胀 */
+/* 加粗（墨水屏笔画细则发虚）：优先真 Bold 变体；无则渲染后 3x3 膨胀 */
 let BOLD = true
-var hasBold = false
-if BOLD,
-   let probe = CTFontCreateWithName(fontFamily as CFString, 16, nil) as CTFont?,
-   CTFontCreateCopyWithSymbolicTraits(
-       probe, 16, nil,
-       CTFontSymbolicTraits.traitBold, CTFontSymbolicTraits.traitBold) != nil {
-    hasBold = true
-}
-let useDilate = BOLD && !hasBold
-let fontLabel = fontFamily + (hasBold ? " Bold" : "")
+/* 二值化阈值（measure/render 共用，必须同步否则墨迹盒测量失准贴边）：
+ * 100 = 覆盖率 ≥40% 保留（2026-08-23，原 128 丢弃抗锯齿边缘致细笔断续） */
+let INK_THRESHOLD = 100
 
-func makeFont(_ size: CGFloat) -> CTFont {
-    var f = CTFontCreateWithName(fontFamily as CFString, size, nil) as CTFont
-    if hasBold,
+func fontForCell(_ cell: Int) -> (name: String, bold: Bool, dilate: Bool) {
+    let (name, bold) = cell < 24 ? smallFont : largeFont
+    return (name, bold, BOLD && !bold)
+}
+
+/* 音标字符专属渲染字体（2026-08-23）：主链 PingFang 缺 IPA 全套，
+ * CTLine 级联不可控（ˈ 级联渲染为空白，实测）。显式分派 STHeitiSC-Medium
+ * （真字重，PostScript 名验证；单字体实测 21 个 IPA 字符全覆盖，
+ * Medium 浓度与主链 Semibold 同级）；名字漂移（创建失败回退系统默认）
+ * 则 STHeiti SC Regular 充当。分派范围：IPA 常量 + 音标列收集的
+ * Latin/希腊扩展字符（< 0x3000）；人名汉字 PingFang 全覆盖不分派 */
+var phonSet = Set<Character>()
+for ch in IPA { phonSet.insert(ch) }
+for ch in phonCps {
+    let cp = ch.unicodeScalars.first!.value
+    if cp > 0x7F && cp < 0x3000 { phonSet.insert(ch) }
+}
+var phonFontCache: [CGFloat: CTFont] = [:]
+func phonFont(_ size: CGFloat) -> CTFont {
+    if let f = phonFontCache[size] { return f }
+    let f = CTFontCreateWithName("STHeitiSC-Medium" as CFString, size, nil)
+    let ps = CTFontCopyPostScriptName(f) as String? ?? ""
+    let chosen = ps == "STHeitiSC-Medium" ? f
+        : CTFontCreateWithName("STHeiti SC" as CFString, size, nil)
+    phonFontCache[size] = chosen
+    return chosen
+}
+
+func fontLabel(_ cell: Int) -> String {
+    let (name, bold, _) = fontForCell(cell)
+    return name + (bold ? " Bold" : "")
+}
+let fontsDesc = "16/20px \(fontLabel(16)) + 24px \(fontLabel(24))"
+
+func makeFont(_ size: CGFloat, _ cell: Int) -> CTFont {
+    let (name, bold, _) = fontForCell(cell)
+    var f = CTFontCreateWithName(name as CFString, size, nil) as CTFont
+    if bold,
        let b = CTFontCreateCopyWithSymbolicTraits(
            f, size, nil,
            CTFontSymbolicTraits.traitBold, CTFontSymbolicTraits.traitBold) {
@@ -141,6 +234,8 @@ func makeFont(_ size: CGFloat) -> CTFont {
 let sortedChars = charset.sorted(by: { $0.unicodeScalars.first!.value < $1.unicodeScalars.first!.value })
 
 func measureGlyph(_ ch: Character, _ f: CTFont, cell: Int) -> (l: CGFloat, r: CGFloat, t: CGFloat, b: CGFloat)? {
+    /* 音标字符分派专属字体（见 phonFont 注释） */
+    let f = phonSet.contains(ch) ? phonFont(CTFontGetSize(f)) : f
     let BIGPAD = 16
     let BIG = cell + BIGPAD * 2
     var buf = [UInt8](repeating: 255, count: BIG * BIG)
@@ -157,7 +252,7 @@ func measureGlyph(_ ch: Character, _ f: CTFont, cell: Int) -> (l: CGFloat, r: CG
     CTLineDraw(line, ctx)
     var minx = BIG, maxx = -1, miny = BIG, maxy = -1
     for y in 0..<BIG {
-        for x in 0..<BIG where buf[y * BIG + x] < 128 {
+        for x in 0..<BIG where buf[y * BIG + x] < INK_THRESHOLD {
             if x < minx { minx = x }; if x > maxx { maxx = x }
             if y < miny { miny = y }; if y > maxy { maxy = y }
         }
@@ -169,7 +264,12 @@ func measureGlyph(_ ch: Character, _ f: CTFont, cell: Int) -> (l: CGFloat, r: CG
 }
 
 func renderGlyph(_ ch: Character, _ f: CTFont, cell: Int, stride: Int,
-                 textX: CGFloat, baseline: CGFloat) -> [UInt8] {
+                 textX: CGFloat, baseline: CGFloat, dilate: Bool) -> [UInt8] {
+    /* 音标字符分派专属字体（Medium 真字重，dilate 不参与）；分派后主字体
+     * 若无 Bold 已在调用方 dilate，这里对 phon 字体禁用膨胀防过粗 */
+    let isPhon = phonSet.contains(ch)
+    let f = isPhon ? phonFont(CTFontGetSize(f)) : f
+    let dilate = isPhon ? false : dilate
     var buf = [UInt8](repeating: 255, count: cell * cell)   // 灰度，白底
     let ctx = CGContext(data: &buf, width: cell, height: cell,
                         bitsPerComponent: 8, bytesPerRow: cell,
@@ -187,14 +287,15 @@ func renderGlyph(_ ch: Character, _ f: CTFont, cell: Int, stride: Int,
     for gy in 0..<cell {
         for gx in 0..<cell {
             /* CGBitmapContext 内存第 0 行即视觉顶部，图像行 gy 直接读内存行 gy */
-            if buf[gy * cell + gx] < 128 {
+            /* 墨水屏 1bit 二值化（阈值与 measureGlyph 共用 INK_THRESHOLD） */
+            if buf[gy * cell + gx] < INK_THRESHOLD {
                 bits[gy * stride + gx / 8] |= UInt8(0x80 >> (gx % 8))
             }
         }
     }
 
-    /* 无 Bold 变体时的机械加粗：3x3 膨胀 */
-    if useDilate {
+    /* 无 Bold 变体时的机械加粗：3x3 膨胀（按级，小字级无 Bold 才启用） */
+    if dilate {
         var out = bits
         func bit(_ y: Int, _ x: Int) -> Bool {
             bits[y * stride + x / 8] & UInt8(0x80 >> (x % 8)) != 0
@@ -216,22 +317,101 @@ func renderGlyph(_ ch: Character, _ f: CTFont, cell: Int, stride: Int,
     return bits
 }
 
+/* stderr 报告通道（必须先于 level 渲染循环初始化：swift JIT 顶层代码
+ * 按序执行，循环内 say() 若早于此定义调用，会捕获尚未初始化的 err
+ * → EXC_BAD_ACCESS segfault，2026-08-23 实测教训） */
+let err = FileHandle.standardError
+func say(_ s: String) { try? err.write(contentsOf: Data((s + "\n").utf8)) }
+
 /* 逐级渲染（两遍法自适应字号 + 位图 + 边界触碰检测） */
 struct LevelOut {
     let cell: Int, stride: Int
     var fontSize: CGFloat = 0
     var bits: [[UInt8]] = []
     var touched = 0
+    var demoted = 0   /* per-glyph 降级字数 */
 }
 var levelOuts: [LevelOut] = []
+
+/* 位图四边贴边像素数（整级/单字形共用） */
+func edgeTouch(_ b: [UInt8], cell: Int, stride: Int) -> Int {
+    var t = 0
+    for gx in [0, cell - 1] { for gy in 0..<cell {
+        if b[gy * stride + gx / 8] & UInt8(0x80 >> (gx % 8)) != 0 { t += 1 } } }
+    for gy in [0, cell - 1] { for gx in 0..<cell {
+        if b[gy * stride + gx / 8] & UInt8(0x80 >> (gx % 8)) != 0 { t += 1 } } }
+    return t
+}
+
+/* 单字形自适应降级：从 baseSize 起独立两遍法居中渲染、贴边则缩 1pt 直至
+ * 装下（字号不同基线不同，不能用整级基线）。cell 制点阵按格对齐，
+ * 降级字形仅比同级略小、无基线错乱（2026-08-23） */
+func renderGlyphFit(_ ch: Character, cell: Int, stride: Int, baseSize: CGFloat, dilate: Bool) -> [UInt8] {
+    var size = baseSize
+    var last: [UInt8] = []
+    while size >= 8 {
+        let f = makeFont(size, cell)
+        guard let m = measureGlyph(ch, f, cell: cell) else { break }  /* 空字形无墨不贴边 */
+        let baseline = ((CGFloat(cell) + (-m.b) - m.t) / 2).rounded()
+        let textX = ((CGFloat(cell) - m.l - m.r) / 2).rounded()
+        let b = renderGlyph(ch, f, cell: cell, stride: stride,
+                            textX: textX, baseline: baseline, dilate: dilate)
+        if edgeTouch(b, cell: cell, stride: stride) == 0 { return b }
+        last = b
+        size -= 1
+    }
+    return last   /* 8pt 仍贴边（理论不至）：接受裁切 */
+}
+
+/* IPA 重音/长音/间隔号合成位图（2026-08-24）：字体渲染的 ˈ ˌ 在 16px 级
+ * （12pt）1px 细竖笔低于二值化阈值被整体丢弃——真机音标行重音符
+ * 渲染成空格（报障 /səˈsaɪəti/ 显为 sə saɪəti），ː 双三角 7 点、
+ * · 间隔号 2 点同样细弱。四个记号本质是几何符号，直接按级合成：
+ * ˈ 顶部竖笔（IPA 主重音惯例位置）、ˌ 底部竖笔（次重音下半线）、
+ * ː 中部双点（三角冒号近似）、· 中心方点（中点全档统一，底部
+ * 标签行间隔号同步受益）；笔画宽与主链 Bold 笔宽同源（cell/8 取整） */
+func synthModifier(_ cp: UInt32, cell: Int, stride: Int) -> [UInt8]? {
+    guard [0x02C8, 0x02CC, 0x02D0, 0x00B7].contains(cp) else { return nil }
+    var bits = [UInt8](repeating: 0, count: stride * cell)
+    let pen = max(2, (cell + 7) / 8)          // 笔宽：16/20→2px、24→3px
+    func fill(_ x0: Int, _ y0: Int, _ w: Int, _ h: Int) {
+        for y in y0..<(y0 + h) { for x in x0..<(x0 + w) {
+            bits[y * stride + x / 8] |= UInt8(0x80 >> (x % 8)) } }
+    }
+    switch cp {
+    case 0x02C8:                              // ˈ 主重音：顶部竖笔
+        fill((cell - pen) / 2, 1, pen, max(4, cell / 3))
+    case 0x02CC:                              // ˌ 次重音：底部竖笔
+        let h = max(3, cell / 5)
+        fill((cell - pen) / 2, cell - 2 - h, pen, h)
+    case 0x02D0:                              // ː 长音符：中部双点
+        let d = max(2, (cell + 7) / 8)
+        fill((cell - d) / 2, cell * 2 / 5, d, d)
+        fill((cell - d) / 2, cell * 3 / 5, d, d)
+    default:                                  // · 间隔号：中心方点
+        let d = max(2, (cell + 7) / 8)
+        fill((cell - d) / 2, (cell - d) / 2, d, d)
+    }
+    return bits
+}
 
 for cell in LEVELS {
     let stride = (cell + 7) / 8
     var out = LevelOut(cell: cell, stride: stride)
     var fontSize = FONT_SIZE_HINT[cell] ?? CGFloat(cell - 2)
+    let dilate = fontForCell(cell).dilate
+    /* 贴边容忍：整级渲染后残余贴边 ≤ 此像素值不缩整级，改走 per-glyph
+     * 降级（renderGlyphFit）。原闭环追求绝对归零，为 1~2 个极端墨迹字
+     * 缩整级 1pt，三级各白损 6~8% 字面（2026-08-23 实测 16px 级因此
+     * 12pt→11pt） */
+    let TOUCH_TOLERANCE = 256
 
+    /* 渲染后实测闭环：measure（大画布）与 render（小画布）光栅化在低阈值
+     * 下存在亚像素级差异，开环定位会残留贴边；渲染完直接扫位图四边，
+     * 贴边超容忍值则缩 1pt 整级重渲染，收敛后少量残余走 per-glyph 降级
+     * （2026-08-23） */
     while true {
-        let f = makeFont(fontSize)
+        let f = makeFont(fontSize, cell)
         var A: CGFloat = 0, B: CGFloat = 0, L: CGFloat = 0, R: CGFloat = 0
         for ch in sortedChars {
             guard let m = measureGlyph(ch, f, cell: cell) else { continue }
@@ -241,23 +421,43 @@ for cell in LEVELS {
             if m.r > R { R = m.r }
         }
         if A - B <= CGFloat(cell) - 2 && R - L <= CGFloat(cell) - 2 {
-            let baseline = (CGFloat(cell) + (-B) - A) / 2
-            let textX = (CGFloat(cell) - L - R) / 2
-            let font = makeFont(fontSize)
+            /* 取整对齐光栅化相位（measure 的 pen 为整数） */
+            let baseline = ((CGFloat(cell) + (-B) - A) / 2).rounded()
+            let textX = ((CGFloat(cell) - L - R) / 2).rounded()
+            let font = makeFont(fontSize, cell)
             out.fontSize = fontSize
             for ch in sortedChars {
                 let b = renderGlyph(ch, font, cell: cell, stride: stride,
-                                    textX: textX, baseline: baseline)
+                                    textX: textX, baseline: baseline, dilate: dilate)
                 out.bits.append(b)
-                for gx in [0, cell - 1] { for gy in 0..<cell {
-                    if b[gy * stride + gx / 8] & UInt8(0x80 >> (gx % 8)) != 0 { out.touched += 1 } } }
-                for gy in [0, cell - 1] { for gx in 0..<cell {
-                    if b[gy * stride + gx / 8] & UInt8(0x80 >> (gx % 8)) != 0 { out.touched += 1 } } }
             }
-            break
+            out.touched = out.bits.reduce(0) { $0 + edgeTouch($1, cell: cell, stride: stride) }
+            if out.touched <= TOUCH_TOLERANCE { break }   /* 少量贴边走 per-glyph 降级 */
+            say("// level cell=\(cell) fontSize=\(Int(fontSize)) edge-touch=\(out.touched) -> shrink & rerender")
+            out.bits.removeAll()
+            out.touched = 0
         }
         fontSize -= 1
         precondition(fontSize >= 8, "glyph ink box cannot fit even at 8pt (cell=\(cell))")
+    }
+    /* per-glyph 降级：残余贴边字形单独缩 1pt 独立居中重渲（仅占极端
+     * 墨迹的少数字，保住整级字面）；降级后整级贴边归零 */
+    for (i, ch) in sortedChars.enumerated()
+    where edgeTouch(out.bits[i], cell: cell, stride: stride) > 0 {
+        out.bits[i] = renderGlyphFit(ch, cell: cell, stride: stride,
+                                     baseSize: fontSize - 1, dilate: dilate)
+        out.demoted += 1
+    }
+    if out.demoted > 0 {
+        say("// level cell=\(cell) demoted \(out.demoted) glyphs to \(Int(fontSize) - 1)pt (extreme ink box)")
+    }
+    /* IPA 记号合成替换（见 synthModifier 注释）：在降级后、进库前覆盖，
+     * 合成图严格避开 cell 四边（ˈ 行 1 起、ˌ 行 cell-2 止）不引入贴边 */
+    for (i, ch) in sortedChars.enumerated() {
+        if let s = synthModifier(ch.unicodeScalars.first!.value,
+                                 cell: cell, stride: stride) {
+            out.bits[i] = s
+        }
     }
     levelOuts.append(out)
 }
@@ -289,7 +489,7 @@ var c = """
  * @brief 中文点阵字库 lookup + 《传习录》引文表（生成文件，勿手改）
  *
  * 字形数据在 cjk_font_data.bin（CMake EMBED_FILES 编入固件）：
- *   \(fontLabel)，三级 \(levelCells)px，
+ *   \(fontsDesc)，三级 \(levelCells)px，
  *   \(cps.count) 字形 x \(levelDesc)
  *   = \(totalGlyphBytes) 字节。
  * 码点升序二分查找；位图行主序 MSB-first，bit=1 着色（epd_gfx_draw_bitmap 格式）。
@@ -298,8 +498,11 @@ var c = """
 #include "cjk_font.h"
 #include <stddef.h>
 
-/* EMBED_FILES 链接符号（CMakeLists：EMBED_FILES "cjk_font_data.bin"） */
-extern const uint8_t _binary_cjk_font_data_bin_start[];
+/* objcopy 嵌入符号（platformio.ini board_build.embed_files=src/cjk_font_data.bin，
+ * 路径含 src/ → 符号带 src_ 前缀；ESPIDF CMake 迁移后为无前缀版，届时
+ * 须同步，见 src/CMakeLists.txt 头注释） */
+extern const uint8_t _binary_src_cjk_font_data_bin_start[];
+#define BIN_BASE (_binary_src_cjk_font_data_bin_start)
 
 /* bin 头（小端）：0..3 magic, 4..5 ver, 6..7 levels, 8..11 n,
  * 12..17 cell[3], 18..23 stride[3], 24.. cp 表 u16[n]，4 对齐后三级位图 */
@@ -309,13 +512,13 @@ static uint32_t rd_le32(const uint8_t *p)
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-static uint32_t glyph_n(void)      { return rd_le32(_binary_cjk_font_data_bin_start + 8); }
-static uint16_t glyph_cell(int lvl)  { const uint8_t *p = _binary_cjk_font_data_bin_start + 12 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
-static uint16_t glyph_stride(int lvl){ const uint8_t *p = _binary_cjk_font_data_bin_start + 18 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t glyph_n(void)      { return rd_le32(BIN_BASE + 8); }
+static uint16_t glyph_cell(int lvl)  { const uint8_t *p = BIN_BASE + 12 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint16_t glyph_stride(int lvl){ const uint8_t *p = BIN_BASE + 18 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
 
 static const uint16_t *cp_table(void)
 {
-    return (const uint16_t *)(_binary_cjk_font_data_bin_start + 24);
+    return (const uint16_t *)(BIN_BASE + 24);
 }
 
 static const uint8_t *level_base(int lvl)
@@ -325,7 +528,7 @@ static const uint8_t *level_base(int lvl)
     off = (off + 3) & ~3u;
     for (int i = 0; i < lvl; i++)
         off += n * (uint32_t)glyph_stride(i) * (uint32_t)glyph_cell(i);
-    return _binary_cjk_font_data_bin_start + off;
+    return BIN_BASE + off;
 }
 
 const uint8_t *cjk_glyph_lookup_level(uint32_t cp, int level)
@@ -405,12 +608,10 @@ extern const char k_chuanxilu_attrib[];
 try! h.write(to: URL(fileURLWithPath: "src/cjk_font.h"), atomically: true, encoding: .utf8)
 
 // ---------- 6. stderr 报告 + ASCII 预览 ----------
-let err = FileHandle.standardError
-func say(_ s: String) { try? err.write(contentsOf: Data((s + "\n").utf8)) }
-say("// font=\(fontLabel) glyphs=\(cps.count) (gb2312-1=\(gbCount)) quotes=\(quotes.count)")
+say("// fonts=\(fontsDesc) glyphs=\(cps.count) (gb2312-1=\(gbCount)) quotes=\(quotes.count)")
 for l in levelOuts {
     say("// level cell=\(l.cell) fontSize=\(Int(l.fontSize)) stride=\(l.stride) " +
-        "bytes=\(l.bits.count * l.stride * l.cell) edge-touch=\(l.touched)")
+        "bytes=\(l.bits.count * l.stride * l.cell) edge-touch=\(l.touched) demoted=\(l.demoted)")
 }
 say("// bin total = \(bin.count) bytes")
 let previewSet: [Character: Int] = {
@@ -418,7 +619,7 @@ let previewSet: [Character: Int] = {
     for (i, ch) in sortedChars.enumerated() { m[ch] = i }
     return m
 }()
-let previews: [Character] = ["知", "行", "A", "，"]
+let previews: [Character] = ["知", "行", "A", "，", "ə", "ˈ"]
 for preview in previews {
     guard let idx = previewSet[preview] else { continue }
     let l = levelOuts[LEVELS.count - 1]   // 24px 级预览

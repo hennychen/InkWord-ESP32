@@ -139,9 +139,9 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 | — DOWN | GPIO2 | 下一条 / 长按切换学习模式 |
 | — LEFT | GPIO14 | 预留（配置页光标左移/返回）/ 长按 AP 门户、密码快删 |
 | — RIGHT | GPIO15 | 预留（配置页光标右移）/ 长按 LAN 接收页 |
-| — CENTER | GPIO21 | 发音（配置页确认/输入；待机页拉天气）/ 长按进入 Wi-Fi 配置、返回列表 |
-| — SET | GPIO42 | 遮蔽/揭晓释义（待机页：轮换下一条引文）/ 长按预留 SRS「记得」 |
-| — RST | GPIO40 | 回到当前模式第一条 / 长按预留 SRS「忘了」 |
+| — CENTER | GPIO21 | 发音（配置页确认/输入；待机页拉天气；功能菜单确认）/ 长按进入功能菜单（2026-08-23 起替代 Wi-Fi 配置直达；配网页内长按=返回列表） |
+| — SET | GPIO42 | 遮蔽/揭晓释义（待机页：轮换下一条引文）/ 长按收藏/取消当前词（收藏视图内取消后移出序列） |
+| — RST | GPIO40 | 回到当前模式第一条 / 长按临时视图进出（错词本/收藏浏览） |
 | **SD 卡** (SPI3_HOST) | | 独立于 EPD 的 SPI 总线 |
 | — MOSI | GPIO17 | |
 | — MISO | GPIO16 | |
@@ -164,6 +164,16 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 | Hink E042A13-A0 | `e042a13_ssd1619` | 4.2" 400×300 黑白红 | SSD1619 | [`panels/panel_e042a13_ssd1619.cpp`](src/panels/panel_e042a13_ssd1619.cpp) | 全刷 ~14.6s（三色物理下限，无局刷） | ✅ 真机验证 |
 | WEIFENG WF0270 | `wf0270_ssd1680` | 2.7" 264×176 黑白红（COG 竖屏 176×264 + rotation=1） | SSD1680 | [`panels/panel_wf0270_ssd1680.cpp`](src/panels/panel_wf0270_ssd1680.cpp) | 全刷 ~15s（同族估计，实测后回填），无局刷 | 🧪 待到货验证（22Pin） |
 | GDEW027C44 同族 | `gdew027c44_il91874` | 2.7" 264×176 黑白红（COG 竖屏 176×264 + rotation=1） | IL91874/EK79652 | [`panels/panel_gdew027c44_il91874.cpp`](src/panels/panel_gdew027c44_il91874.cpp) | 快刷 ~4.4s（E4 LUT 压缩，实测 4361ms）+ 每 8 次插 1 次官方深刷 ~14.7s 抗残影，无局刷；RAM 须逐字节独立 CS 事务（家族铁律） | ✅ 真机验证 |
+| Hink E042A13-A0 黑白版 | `e042a13bw_ssd1619` | 4.2" 400×300 黑白（LAYOUT_MID，UI 零改动即适配） | SSD1619（初判） | [`panels/panel_e042a13bw.cpp`](src/panels/panel_e042a13bw.cpp) | 待 bring-up 实测 | 🧪 骨架（屏在途，2026-08-23） |
+| WFT0290CZ10 | `wft0290_bw` | 2.9" 128×296 黑白竖屏（电子价签源，LAYOUT_TINY） | 待实测（UC8253/SSD1680 候选） | [`panels/panel_wft0290.cpp`](src/panels/panel_wft0290.cpp) | 待 bring-up 实测 | 🧪 骨架（屏在途，2026-08-23） |
+| OPM021EB | `opm021eb_bw` | 2.13" 122×250 黑白竖屏（电子标签，LAYOUT_TINY，当前最小屏） | SSD1680（疑似） | [`panels/panel_opm021eb.cpp`](src/panels/panel_opm021eb.cpp) | 待 bring-up 实测 | 🧪 骨架（屏在途，2026-08-23） |
+
+> **骨架面板说明**（2026-08-23）：三块在途屏的几何/档位/UI 适配已就绪
+> （TINY 档：短边 <140px 竖屏，超紧凑头部学习页 + 16px 待机引文；
+> 400×300 黑白版归 MID 档零改动），但驱动序列未 bring-up——ops 为
+> fail-safe 桩（init 拒绝），对应 env 编译验证可用，烧录后屏无输出，
+> 按 §十六 SOP 真机 bring-up 回填后方可使用。TINY 屏配网走 AP 门户
+> （手机浏览器连 InkWord 热点），屏上键盘不适用。
 
 ### 切换屏幕（一条命令）
 
@@ -222,15 +232,16 @@ VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `i
 | **按键** | [`button_handler`](src/button_handler.h) | 五向导航开关轮询去抖, 区分短按 / 长按 (1.5s) |
 | **存储** | [`storage_manager`](src/storage_manager.h) | SD 卡 SPI 挂载至 `/sdcard`, 文件读写 |
 | **刷新调度** | [`refresh_scheduler`](src/refresh_scheduler.h) | 局刷计数, 达阈值例行全刷（学习页阈值 8；待机页引文轮换阈值 12 低频保养） |
-| **词库** | [`word_parser`](src/word_parser.h) | 解析 `words.json` 至 PSRAM 词池（4000 词；JSON 缓冲 2MB） |
+| **词库** | [`word_parser`](src/word_parser.h) | 解析 `words.json` 至 PSRAM 词池（4000 词；JSON 缓冲 2MB）；出厂内嵌兜底词库约 2400 条（`src/default_words.json` embed，无 SD 卡开箱即用，SD 卡 `words.json` 优先；生成链 [`tools/default_vocab`](../tools/default_vocab/README.md)） |
 | **SRS 引擎** | [`srs_engine`](src/srs_engine.h) | FSRS-4.5 间隔重复算法（M4 路径 A 2026-08-22；纯算法，与后端 FsrsService 对拍，`pio test -e native-test`） |
 | **学习状态** | [`learning_state`](src/learning_state.h) | 每词 FSRS stability/difficulty/连错/收藏；LR03 sparse NVS + 脏标记延迟落盘（旧 LR02 升级自动作废） |
 | **模式状态机** | [`study_mode_machine`](src/study_mode_machine.h) | 闪卡 / 听写 / 复习 / 阅读四模式切换 |
-| **CJK 字库/文本** | [`cjk_font`](src/cjk_font.h) + [`cjk_text`](src/cjk_text.h) | 三级点阵字库 bin（16/20/24px，3892 字，646KB 嵌入）+ UTF-8 混排绘制层（词卡释义/tag、阅读器、待机页共用；CJK 按字断行 / ASCII 按词断，墨迹盒变宽渲染） |
+| **CJK 字库/文本** | [`cjk_font`](src/cjk_font.h) + [`cjk_text`](src/cjk_text.h) | 三级点阵字库 bin（16/20/24px，3892 字，646KB 嵌入）+ UTF-8 混排绘制层（词卡释义/tag、阅读器、待机页共用；CJK 按字断行 / ASCII 按词断，墨迹盒变宽渲染；断行量测/分页绘制 API 与绘制同源，词卡释义分页基建） |
 | **Wi-Fi 联网** | [`wifi_manager`](src/wifi_manager.h) | 网络栈/STA 连接、NVS 凭据持久化、SoftAP、AP 扫描、快速+慢速断线重连、异步连接 |
 | **HTTP 同步** | [`sync_client`](src/sync_client.h) | 增量词库拉取、学习记录回传、心跳上报、天气拉取（附带校时） |
 | **OTA** | [`ota_manager`](src/ota_manager.h) | 双分区升级: 下载 / 校验 / 切换 / 回滚 |
-| **Wi-Fi 配置 UI** | [`wifi_config_ui`](src/wifi_config_ui.h) | 扫描列表 + QWERTY 软键盘配网向导（长按 C） |
+| **Wi-Fi 配置 UI** | [`wifi_config_ui`](src/wifi_config_ui.h) | 扫描列表 + QWERTY 软键盘配网向导（经功能菜单进入；独立任务+队列） |
+| **快捷菜单** | [`menu_ui`](src/menu_ui.h) | 长按中键进入的功能菜单：收藏列表/模式选择/Wi-Fi 配网/AP 门户/LAN 接收页/设备信息/按键说明七项（三段式反选列表+徽标，几何按 layout_profile 档位运行期派生；回调内同步绘制，无任务无队列；设计见 [`docs/MENU_DESIGN.md`](../docs/MENU_DESIGN.md)） |
 | **LAN 直传/配网门户** | [`lan_display_server`](src/lan_display_server.h) | 设备端 HTTP 服务器 + 内嵌发送页 + Wi-Fi 配网页 + mDNS + SoftAP captive portal + DNS 劫持 |
 | **待机页** | [`standby_page`](src/standby_page.h) | 无词库时的《传习录》引文整页（引文独占：居中楷体 Bold 24px 点阵每 5 分钟轮换 + 右下角出处；HTTP Date+后端双校时、NVS 天气缓存；轮换默认局刷 + 差分/计数智能分流全刷防残影；深睡时钟 checkpoint/restore RTC 差分交接） |
 | **电源管理** | [`power_manager`](src/power_manager.h) | SoC 深睡 + 定时唤醒（P5）：无操作 10 分钟入睡全流程、唤醒原因分流、静默心跳会话入口（见下文「电源管理」节） |
@@ -271,6 +282,44 @@ setup() (Arduino)
 释义/标签支持中文（cjk_text 16px 点阵混排：CJK 按字断行、ASCII 按词
 断、超宽自动换行；真实词库释义为中文，FreeSans 仅 ASCII 不可用）；
 demo 构建内置中文释义词可直接上机验证。
+
+**释义按屏排版 + 分页 + 单列重设计（2026-08-23）**：学习页全档位
+统一单列上下结构（当日两轮真机反馈迭代定稿：双栏右栏仅 136px ≈ 7
+字/行阅读体验差 → 退役）——头部单词全宽大字（自适应降级）+ 音标行
+（同日 IPA 修复：字库收录 IPA 21 字符 + 诗词作者名/中点，词池原始
+音标 16px 点阵直渲，取代 ASCII 近似转换）+
+收藏星标；正文流 = 释义+词根全宽分页（20px 字 21 字/行，行数按屏
+高派生：416x240 = 4 行、400x300 = 6、264x176 = 2 行 16px）；底部
+标签行全宽。超出一屏自动分页不再截断，多页时首行右缘页码指示
+（如 `2/3`，正文缩窄 30px 量测绘制同宽重建页数）；上下键先词内翻
+释义页、到首/尾页边界再翻词，换词/翻义/切模式页游标自动归零。
+量测（`cjk_text_wrap_lines`）与分页绘制（`cjk_text_draw_wrap_page`）
+共用同一断行核心，页数与渲染行严格一致（与阅读器建页同策略）。
+同日修复两处存量缺陷（host 真实字库复现定位）：cjk_text ink_span
+哨兵误抄致 advance 恒 3px（分页失效根因）、wrap_walk 分页绘制用
+绝对行 y 致第 2 页起压底标签（页内相对 y 修正）。
+
+**音标行 IPA 点阵渲染（2026-08-23，08-24 记号补全）**：FreeSans 字符
+范围仅 0x20-0x7E，真机 IPA 音标（ə ˈ ɪ ʃ…）被逐字符静默跳过——
+曾以 `phonetic_ascii` 转 ASCII 近似（ə→e 发音错位）救急，同日彻底
+修复：`gen_cjk_font.swift` 字符集新增 IPA 21 字符（实测 19 + 备用
+ː ɒ）+ `src/default_words.json` phonetic 列全量收集（诗词词条作者名/
+中点）；PingFang 缺 IPA 全套且 CTLine 级联不可控（ˈ 渲染空白），
+生成器按字符分派 STHeitiSC-Medium（真字重，21 字符全覆盖，浓度
+与主链 Semibold 同级）渲染点阵；固件侧 `main.cpp` 音标行改
+`cjk_text_draw` 16px 整行点阵（收藏星标同步点阵化），删除
+`phonetic_ascii`；布局宏 `UI_PHON_BASE`（FreeSans 基线）→
+`UI_PHON_TOP`（点阵顶左），三档 `UI_BODY_TOP` 数值不变
+（104/100/74，正文区零位移）；字库 3892 → 3935 字形（+7KB），
+未收录字符（如云端新字符）画 cell 空心框兜底。
+08-24 真机复验补全（报障 /səˈsaɪəti/ 显为 sə saɪəti）：① ˈ ˌ
+在 16px 级（12pt）字体渲染 1px 细竖笔低于二值化阈值被整体丢弃，
+渲染成半角空格；生成器新增 synthModifier 合成位图，四记号直接
+按级合成（ˈ 顶部竖笔 / ˌ 底部竖笔 / ː 中部双点 / · 中心方点，
+笔宽 cell/8 与主链 Bold 同源），替换发生在 per-glyph 降级后、
+进库前，不引入贴边；② 词典惯例斜杠包裹：词库 phonetic 为裸 IPA，
+显示层条件补 `/ /`（自带 / 或 [ ] 的云端/SD 词库不双包）；
+③ demo 词库换真 IPA（ˌserənˈdɪpəti 等，覆盖 ˈ ˌ ː ɪ θ）。
 
 ### FSRS-4.5 间隔重复算法（M4 路径 A，2026-08-22）
 
@@ -472,7 +521,7 @@ updateDemoPartial(passes)      0x04 上电 → 0x12(+0x00 哑字节)×passes
 - **中键 ext1**（GPIO21，RTC 域低电平）：正常启动路径 + 20ms 确认震动
   + 自治钟 RTC 慢钟差分恢复（`epoch = 入睡基准 + (time(NULL) - rtc0)`，
   不碰已损坏的系统时钟绝对值路径；小时级睡眠误差分钟级，联网后 HTTP
-  Date 校准兑底）。唤醒键幻影按键事件（按住唤醒时扫描任务零状态起步
+  Date 校准兜底）。唤醒键幻影按键事件（按住唤醒时扫描任务零状态起步
   误报）在 on_button 吞除首个中键事件；
 - **RTC TIMER**（`PM_HEARTBEAT_PERIOD_S`，2h）：**静默心跳会话**（setup
   最早期分流，不返回）：屏/SD/音频/学习状态全不初始化 → Wi-Fi 快连
@@ -518,7 +567,7 @@ updateDemoPartial(passes)      0x04 上电 → 0x12(+0x00 哑字节)×passes
 |------|------|----------|
 | **AP 配网门户**（推荐） | 开机无凭据自动开启；或长按左键 | 首次配网 / 换网，手机自动弹页体验最佳 |
 | **网页配网** | 发送页右上角“Wi-Fi 设置” | 已联网状态下直接换网，无需重启 |
-| **软键盘配网** | 长按中键 | 无第二台设备时的屏上向导（见下文） |
+| **软键盘配网** | 功能菜单（长按中键进入）→「Wi-Fi 配网」项 | 无第二台设备时的屏上向导（见下文） |
 
 **AP 配网门户工作原理：**
 
@@ -535,12 +584,12 @@ updateDemoPartial(passes)      0x04 上电 → 0x12(+0x00 哑字节)×passes
 状态轮询 → 成功后屏显设备 IP → 自动关热点回 STA
 ```
 
-**软键盘配网 UI（长按中键）：**
+**软键盘配网 UI（功能菜单 → Wi-Fi 配网）：**
 
 设备首次使用或需要更换网络时，通过屏幕引导完成 Wi-Fi 配网。
 
 **进入方式：**
-- 运行中长按中键手动进入（开机无凭据时已改为自动开启 AP 配网门户）
+- 运行中长按中键进入功能菜单，选「Wi-Fi 配网」项（2026-08-23 前为长按中键直达；开机无凭据时已改为自动开启 AP 配网门户）
 
 **交互流程（五向导航键）：**
 
@@ -651,11 +700,11 @@ httpd_uri_match_wildcard`），POST 精确注册；captive portal 探测域名 3
 |----|------|------|
 | 上 | 忽略 | 清残影全刷 |
 | 下 | 忽略 | 忽略 |
-| 中 | 立即拉取天气 | 进入 Wi-Fi 配置 |
+| 中 | 立即拉取天气 | 进入功能菜单（收藏/模式/配网/AP/LAN/信息） |
 | 左 | 忽略 | 进入 AP 直连/配网门户 |
 | 右 | 忽略 | 进入 LAN 接收页 |
-| SET | 轮换下一条引文 | 预留 SRS「记得」 |
-| RST | 忽略 | 预留 SRS「忘了」 |
+| SET | 轮换下一条引文 | 忽略 |
+| RST | 忽略 | 忽略 |
 
 > 无词库无可翻内容，短按忽略以节省刷新次数；长按语义与学习页一致，
 > 任意键退出配网/LAN 页后待机页自动整页重绘。
@@ -664,20 +713,42 @@ httpd_uri_match_wildcard`），POST 精确注册；captive portal 探测域名 3
 
 | 键 | 短按 | 长按 |
 |----|------|------|
-| 上 | 上一条 | 清残影全刷 |
-| 下 | 下一条 | 切换学习模式 |
-| 中 | 发音 | 进入 Wi-Fi 软键盘配置 |
-| 左 | 预留（释义滚动扩展） | 进入 AP 直连/配网门户（手机连 InkWord-Setup 直传） |
-| 右 | 预留（释义滚动扩展） | 进入 LAN 接收页（同网浏览器直传） |
-| SET | 遮蔽/揭晓释义（闪卡自测，再按切换） | 预留 SRS「记得」评分 |
-| RST | 回到当前模式第一条 | 预留 SRS「忘了」评分 |
+| 上 | 上一条（释义多页时先翻上一释义页） | 清残影全刷 |
+| 下 | 下一条（释义多页时先翻下一释义页） | 切换学习模式 |
+| 中 | 发音 | 进入功能菜单（收藏列表/模式选择/Wi-Fi 配网/AP 门户/LAN 接收页/设备信息，2026-08-23） |
+| 左 | 自评「忘记」Q1（连错+1，>0 入错词本） | 进入 AP 直连/配网门户（手机连 InkWord-Setup 热点直传） |
+| 右 | 自评「简单」Q5（连错清零，错词本内移出） | 进入 LAN 接收页（同网浏览器直传） |
+| SET | 遮蔽/揭晓释义（闪卡自测，再按切换） | 收藏/取消当前词（已收藏词音标行右缘显 `*`；收藏视图内取消后移出序列、清空自动退回闪卡） |
+| RST | 回到当前模式第一条 | 临时视图进出（错词本：连错>0 过滤，答对移出/清空退回；收藏浏览：退出回闪卡） |
 
-> 释义遮蔽态右栏显示 `[SET] to reveal` 提示；翻页/切模式后自动回全显。
-> SET/RST 长按为质量分（记得=q4 / 忘了=q0）预留位（SM-2 与 FSRS
-> 共用 q→rating 映射），SRS 闭环接入学习记录上报后启用。
+> 释义遮蔽态右栏显示 `[SET] to reveal` 提示；翻词/切模式后自动回全显。
+> 释义分页（2026-08-23）：行数按屏高派生，超出一屏自动分页（多页时
+> 右下角页码指示）；上下键先词内翻页、到边界再翻词，换词/翻义/切
+> 模式页游标自动归零；SMALL 档（2.7"）为单列版式，词根随释义分页。
 
 > 接收页 / portal 激活期间，**任意按键**退出并回到学习界面（portal 模式同时关热点回 STA）。
 > 接收页与配网期间学习页渲染自动屏蔽，直刷后会强制下次全刷，无残影/花屏风险。
+
+### 功能菜单（2026-08-23）
+
+长按中键（学习页/待机页）进入 `menu_ui`，一期七项：**收藏列表**（徽标=收藏数，
+空收藏确认长震不进入；进入与错词本同构的收藏浏览临时视图）、**模式选择**（二级
+4 项列表，光标预定位当前模式，确认与长按下循环切换终态一致）、**Wi-Fi 配网**、
+**AP 配网门户**、**LAN 接收页**、**设备信息**（固件版本/词库/收藏·错词/运行时长/IP/PSRAM）、
+**按键说明**（四组分页键位速查：学习页/收藏·错词视图/待机页/菜单内，含词卡 `*` 收藏标记含义）。
+
+| 键 | 主菜单 | 模式列表/信息页/按键说明页 |
+|----|--------|--------------------------|
+| 上/下 | 移动选择（循环滚动，局刷） | 模式列表：移动选择；信息页：忽略；按键说明页：翻页（循环） |
+| 中 | 确认/进入 | 模式列表：确认切换；信息页：返回主菜单；按键说明页：下一页 |
+| SET | 退出菜单（恢复原页面） | 返回上级 |
+| RST | 任意层级直接退出回学习页/待机页 | 同左 |
+| 长按 | 全部忽略（防误触） | 同左 |
+
+> 菜单激活期间独占七键（路由插入在唤醒吞除之后、配网 UI 之前）；启动子功能
+> （配网/AP/LAN/收藏）遵循「先 exit 后 enter」纪律；待机页引文轮换与渲染
+> 在菜单激活期间自动让位（三条件接管早退）。几何按 layout_profile 档位
+> 运行期派生：MID 4 行/SMALL 3 行/TINY 8~9 行（省提示栏与 CJK 徽标）。
 
 ### Wi-Fi 配置 UI
 
@@ -709,6 +780,7 @@ InkWord_Firmware/
 │   ├── study_mode_machine.{c,h}# 学习模式状态机
 │   ├── wifi_manager.{c,h}      # Wi-Fi 联网
 │   ├── wifi_config_ui.{c,h}    # Wi-Fi 配置 UI（软键盘）
+│   ├── menu_ui.{c,h}           # 快捷菜单（长按中进入的功能菜单）
 │   ├── lan_display_server.{cpp,h} # LAN 直传/配网门户（HTTP 服务+内嵌网页+mDNS+DNS 劫持）
 │   ├── sync_client.{c,h}       # HTTP 同步（含天气拉取/校时）
 │   ├── ota_manager.{c,h}       # OTA 升级

@@ -12,6 +12,7 @@
 #include "epd_driver.h"
 
 #include <string.h>
+#include <limits.h>
 
 #define CT_SPACING  2   /* 字符间字距（与 reader_engine R_SPACING 一致） */
 
@@ -36,16 +37,20 @@ static int utf8_next(const char *p, uint32_t avail, uint32_t *cp)
     return n;
 }
 
-/* 字形水平墨迹范围 [l, l+w)（与 reader_engine ink_span 同源） */
+/* 字形水平墨迹范围 [l, l+w)（与 reader_engine ink_span 同源）。
+ * 2026-08-23 修复：两循环哨兵均误抄（首循环 r<0 恒真跑满全列、
+ * 尾循环 x>=l 不会因 r 赋值而止），l/r 双双被覆盖成墨迹区间反侧端点
+ * → w 恒 1 → advance 恒 3px，全部文本挤成一列、分页失效；真机
+ * 日志 pages=1 + host 真实字库复现定位；哨兵对齐 reader_engine 正确版 */
 static void ink_span(const uint8_t *bits, int cell, int stride,
                      int *out_l, int *out_w)
 {
     int l = -1, r = -1;
-    for (int x = 0; x < cell && r < 0; x++)
+    for (int x = 0; x < cell && l < 0; x++)
         for (int y = 0; y < cell; y++)
             if (bits[y * stride + x / 8] & (0x80 >> (x % 8))) { l = x; break; }
     if (l < 0) { *out_l = 0; *out_w = 0; return; }   /* 全白字形 */
-    for (int x = cell - 1; x >= l; x--)
+    for (int x = cell - 1; x > r; x--)
         for (int y = 0; y < cell; y++)
             if (bits[y * stride + x / 8] & (0x80 >> (x % 8))) { r = x; break; }
     *out_l = l;
@@ -146,13 +151,16 @@ static bool is_blank_cp(uint32_t cp)
     return cp == ' ' || cp == '\t' || cp == 0x3000;
 }
 
-int cjk_text_draw_wrap(int x, int y_top, int max_w, int level,
-                       int line_h, int max_lines,
-                       const char *s, uint16_t color)
+/* ---- 断行核心：完整走完文本并返回总行数；draw 时仅绘制行号落在
+ * [skip, skip+cap) 窗口内的内容（量测 pass=false / 绘制 pass=true
+ * 共用同一断行逻辑，保证分页页数与渲染行严格一致）。
+ * 断行单元：CJK/全角字符逐字可断；ASCII 连续串按词断（词内不拆）；
+ * ' '/'\t'/U+3000 行首吞掉、行中放不下时断在其后。 ---- */
+static int wrap_walk(int x, int y_top, int max_w, int level,
+                     int line_h, const char *s, uint16_t color,
+                     bool draw, int skip, int cap)
 {
-    if (!s || max_lines <= 0 || max_w <= 0) return 0;
-
-    int line = 0, cur_x = x, y = y_top;
+    int line = 0, cur_x = x;
     bool line_empty = true;
     const char *p = s;
     uint32_t avail = (uint32_t)strlen(s);
@@ -187,18 +195,49 @@ int cjk_text_draw_wrap(int x, int y_top, int max_w, int level,
         /* 放不下且行内已有内容 → 换行（行首空白已在上面吞掉） */
         if (!line_empty && cur_x - x + uw > max_w) {
             line++;
-            if (line >= max_lines) return line;   /* 截断丢弃剩余 */
-            y += line_h;
             cur_x = x;
             line_empty = true;
         }
 
-        draw_run(cur_x, y, unit, ulen, level, color);
+        if (draw && line >= skip && line < skip + cap)
+            /* 页内相对 y（2026-08-23 修复：此前用绝对行 y，第 2 页起绘制
+             * 越过页高压到屏底标签区，真机「上留白+末行重叠」定位） */
+            draw_run(cur_x, y_top + (line - skip) * line_h,
+                     unit, ulen, level, color);
         cur_x += uw;
         line_empty = false;
         p += ulen; avail -= ulen;
     }
     return line_empty && line == 0 ? 0 : line + 1;
+}
+
+int cjk_text_draw_wrap(int x, int y_top, int max_w, int level,
+                       int line_h, int max_lines,
+                       const char *s, uint16_t color)
+{
+    if (!s || max_lines <= 0 || max_w <= 0) return 0;
+    int total = wrap_walk(x, y_top, max_w, level, line_h, s, color,
+                          true, 0, max_lines);
+    return total > max_lines ? max_lines : total;   /* 截断语义保持 */
+}
+
+int cjk_text_wrap_lines(int max_w, int level, const char *s)
+{
+    if (!s || max_w <= 0) return 0;
+    return wrap_walk(0, 0, max_w, level, 0, s, 0, false, 0, INT_MAX);
+}
+
+int cjk_text_draw_wrap_page(int x, int y_top, int max_w, int level,
+                            int line_h, int lines_per_page, int page,
+                            const char *s, uint16_t color)
+{
+    if (!s || lines_per_page <= 0 || max_w <= 0 || page < 0) return 0;
+    int first = page * lines_per_page;
+    int total = wrap_walk(x, y_top, max_w, level, line_h, s, color,
+                          true, first, lines_per_page);
+    return total > first
+        ? (total - first < lines_per_page ? total - first : lines_per_page)
+        : 0;
 }
 
 bool cjk_text_has_wide(const char *s)

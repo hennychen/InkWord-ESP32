@@ -17,7 +17,7 @@
 #define CJK_GLYPH_W       24                 /**< 兼容宏：默认级(24px) 字形宽 */
 #define CJK_GLYPH_H       24                 /**< 兼容宏：默认级(24px) 字形高 */
 #define CJK_GLYPH_STRIDE  3                  /**< 兼容宏：默认级每行字节数 */
-#define CJK_GLYPH_N       3892                 /**< 字形总数（三级共用码点表） */
+#define CJK_GLYPH_N       3935                 /**< 字形总数（三级共用码点表） */
 
 /** UTF-32 码点 -> 指定级字形位图；未收录返回 NULL（调用方画占位框） */
 const uint8_t *cjk_glyph_lookup_level(uint32_t cp, int level);

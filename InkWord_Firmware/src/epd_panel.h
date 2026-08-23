@@ -103,6 +103,15 @@ typedef struct epd_panel_desc {
 #elif defined(INKWORD_PANEL_GDEW027C44)
 #define EPD_PANEL_DEFAULT_ID "gdew027c44_il91874"  /* 2.7" 264x176 BWR
                                                      * 三色（真机验证面板） */
+#elif defined(INKWORD_PANEL_E042A13BW)
+#define EPD_PANEL_DEFAULT_ID "e042a13bw_ssd1619"  /* 4.2" 400x300 BW
+                              * （E042A13-A0 黑白版，骨架：bring-up 待硬件） */
+#elif defined(INKWORD_PANEL_WFT0290)
+#define EPD_PANEL_DEFAULT_ID "wft0290_bw"  /* 2.9" 128x296 BW 竖屏
+                              * （WFT0290CZ10，骨架：bring-up 待硬件） */
+#elif defined(INKWORD_PANEL_OPM021EB)
+#define EPD_PANEL_DEFAULT_ID "opm021eb_bw"  /* 2.13" 122x250 BW 竖屏
+                              * （电子标签，骨架：bring-up 待硬件） */
 #else
 #define EPD_PANEL_DEFAULT_ID "depg0370_uc8253"  /* 默认：3.7" 240x416 BW */
 #endif

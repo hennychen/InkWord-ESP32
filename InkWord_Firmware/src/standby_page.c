@@ -63,6 +63,7 @@
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
 #include "lan_display_server.h"
+#include "menu_ui.h"      /* 快捷菜单接管屏幕期间待机页退位（长按中进入） */
 #include "debug_log.h"
 
 #include "freertos/FreeRTOS.h"
@@ -107,13 +108,18 @@ static const char *TAG = "STANDBY";
 #define SB_QUOTE_COLS      8     /* 每行字数上限（引文数据约束 <=8 字/行） */
 /* 布局常量 SMALL 档紧化（2026-08-22 升 24px 配套）：2.7" 176px 短边下
  * 五行引文块 128px + 出处带 36px 需带高 ≥132px，原 MID 参数（8/8/8/24）
- * 仅 112px 装不下。三元取值：MID/LARGE 保持原值（视觉零变化铁律） */
+ * 仅 112px 装不下。三元取值：MID/LARGE 保持原值（视觉零变化铁律）；
+ * 2026-08-23 TINY 档（引文 16px）同走紧化分支 */
 #define SB_QUOTE_Y0        (s_tight ? 4 : 8)   /* 引文带顶 */
 #define SB_QUOTE_LINE_GAP  (s_tight ? 2 : 8)   /* 行间距：字格之外追加 */
 #define SB_ATTR_BOTTOM     (s_tight ? 12 : 24) /* 出处底边距 */
 #define SB_ATTR_GAP        (s_tight ? 4 : 8)   /* 引文带底与出处带顶间隙 */
 #define SB_QUOTE_W         (SB_QUOTE_COLS * s_cell)
-#define SB_QUOTE_X0        ((epd_gfx_width() - SB_QUOTE_W) / 2)
+/* 引文带左缘：TINY 竖屏 122/128px 宽 < 8 字×16px=128px 带宽时贴左缘
+ * （零或负居中值钳 0；极宽 8 字行右缘可贴边甚至溢出 ≤6px，真实引文
+ * 多数 ≤6 字/行，bring-up 实测后再调列宽或缩字） */
+#define SB_QUOTE_X0        (epd_gfx_width() > SB_QUOTE_W \
+                             ? (epd_gfx_width() - SB_QUOTE_W) / 2 : 0)
 #define SB_ATTR_Y0         (epd_gfx_height() - SB_ATTR_BOTTOM - s_cell)
 #define SB_QUOTE_H         (SB_ATTR_Y0 - SB_ATTR_GAP - SB_QUOTE_Y0)
 #define SB_ATTR_X1         (epd_gfx_width() - 24)  /* 出处右缘：右边距 24（416→392） */
@@ -157,7 +163,7 @@ static int s_last_quote = -2;         /* 引文下标（5 分钟窗；-1=无效�
  * 初值为 epd 未初始化前的兜底，绘制前必经 standby_init 覆盖） */
 static int s_quote_level = 2;
 static int s_cell = CJK_GLYPH_H;
-static bool s_tight = false;  /* SMALL 档紧排版（standby_init 置位）：
+static bool s_tight = false;  /* SMALL/TINY 档紧排版（standby_init 置位）：
                                * 176px 短边容纳 24px 五行引文需压行距/边距
                                *（见下方布局常量三元分支，MID/LARGE 原值） */
 
@@ -423,7 +429,7 @@ void standby_init(void)
      * 已于 epd_driver_init 就绪，且首调 layout_profile_get 缓存档位） */
     s_quote_level = layout_profile_get()->quote_level;
     s_cell = cjk_glyph_cell_size(s_quote_level);
-    s_tight = (layout_profile_get()->kind == LAYOUT_SMALL);
+    s_tight = (layout_profile_get()->kind <= LAYOUT_SMALL);  /* 含 TINY */
     int bytes = SB_QUOTE_W / 8 * SB_QUOTE_H;
     if (bytes != s_quote_bytes || !s_quote_shadow || !s_quote_scratch) {
         free(s_quote_shadow);
@@ -470,7 +476,7 @@ void standby_on_button(nav_key_t id, button_event_t event)
     if (event == BUTTON_EVENT_LONG_PRESS) {
         switch (id) {
         case NAV_CENTER:
-            wifi_config_ui_enter();          /* 既有跨任务进入模式 */
+            menu_ui_enter();             /* 既有跨任务进入模式（原 Wi-Fi 配网降为菜单项） */
             break;
         case NAV_UP:
             s_flag_ghost_clear = true;       /* loop 中执行清残影+整页重绘 */
@@ -501,7 +507,8 @@ void standby_on_button(nav_key_t id, button_event_t event)
 void standby_render_full(void)
 {
     if (!standby_is_active()) return;
-    if (wifi_config_ui_is_active() || lan_server_is_active()) return;
+    if (wifi_config_ui_is_active() || lan_server_is_active() ||
+        menu_ui_is_active()) return;
 
     int quote = sb_quote_now();
 
@@ -617,8 +624,9 @@ void standby_tick(void)
         s_quote_off++;                  /* 下标变化交由 tick 差异检测整页刷新 */
     }
 
-    /* 配网页 / LAN 接收页接管屏幕期间不绘制 */
-    if (wifi_config_ui_is_active() || lan_server_is_active()) return;
+    /* 配网页 / LAN 接收页 / 快捷菜单接管屏幕期间不绘制 */
+    if (wifi_config_ui_is_active() || lan_server_is_active() ||
+        menu_ui_is_active()) return;
 
     /* ---- 消费后台投递的天气（页面已不绘制；仅 NVS 持久化 + 校时兜底） ---- */
     if (s_wx_dirty) {

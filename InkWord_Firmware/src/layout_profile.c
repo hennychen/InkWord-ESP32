@@ -11,6 +11,10 @@
  * Phase 5 接线以现状值为准——设计文档 §8.1 示例 MID=2(24px) 指
  * 大字场景；阅读正文现状默认 20px，按视觉零变化铁律取 1） */
 static const layout_profile_t k_profiles[] = {
+    [LAYOUT_TINY]  = { LAYOUT_TINY, 0, 0 },  /* 2.13"/2.9" 标签屏竖屏
+                                  * （2026-08-23 新增）：引文/正文均 16px
+                                  * ——短边 122~128px 下 24px 引文 8 字行宽
+                                  * 192px、正文 20px 每行仅 4~5 字，均不可行 */
     [LAYOUT_SMALL] = { LAYOUT_SMALL, 2, 1 },  /* 2.7"：引文 24px（待机页
                                   * SMALL 紧排版配合，见 standby_page.c
                                   * s_tight）/ 正文 20px。2026-08-22 真机
@@ -28,7 +32,8 @@ const layout_profile_t *layout_profile_get(void)
     if (!s_ready) {
         int w = epd_gfx_width(), h = epd_gfx_height();
         int short_px = (w < h) ? w : h;
-        layout_kind_t k = (short_px < 200) ? LAYOUT_SMALL
+        layout_kind_t k = (short_px < 140) ? LAYOUT_TINY
+                        : (short_px < 200) ? LAYOUT_SMALL
                         : (short_px < 320) ? LAYOUT_MID
                                            : LAYOUT_LARGE;
         s_prof = k_profiles[k];

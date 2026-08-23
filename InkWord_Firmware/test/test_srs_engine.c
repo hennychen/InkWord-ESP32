@@ -99,10 +99,17 @@ void test_fsrs_anchors(void)
     TEST_ASSERT_FALSE(srs_is_due(&fresh, 499));
 }
 
+/* word_parser 云导出回放（2026-08-23）：WORDS_JSON 环境变量喂真实导出，
+ * 缺省 IGNORE。native 平台单 program 单 main，统一挂在本 runner。 */
+extern void test_parse_cloud_export_words_json(void);
+extern void test_word_parser_load_mem(void);
+
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_fsrs_replay_vectors);
     RUN_TEST(test_fsrs_anchors);
+    RUN_TEST(test_parse_cloud_export_words_json);
+    RUN_TEST(test_word_parser_load_mem);
     return UNITY_END();
 }

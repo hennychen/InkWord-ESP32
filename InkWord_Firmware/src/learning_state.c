@@ -324,3 +324,20 @@ int learning_state_wrong_at(int pos)
     }
     return -1;
 }
+
+int learning_state_collected_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < s_count; i++)
+        if (s_state[i].collected) n++;
+    return n;
+}
+
+int learning_state_collected_at(int pos)
+{
+    if (pos < 0) return -1;
+    for (int i = 0; i < s_count; i++) {
+        if (s_state[i].collected && pos-- == 0) return i;
+    }
+    return -1;
+}

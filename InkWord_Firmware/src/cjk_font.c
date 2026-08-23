@@ -3,19 +3,20 @@
  * @brief 中文点阵字库 lookup + 《传习录》引文表（生成文件，勿手改）
  *
  * 字形数据在 cjk_font_data.bin（CMake EMBED_FILES 编入固件）：
- *   Songti SC Bold，三级 16/20/24px，
- *   3892 字形 x 16px=32B + 20px=60B + 24px=72B
- *   = 638288 字节。
+ *   16/20px PingFang SC Bold + 24px Kaiti SC Bold，三级 16/20/24px，
+ *   3935 字形 x 16px=32B + 20px=60B + 24px=72B
+ *   = 645340 字节。
  * 码点升序二分查找；位图行主序 MSB-first，bit=1 着色（epd_gfx_draw_bitmap 格式）。
  * 由 tools/gen_cjk_font.swift 生成；改字表/引文后重跑 swift tools/gen_cjk_font.swift。
  */
 #include "cjk_font.h"
 #include <stddef.h>
 
-/* 嵌入字库 bin 的链接符号：PlatformIO arduino 框架用 board_build.embed_files
- * （platformio.ini，src/cjk_font_data.bin，objcopy 符号含路径 src_ 前缀）。
- * 若迁移 ESP-IDF CMake 构建：EMBED_FILES "cjk_font_data.bin" 符号无前缀。 */
+/* objcopy 嵌入符号（platformio.ini board_build.embed_files=src/cjk_font_data.bin，
+ * 路径含 src/ → 符号带 src_ 前缀；ESPIDF CMake 迁移后为无前缀版，届时
+ * 须同步，见 src/CMakeLists.txt 头注释） */
 extern const uint8_t _binary_src_cjk_font_data_bin_start[];
+#define BIN_BASE (_binary_src_cjk_font_data_bin_start)
 
 /* bin 头（小端）：0..3 magic, 4..5 ver, 6..7 levels, 8..11 n,
  * 12..17 cell[3], 18..23 stride[3], 24.. cp 表 u16[n]，4 对齐后三级位图 */
@@ -24,8 +25,6 @@ static uint32_t rd_le32(const uint8_t *p)
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
-
-#define BIN_BASE (_binary_src_cjk_font_data_bin_start)
 
 static uint32_t glyph_n(void)      { return rd_le32(BIN_BASE + 8); }
 static uint16_t glyph_cell(int lvl)  { const uint8_t *p = BIN_BASE + 12 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }

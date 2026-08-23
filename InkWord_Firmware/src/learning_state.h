@@ -72,6 +72,18 @@ int learning_state_wrong_count(void);
  */
 int learning_state_wrong_at(int pos);
 
+/* ---- 收藏视图（P 快捷菜单：收藏浏览 MODE_COLLECTION，镜像错词本一对） ---- */
+
+/**
+ * @brief 收藏数量（collected == true 的词条数）。
+ */
+int learning_state_collected_count(void);
+
+/**
+ * @brief 收藏视图取词：第 pos 个收藏词的词库索引（按索引序），越界返回 -1。
+ */
+int learning_state_collected_at(int pos);
+
 /**
  * @brief 全量写入 NVS（sparse 格式；评分/收藏自动置脏，一般无需外部调）。
  */

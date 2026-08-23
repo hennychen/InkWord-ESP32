@@ -8,12 +8,14 @@
  * 五向导航按键映射（2026-08 取代 6 独立按键；SET/RST 侧键同月接入）：
  *   上 短按=上一条（释义多页时先翻上一释义页）/ 长按=清残影全刷；
  *   下 短按=下一条（释义多页时先翻下一释义页）/ 长按=切换学习模式；
- *   中 短按=发音 / 长按=进入 Wi-Fi 配置；
+ *   中 短按=发音 / 长按=进入功能菜单（快捷菜单 menu_ui：收藏/模式/
+ *        配网/门户/LAN/设备信息；Wi-Fi 配网降为菜单项，2026-08-23）；
  *   左 短按=自评「忘记」Q1（SM-2 质量分 1：连错+1，>0 入错词本）/ 长按=进入 AP 直连/配网门户
  *        （手机连 InkWord-Setup 热点直传，绕开路由器隔离；任意键退出）；
  *   右 短按=自评「简单」Q5（SM-2 质量分 5：连错清零，错词本中移出）/ 长按=进入 LAN 接收页（同网浏览器直传，任意键退出）；
- *   SET 短按=遮蔽/揭晓释义（闪卡自测；待机页=轮换下一条引文）/ 长按=收藏/取消当前词（左栏 * 标记）；
- *   RST 短按=回到当前模式第一条 / 长按=错词本进出（连错>0 过滤视图，答对清空自动退出）。
+ *   SET 短按=遮蔽/揭晓释义（闪卡自测；待机页=轮换下一条引文）/ 长按=收藏/取消当前词（左栏 * 标记；收藏视图内=移出序列）；
+ *   RST 短按=回到当前模式第一条 / 长按=临时视图进出（错词本或收藏浏览，
+ *        按当前所在视图退出，否则进错词本）。
  *
  * 阅读模式（P3，长按下循环切换进入）：上/下=翻页，左/右=字号缩放
  * （16/20/24px 三级循环，按当前页首字符就近保持阅读位置），RST=回
@@ -21,8 +23,8 @@
  * （NVS rd_*）。
  *
  * 无词库待机页（词库为空时默认显示，见 standby_page.c）：
- *   时钟/日历/天气整页；待机态长按语义与学习页一致（配网/清残影/门户/LAN），
- *   短按中=立即拉取天气，其余短按忽略。
+ *   时钟/日历/天气整页；待机态长按语义与学习页一致（功能菜单/清残影/
+ *   门户/LAN），短按中=立即拉取天气，其余短按忽略。
  *
  * 深睡与定时唤醒（P5，power_manager.c）：无操作 10 分钟入睡（引文轮换/
  * 后台心跳随交互模式冻结，墨水屏驻留末帧零功耗）；中键唤醒恢复交互
@@ -48,6 +50,7 @@
 #include "study_mode_machine.h"
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
+#include "menu_ui.h"      /* 快捷菜单（功能菜单，长按中进入） */
 #include "sync_client.h"
 #include "ota_manager.h"
 #include "lan_display_server.h"
@@ -153,8 +156,8 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
                          ? 0 : 1)  /* 正文字号级：TINY/SMALL 16px / 其余 20px */
 #define UI_WORD_BASE    (UI_STATUS_H + (UI_TINY ? 24 \
                          : (UI_MEAN_LEVEL ? 36 : 32)))  /* 单词基线（68/64/48） */
-#define UI_PHON_BASE    (UI_WORD_BASE + (UI_TINY ? 16 : 22))   /* 音标基线（90/86/64） */
-#define UI_BODY_TOP     (UI_PHON_BASE + (UI_TINY ? 10 : 14))   /* 正文流首行顶（104/100/74） */
+#define UI_PHON_TOP     (UI_WORD_BASE + (UI_TINY ? 6 : 9))     /* 音标行 16px 点阵顶（77/73/54） */
+#define UI_BODY_TOP     (UI_PHON_TOP + 16 + (UI_TINY ? 4 : 11)) /* 正文流首行顶（104/100/74） */
 #define UI_BODY_LH      (UI_MEAN_LEVEL ? 24 : 20)  /* 正文行距：字级 +4（reader 惯例） */
 /* 行数按屏高派生：底部预留 30 = 标签行 + 余量（末行文字底与标签顶
  * 错开，MID 末行底 196 < 标签顶 206）；416x240=4 行、400x300=6、
@@ -165,54 +168,16 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
 #define UI_FOOT_BASE    (epd_gfx_height() - 16)        /* 底部标签基线：底边距 16（224） */
 #define UI_FOOT_TOP     (UI_FOOT_BASE - 18)             /* 中文 tag 16px 点阵顶：基线上 16+2（206） */
 
-/* 音标 IPA→ASCII 近似（2026-08-23）：内嵌词库真实 IPA 音标含 19 个
- * 扩展字符（实测频次表，前四：ˈ x1281 / ə x1019 / ɪ x939 / ɛ x380），
- * FreeSans 字形缺失被 draw_text 逐字符跳过（真机 W: non-ASCII
- * 'ˈizi'，重音符丢失）。显示层转换——词池保持原始 IPA（LAN/网页
- * 端字体可正常渲染），映射取词典 ASCII 音标惯例；未命中字符
- * （如个别词条误填的中文人名，生成链待清洗）原样保留交
- * draw_text 跳过，不炸行 */
-static void phonetic_ascii(const char *in, char *out, size_t out_max)
-{
-    static const struct { const char *ipa, *ascii; } k_ipa[] = {
-        { "\xCB\x88", "'"  },  /* ˈ 重音 */
-        { "\xC9\x99", "e"  },  /* ə */
-        { "\xC9\xAA", "i"  },  /* ɪ */
-        { "\xC9\x9B", "e"  },  /* ɛ */
-        { "\xC3\xA6", "a"  },  /* æ */
-        { "\xCB\x8C", ","  },  /* ˌ 次重音 */
-        { "\xCA\x8A", "u"  },  /* ʊ */
-        { "\xC9\x91", "a"  },  /* ɑ */
-        { "\xC9\x94", "o"  },  /* ɔ */
-        { "\xCA\x8C", "u"  },  /* ʌ */
-        { "\xC9\xA1", "g"  },  /* ɡ（IPA g） */
-        { "\xCA\x83", "sh" },  /* ʃ */
-        { "\xCA\xA4", "j"  },  /* ʤ */
-        { "\xC5\x8B", "ng" },  /* ŋ */
-        { "\xC9\x9C", "er" },  /* ɜ */
-        { "\xCA\xA7", "ch" },  /* ʧ */
-        { "\xCE\xB8", "th" },  /* θ */
-        { "\xC3\xB0", "th" },  /* ð */
-        { "\xCA\x92", "zh" },  /* ʒ */
-        { "\xCB\x90", ":"  },  /* ː 长音（本库未见，备用） */
-        { "\xC9\x92", "o"  },  /* ɒ（备用） */
-    };
-    size_t o = 0;
-    while (*in && o + 1 < out_max) {
-        bool hit = false;
-        for (size_t i = 0; i < sizeof(k_ipa) / sizeof(k_ipa[0]); i++) {
-            size_t l = strlen(k_ipa[i].ipa);
-            if (strncmp(in, k_ipa[i].ipa, l) == 0) {
-                for (const char *s = k_ipa[i].ascii; *s && o < out_max - 1; s++)
-                    out[o++] = *s;
-                in += l; hit = true; break;
-            }
-        }
-        if (!hit) out[o++] = *in++;  /* ASCII/未命中原样 */
-    }
-    out[o] = '\0';
-}
-
+/* 音标行 16px 点阵整行渲染（2026-08-23 IPA 修复，08-24 记号补全）：
+ * 原方案 FreeSans（仅 0x20-0x7E）逐字跳过非 ASCII——真机 'ˈizi'
+ * 重音符丢失，曾以 phonetic_ascii 转 ASCII 近似（ə→e 发音错位）；
+ * 现字库收录 IPA 21 字符（STHeitiSC-Medium 点阵，gen_cjk_font.swift
+ * 分派渲染）+ 诗词词条作者名/中点（default_words.json phonetic 列
+ * 全量收集），词池原始 IPA 直渲。08-24 补全：① 词典惯例斜杠包裹
+ * ——词库 phonetic 为裸 IPA（无 / /），显示层条件补齐（自带 / 或 [ ]
+ * 的云端/SD 词库不双包）；② ˈ ˌ ː · 四记号生成器合成位图（字体
+ * 渲染 16px 级 1px 细笔低于阈值被丢弃，重音符曾显为空格）；
+ * 未收录字符画 cell 空心框兜底 */
 static study_mode_t s_last_mode = MODE_COUNT; /* 无效值：首帧强制全刷 */
 
 /* 释义分页游标（2026-08-23）：与词绑定——换词/换模式（含错词本进出、
@@ -402,19 +367,24 @@ static void ui_draw_content(const WordEntry *w)
                       ui_fit_font(w->text, 4, UI_BODY_MAX_W));
 
     if (w->phonetic[0]) {
-        char ph[WORD_PHONETIC_MAX * 2];  /* 替换最长 2 字符/项，不膨胀 */
-        phonetic_ascii(w->phonetic, ph, sizeof(ph));
-        if (ph[0])
-            epd_gfx_draw_text(UI_MARGIN_X, UI_PHON_BASE,
-                              ph, EPD_GFX_BLACK, 1);
+        /* 词典惯例斜杠包裹：裸 IPA 补 / /，自带包裹符（/[）不双包 */
+        if (w->phonetic[0] == '/' || w->phonetic[0] == '[')
+            cjk_text_draw(UI_MARGIN_X, UI_PHON_TOP, 0,
+                          w->phonetic, EPD_GFX_BLACK);
+        else {
+            char ph[WORD_PHONETIC_MAX + 4];
+            snprintf(ph, sizeof(ph), "/%s/", w->phonetic);
+            cjk_text_draw(UI_MARGIN_X, UI_PHON_TOP, 0,
+                          ph, EPD_GFX_BLACK);
+        }
     }
 
-    /* 收藏标记（P1）：已收藏词在音标行右缘显示 *（SET 长按切换） */
+    /* 收藏标记（P1）：已收藏词在音标行右缘显示 *（SET 长按切换；
+     * 点阵 ASCII 与音标行同 16px 级，2026-08-23 随音标行点阵化统一） */
     if (learning_state_is_collected(study_mode_current_word_index())) {
-        int sw, sh;
-        epd_gfx_text_bounds("*", 2, &sw, &sh);
-        epd_gfx_draw_text(epd_gfx_width() - UI_MARGIN_X - sw, UI_PHON_BASE,
-                          "*", EPD_GFX_BLACK, 2);
+        int sw = cjk_text_width(0, "*");
+        cjk_text_draw(epd_gfx_width() - UI_MARGIN_X - sw, UI_PHON_TOP,
+                      0, "*", EPD_GFX_BLACK);
     }
 
     /* 正文：cjk 点阵混排（中文按字断/ASCII 按词断，超宽自动换行），
@@ -441,6 +411,7 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
 {
     if (wifi_config_ui_is_active()) return; /* 配置页期间不绘制学习页 */
     if (lan_server_is_active()) return;     /* LAN 接收页期间不绘制学习页 */
+    if (menu_ui_is_active()) return;        /* 快捷菜单期间不绘制学习页 */
 
     /* 阅读模式（P3）：index=页码，渲染走 reader_engine，词库空判断
      * 不适用；实时页码由内容区页脚承担（局刷不重画状态栏） */
@@ -539,6 +510,12 @@ static void on_button(nav_key_t id, button_event_t event)
         return;
     }
 
+    /* 快捷菜单激活时，按键全部转发（顶层覆盖层，与配网页同级语义） */
+    if (menu_ui_is_active()) {
+        menu_ui_on_button(id, event);
+        return;
+    }
+
     /* Wi-Fi 配置页激活时，按键全部转发 */
     if (wifi_config_ui_is_active()) {
         wifi_config_ui_on_button(id, event);
@@ -560,13 +537,13 @@ static void on_button(nav_key_t id, button_event_t event)
         return;
     }
 
-    /* 长按功能集中在五键上：中=配网，上=清残影，下=模式切换，
+    /* 长按功能集中在五键上：中=功能菜单，上=清残影，下=模式切换，
      * 左=AP 门户（隔离环境下 STA 页面不可达时的可靠通道），
      * 右=LAN 接收页 */
     if (event == BUTTON_EVENT_LONG_PRESS) {
         switch (id) {
         case NAV_CENTER:
-            wifi_config_ui_enter();
+            menu_ui_enter();
             return;
         case NAV_UP:
             LOG_I("user requested ghost-clear full refresh");
@@ -587,17 +564,27 @@ static void on_button(nav_key_t id, button_event_t event)
             return;
         case NAV_SET:
             /* 收藏/取消当前词（P1）：局部重绘内容区刷新 * 标记；
-             * 阅读模式无“当前词”概念，不响应 */
+             * 阅读模式无“当前词”概念，不响应；
+             * 收藏视图（MODE_COLLECTION）内=移出序列（after_uncollect
+             * 收缩钳位，清空自动退回闪卡），2026-08-23 */
             if (study_mode_current() == MODE_READER) return;
             haptic_event(HAPTIC_REVIEW); /* 确认型操作归自评档 30ms（PRD 5.4 未单列） */
             learning_state_toggle_collect(study_mode_current_word_index());
+            if (study_mode_current() == MODE_COLLECTION &&
+                study_mode_after_uncollect()) {
+                ui_render_current();   /* 清空退回闪卡或游标收缩，重绘当前页 */
+                return;
+            }
             ui_render_word(study_mode_current(),
                            study_mode_current_word_index());
             return;
         case NAV_RST:
-            /* 错词本进出（P1）：无错词 100ms 长震边界反馈（PRD 5.4） */
+            /* 临时视图进出三级判：错词本/收藏浏览内=退出，否则进错词本
+             * （无错词 100ms 长震边界反馈，PRD 5.4） */
             if (study_mode_current() == MODE_WRONGBOOK) {
                 study_mode_exit_wrongbook();
+            } else if (study_mode_current() == MODE_COLLECTION) {
+                study_mode_exit_collection();
             } else if (!study_mode_enter_wrongbook()) {
                 haptic_event(HAPTIC_ERROR);
                 return;

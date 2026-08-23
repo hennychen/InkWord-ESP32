@@ -8,9 +8,13 @@
  * （advance 原语一致），面向卡片类小块文本；上机验证后可评估
  * 将 reader_engine 迁移到本模块统一维护。
  *
+ * 分页支持（词卡释义超一屏时上下键翻页，2026-08-23）：量测
+ * （cjk_text_wrap_lines）与分页绘制（cjk_text_draw_wrap_page）
+ * 与 cjk_text_draw_wrap 共用同一断行核心，建页与渲染必然一致。
+ *
  * 字符集边界：字库 = GB2312 一级 ∪ 全角标点 ∪ ASCII 0x20-0x7E
- * （含空格）；超出字符（如音标 IPA）画 cell 空心框占位，调用方
- * 应避免（音标字段继续走 FreeSans 或留空）。
+ * （含空格）∪ IPA 21 字符 + 音标列收集集（2026-08-23 音标行点阵化，
+ * 词卡音标行不再走 FreeSans）；超出字符画 cell 空心框占位。
  *
  * 坐标语义：顶左原点（字形 cell 顶边对齐 y），与 epd_gfx 位图
  * 一致；FreeSans 的基线 y 语义不适用于本模块。
@@ -48,6 +52,21 @@ int cjk_text_draw(int x, int y, int level, const char *s, uint16_t color);
 int cjk_text_draw_wrap(int x, int y_top, int max_w, int level,
                        int line_h, int max_lines,
                        const char *s, uint16_t color);
+
+/**
+ * @brief 断行量测：返回 s 在 max_w 宽度下需要的总行数（不绘制；空串 0）。
+ *        断行规则与 cjk_text_draw_wrap 严格同源，分页页数推导用。
+ */
+int cjk_text_wrap_lines(int max_w, int level, const char *s);
+
+/**
+ * @brief 分页断行绘制：从全文第 page*lines_per_page 行起，绘制至多
+ *        lines_per_page 行（y_top 为该页首行顶坐标）；页越界不绘制。
+ * @return 本页实际绘制行数（0 = 空串或页号越界）。
+ */
+int cjk_text_draw_wrap_page(int x, int y_top, int max_w, int level,
+                            int line_h, int lines_per_page, int page,
+                            const char *s, uint16_t color);
 
 /** @brief 是否含多字节字符（非 ASCII；调用方选点阵/FreeSans 路径用）。 */
 bool cjk_text_has_wide(const char *s);

@@ -32,6 +32,13 @@ static const char *TAG = "PARSER";
 static WordEntry *s_entries = NULL;
 static int        s_count = 0;
 
+/* cJSON DOM 专用分配器：强制 PSRAM（见 word_parser_load_mem 注释）。
+ * free 不需要专用版本 —— heap 指针带 region 头，free() 统一可释放 */
+static void *wp_json_malloc(size_t sz)
+{
+    return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
+}
+
 /* 安全拷贝：截断而非溢出 */
 static void copy_str(char *dst, size_t dst_max, const char *src)
 {
@@ -45,7 +52,8 @@ int word_parser_load(const char *path, WordEntry *out_array, int max_count)
 {
     if (!path || !out_array || max_count <= 0) return -1;
 
-    /* 1. 读取文件到内存（PSRAM，见 JSON_MAX_BYTES 注释） */
+    /* 1. 读取文件到内存（PSRAM，见 JSON_MAX_BYTES 注释），
+     * 解析委托 word_parser_load_mem（文件/内存两路径同源） */
     char *raw = heap_caps_malloc(JSON_MAX_BYTES, MALLOC_CAP_SPIRAM);
     if (!raw) {
         LOG_E("alloc json buffer failed");
@@ -58,10 +66,35 @@ int word_parser_load(const char *path, WordEntry *out_array, int max_count)
         return -1;
     }
 
-    /* 2. 解析 JSON（cJSON DOM 大块分配在 SPIRAM_USE_MALLOC 下自动落 PSRAM） */
-    cJSON *root = cJSON_Parse(raw);
+    int ret = word_parser_load_mem(raw, (size_t)n, out_array, max_count);
     heap_caps_free(raw);
+    return ret;
+}
+
+int word_parser_load_mem(const char *json, size_t len,
+                         WordEntry *out_array, int max_count)
+{
+    if (!json || len == 0 || !out_array || max_count <= 0) return -1;
+
+    /* 2. 解析 JSON。cJSON DOM 落点修正（2026-08-23 真机 boot loop
+     * 实证）：cJSON 节点为小分配（数十 B，含 strdup 的 key/value），
+     * SPIRAM_USE_MALLOC 的 ALWAYSINTERNAL 阈值（16KB）下全部走内部
+     * RAM —— 2400 词 DOM 约 2MB 直接打拜 320KB 内部堆，Wi-Fi AMPDU
+     * esp_timer_create 恰为首个申请者替死（ESP_ERR_NO_MEM abort）。
+     * hooks 把 DOM 重定向 PSRAM（解析期峰值 DOM ~2.2MB + 词池
+     * 4.28MB < 8MB 充裕）；cJSON_Hooks 为进程全局，但此调用位于
+     * setup 单线程窗口（BLE 配网已结束、LAN/OTA 未起），无并发
+     * cJSON 用户（ota/sync/ble/lan 均在运行期各自任务）。所有
+     * 出口恢复默认，运行期小 JSON 不受影响。ParseWithLength 吃
+     * 精确长度：内存路径不要求 NUL 结尾，可直接吃固件内嵌 rodata
+     * （_binary_src_default_words_json_*，无拷贝；ESP-IDF 捆绑
+     * cJSON ≥1.7.15 提供） */
+    cJSON_Hooks psram_hooks = { .malloc_fn = wp_json_malloc, .free_fn = free };
+    cJSON_Hooks default_hooks = { .malloc_fn = malloc, .free_fn = free };
+    cJSON_InitHooks(&psram_hooks);
+    cJSON *root = cJSON_ParseWithLength(json, len);
     if (!root) {
+        cJSON_InitHooks(&default_hooks);
         LOG_E("json parse error near: %s", cJSON_GetErrorPtr());
         return -1;
     }
@@ -70,6 +103,7 @@ int word_parser_load(const char *path, WordEntry *out_array, int max_count)
     if (!cJSON_IsArray(words)) {
         LOG_E("'words' is not an array");
         cJSON_Delete(root);
+        cJSON_InitHooks(&default_hooks);
         return -1;
     }
 
@@ -109,10 +143,11 @@ int word_parser_load(const char *path, WordEntry *out_array, int max_count)
     }
 
     cJSON_Delete(root);
+    cJSON_InitHooks(&default_hooks);   /* 恢复默认：运行期小 JSON 回内部 RAM */
 
     s_entries = out_array;
     s_count = loaded;
-    LOG_I("loaded %d words from %s (total in json=%d)", loaded, path, total);
+    LOG_I("loaded %d words (total in json=%d)", loaded, total);
     return loaded;
 }
 
@@ -123,21 +158,24 @@ int word_parser_get_count(void)
 
 int word_parser_load_demo(WordEntry *out_array, int max_count)
 {
-    /* 演示词：中文释义验证词卡 16px 点阵混排（cjk_text，2026-08-20；
-     * 音标含 IPA 字符，点阵与 FreeSans 均无字形，故留空不画）。
+    /* 演示词：中文释义验证词卡 16px 点阵混排（cjk_text，2026-08-20）。
+     * 音标：真 IPA（2026-08-24 记号补全后 ˈ ˌ ː 合成位图可渲，
+     * 覆盖 ɪ θ 重音等高频字符，裸 IPA 显示层自动补 / /）；
+     * · 中点记号由底部标签行 grade·source 间隔号验证。
      * 词库扩展四字段样例：root 词根行 / grade·source 底部标签行 */
     static const struct {
         const char *text;
+        const char *phonetic;
         const char *meaning;
         const char *tag;
         const char *root;
         const char *grade;
     } k_demo[] = {
-        { "serendipity", "n. 意外发现美好事物的运气；机缘巧合", "中考核心", "ser=联系; serendip=珍宝", "九年级" },
-        { "ephemeral",   "adj. 短暂的；转瞬即逝的",              "中考核心", "epi=在…上; hemer=白天", "九年级" },
-        { "lucid",       "adj. 清晰易懂的；清澈的",              "中考核心", "luc=光; id=形容词尾", "九年级" },
-        { "zenith",      "n. 顶点；鼎盛时期",                    "中考核心", "", "九年级" },
-        { "quixotic",    "adj. 不切实际的；异想天开的",          "中考核心", "", "九年级" },
+        { "serendipity", "ˌserənˈdɪpəti", "n. 意外发现珍宝的运气；机缘巧合；serendipitous 是形容词，指偶然发现美好事物的；源于 1754 年英国作家 Walpole 所作的波斯童话 The Three Princes of Serendip，三位王子总凭智慧与运气意外发现珍宝。", "中考核心", "ser=联系; serendip=珍宝", "九年级" },
+        { "ephemeral",   "ɪˈfemərəl",     "adj. 短暂的；转瞬即逝的",              "中考核心", "epi=在…上; hemer=白天", "九年级" },
+        { "lucid",       "ˈluːsɪd",       "adj. 清晰易懂的；清澈的",              "中考核心", "luc=光; id=形容词尾", "九年级" },
+        { "zenith",      "ˈziːnɪθ",       "n. 顶点；鼎盛时期",                    "中考核心", "", "九年级" },
+        { "quixotic",    "kwɪkˈsɑːtɪk",   "adj. 不切实际的；异想天开的",          "中考核心", "", "九年级" },
     };
     int n = (int)(sizeof(k_demo) / sizeof(k_demo[0]));
     if (n > max_count) n = max_count;
@@ -146,8 +184,9 @@ int word_parser_load_demo(WordEntry *out_array, int max_count)
         WordEntry *e = &out_array[i];
         memset(e, 0, sizeof(*e));
         e->id = (uint32_t)(i + 1);
-        copy_str(e->text,    WORD_TEXT_MAX,    k_demo[i].text);
-        copy_str(e->meaning, WORD_MEANING_MAX, k_demo[i].meaning);
+        copy_str(e->text,     WORD_TEXT_MAX,    k_demo[i].text);
+        copy_str(e->phonetic, WORD_PHONETIC_MAX, k_demo[i].phonetic);
+        copy_str(e->meaning,  WORD_MEANING_MAX, k_demo[i].meaning);
         copy_str(e->tag,     WORD_TAG_MAX,     k_demo[i].tag);
         copy_str(e->root,    WORD_ROOT_MAX,    k_demo[i].root);
         copy_str(e->grade,   WORD_GRADE_MAX,   k_demo[i].grade);

@@ -62,7 +62,11 @@ static const char *TAG = "WIFI_UI";
 #define PWD_SHOW_MAX       36    /* 18pt '*' 掩码最多显示个数（防溢出 400px 框） */
 
 /* ---- 键盘几何（4 行均居中，键宽 416 宽设计值；SMALL 档需按档位缩放，
- *      Phase 7 SMALL 屏接入时处理，见 PANEL_COMPAT_DESIGN §8.2） ---- */
+ *      Phase 7 SMALL 屏接入时处理，见 PANEL_COMPAT_DESIGN §8.2。
+ *      2026-08-23 TINY 档（2.13"/2.9" 标签屏竖屏 122~128px 宽）：全键盘
+ *      不可行（36px 键宽×9 列=324px>屏宽），本 UI 不适配 TINY——该档
+ *      配网走 AP 门户路径（手机浏览器连 InkWord 热点，main.cpp LAN
+ *      页左通道），SSSID 列表/键盘页均不进入） ---- */
 #define KB_START_Y         (PWD_BOX_Y + PWD_BOX_H + 8) /* 键盘顶：密码框下留 8px（74） */
 #define KB_KEY_W           36    /* 行 0/1 字母键宽 */
 #define KB_KEY_H           32
