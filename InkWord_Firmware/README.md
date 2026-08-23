@@ -223,8 +223,8 @@ VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `i
 | **存储** | [`storage_manager`](src/storage_manager.h) | SD 卡 SPI 挂载至 `/sdcard`, 文件读写 |
 | **刷新调度** | [`refresh_scheduler`](src/refresh_scheduler.h) | 局刷计数, 达阈值例行全刷（学习页阈值 8；待机页引文轮换阈值 12 低频保养） |
 | **词库** | [`word_parser`](src/word_parser.h) | 解析 `words.json` 至 PSRAM 词池（4000 词；JSON 缓冲 2MB） |
-| **SRS 引擎** | [`srs_engine`](src/srs_engine.h) | SM-2 间隔重复算法 (纯算法, 可单测) |
-| **学习状态** | [`learning_state`](src/learning_state.h) | 每词 SM-2 状态/连错/收藏；LR02 sparse NVS + 脏标记延迟落盘 |
+| **SRS 引擎** | [`srs_engine`](src/srs_engine.h) | FSRS-4.5 间隔重复算法（M4 路径 A 2026-08-22；纯算法，与后端 FsrsService 对拍，`pio test -e native-test`） |
+| **学习状态** | [`learning_state`](src/learning_state.h) | 每词 FSRS stability/difficulty/连错/收藏；LR03 sparse NVS + 脏标记延迟落盘（旧 LR02 升级自动作废） |
 | **模式状态机** | [`study_mode_machine`](src/study_mode_machine.h) | 闪卡 / 听写 / 复习 / 阅读四模式切换 |
 | **CJK 字库/文本** | [`cjk_font`](src/cjk_font.h) + [`cjk_text`](src/cjk_text.h) | 三级点阵字库 bin（16/20/24px，3892 字，646KB 嵌入）+ UTF-8 混排绘制层（词卡释义/tag、阅读器、待机页共用；CJK 按字断行 / ASCII 按词断，墨迹盒变宽渲染） |
 | **Wi-Fi 联网** | [`wifi_manager`](src/wifi_manager.h) | 网络栈/STA 连接、NVS 凭据持久化、SoftAP、AP 扫描、快速+慢速断线重连、异步连接 |
@@ -272,12 +272,14 @@ setup() (Arduino)
 断、超宽自动换行；真实词库释义为中文，FreeSans 仅 ASCII 不可用）；
 demo 构建内置中文释义词可直接上机验证。
 
-### SM-2 间隔重复算法
+### FSRS-4.5 间隔重复算法（M4 路径 A，2026-08-22）
 
 ```
-回忆质量 q (0~5) → 更新 EaseFactor → 计算下次复习间隔
-  q < 3:  重置间隔为 1 天 (重新学习)
-  q >= 3: 1天 → 6天 → 6×EF天 → … (间隔逐步增长)
+回忆质量 q (0~5) → rating 四档（0-1 遗忘 / 2 困难 / 3-4 良好 / 5 简单）
+S/D 双记忆指标更新（open-spaced-repetition FSRS-4.5 默认 17 参数）
+目标留存 0.90 → interval = round(S)
+双端同源：与后端 FsrsService 共享 tools/gen_fsrs_vectors.py
+对拍向量（12 序列 76 向量；S/D 相对容差 1e-5，间隔 uint16_t clamp）
 ```
 
 ### 词库扩容与内存布局（2026-08-20）
@@ -291,7 +293,8 @@ demo 构建内置中文释义词可直接上机验证。
 | JSON 解析缓冲 | PSRAM 堆 | 2MB | word_parser 显式 PSRAM，防配置漂移 |
 | 学习状态数组 `s_state` | PSRAM 堆 | 4000 × 24B ≈ 96KB | 惰性初始化，未学词零成本 |
 
-学习状态持久化改 **LR02 sparse 格式**：NVS blob 只存非默认态词
+学习状态持久化改 **LR03 sparse 格式**（M4 FSRS 切换 2026-08-22，旧
+LR02/SM-2 状态 magic 不匹配自动作废重建）：NVS blob 只存非默认态词
 （学过/连错>0/已收藏，每词 21B，上限 300 活跃词 ≈ 6.3KB，配 nvs
 24KB 分区；词库规模变化整体作废）。保存时机：评分/收藏仅置脏标记，
 主循环 `learning_state_maybe_save()` 静默 5s 后落盘——按键路径零 NVS
@@ -670,8 +673,8 @@ httpd_uri_match_wildcard`），POST 精确注册；captive portal 探测域名 3
 | RST | 回到当前模式第一条 | 预留 SRS「忘了」评分 |
 
 > 释义遮蔽态右栏显示 `[SET] to reveal` 提示；翻页/切模式后自动回全显。
-> SET/RST 长按为 SM-2 质量分（记得=q4 / 忘了=q0）预留位，
-> SRS 闭环接入学习记录上报后启用。
+> SET/RST 长按为质量分（记得=q4 / 忘了=q0）预留位（SM-2 与 FSRS
+> 共用 q→rating 映射），SRS 闭环接入学习记录上报后启用。
 
 > 接收页 / portal 激活期间，**任意按键**退出并回到学习界面（portal 模式同时关热点回 STA）。
 > 接收页与配网期间学习页渲染自动屏蔽，直刷后会强制下次全刷，无残影/花屏风险。
@@ -702,7 +705,7 @@ InkWord_Firmware/
 │   ├── storage_manager.{c,h}   # SD 卡存储
 │   ├── refresh_scheduler.{c,h} # 刷新调度
 │   ├── word_parser.{c,h}       # 词库解析
-│   ├── srs_engine.{c,h}        # SM-2 算法
+│   ├── srs_engine.{c,h}        # FSRS-4.5 算法（M4，与后端对拍）
 │   ├── study_mode_machine.{c,h}# 学习模式状态机
 │   ├── wifi_manager.{c,h}      # Wi-Fi 联网
 │   ├── wifi_config_ui.{c,h}    # Wi-Fi 配置 UI（软键盘）

@@ -1,74 +1,130 @@
 /**
  * @file srs_engine.c
- * @brief SRS 间隔重复算法实现 (Task F-15) —— SM-2 算法变体
+ * @brief SRS 间隔重复算法实现 —— FSRS-4.5（M4 路径 A，2026-08-22）
  *
- * SM-2 核心：
- *   EF' = EF + (0.1 - (5 - q)*(0.08 + (5 - q)*0.02))，下限 1.3
- *   若 q < 3（答错）：repetition 归零，interval = 1
- *   若 q >= 3（答对）：
- *       repetition == 0 -> interval = 1
- *       repetition == 1 -> interval = 6
- *       repetition >= 2 -> interval = round(interval * EF)
+ * 公式与后端 FsrsService.cs / tools/gen_fsrs_vectors.py 严格同源
+ * （open-spaced-repetition FSRS-4.5 默认 17 参数权重）：
+ *   S0(r) = W[r-1]；D0(r) = clamp(W4 - e^(W5*(r-1)), 1, 10)
+ *   R(t,S) = (1 + FACTOR*t/S)^DECAY，DECAY=-0.5，FACTOR=19/81
+ *   遗忘(r=1)：S' = W11*D^(-W12)*((S+1)^W13 - 1)*e^(W14*(1-R))
+ *   回忆(r≥2)：S' = S*(1 + e^W8*(11-D)*S^(-W9)*(e^(W10*(1-R))-1)*HP*EB)
+ *     HP = W15 (r=Hard)，EB = W16 (r=Easy)
+ *   D' = clamp(D - W6*(r-3), 1, 10)
+ *   interval = max(1, round(S*(R*^(1/DECAY)-1)/FACTOR))，R*=0.90 时 = round(S)
  *
- * 连续正确复习，间隔序列约 1 -> 6 -> 15 -> 37 ... 天，
- * EF 随答题质量在 [1.3, 2.8] 浮动。验收口径见 test_srs_engine。
+ * 精度策略：中间量 double（S3 无 double FPU，但评分是低频人机交互操作，
+ * 每次 ~20 次超越函数运算性能无感），节点存储 float（PSRAM 状态数组与
+ * NVS blob 尺寸预算）。对拍容差 1e-5 相对（float 舍入累积预算）。
+ *
+ * srs_level 规则与后端 FsrsService.ApplyReview 同步：
+ * q>=3 → min(5, level+1)，否则 0。
  */
 #include "srs_engine.h"
 #include <math.h>
 
 #define SECONDS_PER_DAY  (24LL * 3600LL)
-#define MIN_EF           (1.3f)
-#define MAX_EF           (2.8f)
-#define INIT_EF          (2.5f)
+#define INTERVAL_MAX     (65535)   /* uint16_t 返回值保护（~179 年，实际远不可达 */
 
-static float clamp_ef(float ef)
+/* FSRS-4.5 默认权重（open-spaced-repetition 官方值，勿随意改动——双端对拍基准） */
+static const double W[17] = {
+    0.4872, 1.4003, 3.7145, 13.8206, 5.1618, 1.2298, 0.8975, 0.031,
+    1.6474, 0.1367, 1.0461, 2.1072, 0.0793, 0.3246, 1.587, 0.2272, 2.8755,
+};
+
+#define FSRS_DECAY   (-0.5)
+#define FSRS_FACTOR  (19.0 / 81.0)
+#define FSRS_R_STAR  (0.90)   /* 目标留存率：0.90 下间隔恰等于 S */
+
+static double clampd(double v, double lo, double hi)
 {
-    if (ef < MIN_EF) return MIN_EF;
-    if (ef > MAX_EF) return MAX_EF;
-    return ef;
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+/** quality 0~5 → rating 1=Again 2=Hard 3=Good 4=Easy（后端 MapRating 同映射） */
+static int map_rating(int quality)
+{
+    if (quality <= 1) return 1;
+    if (quality == 2) return 2;
+    if (quality >= 5) return 4;
+    return 3;
+}
+
+/** 可提取性 R(t,S) */
+static double retrievability(double s, double elapsed_days)
+{
+    return pow(1.0 + FSRS_FACTOR * elapsed_days / s, FSRS_DECAY);
+}
+
+/** 目标留存率下的复习间隔（天） */
+static int next_interval(double s)
+{
+    double iv = s * (pow(FSRS_R_STAR, 1.0 / FSRS_DECAY) - 1.0) / FSRS_FACTOR;
+    long n = lround(iv);
+    if (n < 1) n = 1;
+    if (n > INTERVAL_MAX) n = INTERVAL_MAX;
+    return (int)n;
 }
 
 void srs_init_node(SrsNode *node, int64_t now_unix)
 {
     if (!node) return;
-    node->ease_factor   = INIT_EF;
-    node->repetition    = 0;
-    node->interval_days = 0;
-    node->next_review   = now_unix;   /* 新词立即可学 */
-    node->srs_level     = 0;
+    node->stability   = 0.0f;   /* 未学：首评走 S0/D0 初始化分支 */
+    node->difficulty  = 0.0f;
+    node->last_review = now_unix;
+    node->next_review = now_unix;   /* 新词立即可学 */
+    node->srs_level   = 0;
 }
 
 uint16_t srs_calculate_next_review(srs_quality_t quality, SrsNode *node, int64_t now_unix)
 {
     if (!node) return 0;
-    int q = (int)quality;
+    int r = map_rating((int)quality);
 
-    /* 1. 更新 EaseFactor（与答对答错无关，都参与） */
-    float delta = 0.1f - (5 - q) * (0.08f + (5 - q) * 0.02f);
-    node->ease_factor = clamp_ef(node->ease_factor + delta);
+    double s = (double)node->stability;
+    double d = (double)node->difficulty;
 
-    if (q < 3) {
-        /* 答错：重置进度，明天再见 */
-        node->repetition    = 0;
-        node->interval_days = 1;
-        node->srs_level     = 0;
+    if (s <= 0.0) {
+        /* 首评：S0/D0 初始化 */
+        s = W[r - 1];
+        d = clampd(W[4] - exp(W[5] * (r - 1)), 1.0, 10.0);
     } else {
-        /* 答对：递进间隔 */
-        if (node->repetition == 0) {
-            node->interval_days = 1;
-        } else if (node->repetition == 1) {
-            node->interval_days = 6;
+        double elapsed = (double)(now_unix - node->last_review) / (double)SECONDS_PER_DAY;
+        if (elapsed < 0.0) elapsed = 0.0;
+        double R = clampd(retrievability(s, elapsed), 0.005, 0.999);
+
+        if (r == 1) {
+            /* 遗忘：S_f = W11*D^(-W12)*((S+1)^W13 - 1)*e^(W14*(1-R)) */
+            s = W[11] * pow(d, -W[12])
+                * (pow(s + 1.0, W[13]) - 1.0)
+                * exp(W[14] * (1.0 - R));
         } else {
-            node->interval_days = (uint16_t)llroundf((float)node->interval_days * node->ease_factor);
-            if (node->interval_days < 1) node->interval_days = 1;
+            /* 回忆：HP/EB 修正 */
+            double hp = (r == 2) ? W[15] : 1.0;
+            double eb = (r == 4) ? W[16] : 1.0;
+            s *= 1.0 + exp(W[8]) * (11.0 - d) * pow(s, -W[9])
+                 * (exp(W[10] * (1.0 - R)) - 1.0) * hp * eb;
         }
-        node->repetition++;
-        node->srs_level = (node->repetition > 5) ? 5 : (uint8_t)node->repetition;
+
+        if (s < 0.01) s = 0.01;
+        d = clampd(d - W[6] * (r - 3), 1.0, 10.0);
     }
 
-    /* 计算下次复习时间戳 */
-    node->next_review = now_unix + (int64_t)node->interval_days * SECONDS_PER_DAY;
-    return node->interval_days;
+    int interval = next_interval(s);
+
+    node->stability  = (float)s;
+    node->difficulty = (float)d;
+    node->last_review = now_unix;
+    node->next_review  = now_unix + (int64_t)interval * SECONDS_PER_DAY;
+
+    /* 等级规则与后端 FsrsService.ApplyReview 同步 */
+    if ((int)quality >= 3)
+        node->srs_level = (node->srs_level < 5) ? (uint8_t)(node->srs_level + 1) : 5;
+    else
+        node->srs_level = 0;
+
+    return (uint16_t)interval;
 }
 
 bool srs_is_due(const SrsNode *node, int64_t now_unix)

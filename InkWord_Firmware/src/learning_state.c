@@ -31,7 +31,7 @@ static const char *TAG = "LRN";
 /* ---- 运行态 ---- */
 
 typedef struct {
-    SrsNode srs;               /* ease==0 表示未学（惰性初始化） */
+    SrsNode srs;               /* stability==0 表示未学（惰性初始化） */
     uint8_t consecutive_wrong; /* 连错计数，>0 即在错词本 */
     bool    collected;         /* 收藏标志 */
 } lr_entry_t;
@@ -46,17 +46,20 @@ static bool    s_dirty = false;
 static int64_t s_dirty_at = 0;    /* 最后一次置脏时刻（连续操作刷新静默计时） */
 
 /* ---- NVS 打包格式（变更需 bump LR_MAGIC 使旧数据整体失效） ----
+ * LR03（M4 FSRS 切换 2026-08-22）：sparse 载荷换 FSRS 字段
+ *   （stability/difficulty + next/last 双 delta），SM-2 的
+ *   ease/rep/interval 废弃；旧 LR02 状态保守作废重建（magic 不匹配）。
  * LR02（词库扩容 2026-08-20）：sparse —— 只存非默认态词
- * （ease>0 / 连错>0 / 已收藏），适配 nvs 24KB 分区；
+ *   （学过/连错>0/已收藏），适配 nvs 24KB 分区；
  * LR01 全量格式（4000 词≈76KB blob）物理写不下，升级即作废 */
 
-#define LR_MAGIC   0x4C523032u  /* "LR02" */
+#define LR_MAGIC   0x4C523033u  /* "LR03" */
 
 typedef struct __attribute__((packed)) {
-    float    ease;
-    uint16_t rep;
-    uint16_t interval;
+    float    stability;   /* FSRS 记忆稳定性 S（天）；>0 = 已学 */
+    float    difficulty;  /* FSRS 难度 D ∈ [1,10] */
     int32_t  next_delta;  /* 距保存时刻的剩余到期秒（<0 存 0） */
+    int32_t  last_delta;  /* 保存时刻距上次复习的秒数（elapsed 重建） */
     uint8_t  level;
     uint8_t  wrong;
     uint8_t  collected;
@@ -139,11 +142,11 @@ static void unpack(const uint8_t *buf, uint16_t used)
     for (int i = 0; i < used; i++) {
         uint16_t idx = sp[i].idx;
         if (idx >= (uint16_t)s_count) continue;   /* 防御：异常 idx 跳过 */
-        s_state[idx].srs.ease_factor   = sp[i].p.ease;
-        s_state[idx].srs.repetition    = sp[i].p.rep;
-        s_state[idx].srs.interval_days = sp[i].p.interval;
-        s_state[idx].srs.next_review   = now + sp[i].p.next_delta;
-        s_state[idx].srs.srs_level     = sp[i].p.level;
+        s_state[idx].srs.stability   = sp[i].p.stability;
+        s_state[idx].srs.difficulty  = sp[i].p.difficulty;
+        s_state[idx].srs.next_review = now + sp[i].p.next_delta;
+        s_state[idx].srs.last_review = now - sp[i].p.last_delta;
+        s_state[idx].srs.srs_level   = sp[i].p.level;
         s_state[idx].consecutive_wrong = sp[i].p.wrong;
         s_state[idx].collected         = sp[i].p.collected != 0;
     }
@@ -202,11 +205,11 @@ void learning_state_save(void)
 {
     if (s_count <= 0 || !s_state) return;
 
-    /* sparse 打包：只收非默认态词（学过/连错>0/已收藏），
+    /* sparse 打包：只收非默认态词（stability>0 / 连错>0 / 已收藏），
      * idx 升序写入；超 LR_SPARSE_MAX 丢尾部并告警（见宏注释） */
     int active = 0;
     for (int i = 0; i < s_count; i++) {
-        if (s_state[i].srs.ease_factor > 0.f ||
+        if (s_state[i].srs.stability > 0.f ||
             s_state[i].consecutive_wrong > 0 || s_state[i].collected)
             active++;
     }
@@ -234,15 +237,16 @@ void learning_state_save(void)
     int64_t now = now_sec();
     int w = 0;
     for (int i = 0; i < s_count && w < active; i++) {
-        if (!(s_state[i].srs.ease_factor > 0.f ||
+        if (!(s_state[i].srs.stability > 0.f ||
               s_state[i].consecutive_wrong > 0 || s_state[i].collected))
             continue;
         int64_t delta = s_state[i].srs.next_review - now;
-        sp[w].idx        = (uint16_t)i;
-        sp[w].p.ease      = s_state[i].srs.ease_factor;
-        sp[w].p.rep       = s_state[i].srs.repetition;
-        sp[w].p.interval  = s_state[i].srs.interval_days;
+        int64_t last  = now - s_state[i].srs.last_review;   /* ≥0（last ≤ now） */
+        sp[w].idx         = (uint16_t)i;
+        sp[w].p.stability = s_state[i].srs.stability;
+        sp[w].p.difficulty = s_state[i].srs.difficulty;
         sp[w].p.next_delta = delta < 0 ? 0 : (int32_t)delta;
+        sp[w].p.last_delta = last < 0 ? 0 : (int32_t)last;
         sp[w].p.level     = s_state[i].srs.srs_level;
         sp[w].p.wrong     = s_state[i].consecutive_wrong;
         sp[w].p.collected = s_state[i].collected ? 1 : 0;
@@ -272,8 +276,8 @@ void learning_state_apply_quality(int word_idx, int quality)
     if (word_idx < 0 || word_idx >= s_count) return;
 
     lr_entry_t *e = &s_state[word_idx];
-    if (e->srs.ease_factor == 0.f) srs_init_node(&e->srs, now_sec());
-    srs_calculate_next_review((srs_quality_t)quality, &e->srs, now_sec());
+    if (!(e->srs.stability > 0.f)) srs_init_node(&e->srs, now_sec());
+    uint16_t interval = srs_calculate_next_review((srs_quality_t)quality, &e->srs, now_sec());
 
     if (quality < 3) {
         if (e->consecutive_wrong < 255) e->consecutive_wrong++;
@@ -283,7 +287,7 @@ void learning_state_apply_quality(int word_idx, int quality)
 
     LOG_I("quality %d -> word #%d (wrong=%u interval=%u)",
           quality, word_idx, (unsigned)e->consecutive_wrong,
-          (unsigned)e->srs.interval_days);
+          (unsigned)interval);
     event_push(word_idx, quality, -1);  /* 云端上报队列（无 cloudId 词 flush 时丢弃） */
     s_dirty = true; s_dirty_at = now_sec();  /* 延迟落盘（maybe_save） */
 }
