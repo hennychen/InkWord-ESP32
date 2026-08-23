@@ -27,6 +27,15 @@ public static class JobRegistrar
             j => j.RunAsync(),
             Cron.Weekly(DayOfWeek.Sunday, 0),
             TimeZoneInfo.Local);
+
+        // M1 路径 B（2026-08-22）：每天 02:00 AI 词库内容批量生成。
+        // 夜间窗口只跑分级例句（kind=0，直接下发设备）；词根/辨析走
+        // 管理端手动触发。限流/重试/熔断见 AiContentJob。
+        RecurringJob.AddOrUpdate<AiContentJob>(
+            "nightly-ai-content",
+            j => j.RunAsync(0, null, 500, CancellationToken.None),
+            Cron.Daily(2),
+            TimeZoneInfo.Local);
     }
 }
 

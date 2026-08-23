@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import {
   Word, WordCreateDto, WordUpdateDto, WordQueryDto,
-  PagedResult, ApiResponse,
+  PagedResult, ApiResponse, AiGenerateReq, AiPendingItem, AiApplyReq,
 } from '../models/models';
 
 /**
@@ -60,5 +60,34 @@ export class WordApiService {
   /** 导出设备词库文件（P2：含 cloudId，拷入 SD 卡后设备可上报评分/收藏） */
   exportDeviceLibrary(): Observable<Blob> {
     return this.http.get(`${this.base}/export`, { responseType: 'blob' });
+  }
+
+  // ====== AI 内容增强（M1 路径 B，2026-08-22）======
+
+  /** 手动触发 AI 批量生成（立即入 Hangfire 队列，进度见 /hangfire） */
+  aiGenerate(req: AiGenerateReq): Observable<ApiResponse<{ jobId: string }>> {
+    return this.http.post<ApiResponse<{ jobId: string }>>(`${this.base}/ai-generate`, req);
+  }
+
+  /** 待审建议分页（AiStatus=1，现值 vs 建议 diff 视图） */
+  aiPending(page: number, size: number): Observable<ApiResponse<PagedResult<AiPendingItem>>> {
+    const params = new HttpParams().set('page', page).set('size', size);
+    return this.http.get<ApiResponse<PagedResult<AiPendingItem>>>(
+      `${this.base}/ai-pending`, { params });
+  }
+
+  /** 待审数量（词库页角标） */
+  aiPendingCount(): Observable<ApiResponse<{ count: number }>> {
+    return this.http.get<ApiResponse<{ count: number }>>(`${this.base}/ai-pending/count`);
+  }
+
+  /** 审核通过（可携带编辑终值；null = 采用建议原值） */
+  aiApply(id: string, req: AiApplyReq): Observable<ApiResponse<Word>> {
+    return this.http.post<ApiResponse<Word>>(`${this.base}/ai-apply/${id}`, req);
+  }
+
+  /** 驳回：状态复位 0（可重新生成） */
+  aiReject(id: string): Observable<ApiResponse<null>> {
+    return this.http.post<ApiResponse<null>>(`${this.base}/ai-reject/${id}`, null);
   }
 }

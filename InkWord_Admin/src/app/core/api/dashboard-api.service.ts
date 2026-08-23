@@ -3,7 +3,8 @@ import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import {
-  DashboardStats, SrsDistribution, DailyActiveData, WrongTopResp, ApiResponse,
+  DashboardStats, SrsDistribution, DailyActiveData, WrongTopResp,
+  SrsComparisonResp, ApiResponse,
 } from '../models/models';
 
 /**
@@ -37,5 +38,10 @@ export class DashboardApiService {
     return this.http.get<ApiResponse<WrongTopResp>>(
       `${this.base}/wrong-top`, { params: { top } },
     );
+  }
+
+  /** SM-2 vs FSRS 到期分布对比（M3 路径 A：影子运行切换决策依据） */
+  getSrsComparison(): Observable<ApiResponse<SrsComparisonResp>> {
+    return this.http.get<ApiResponse<SrsComparisonResp>>(`${this.base}/srs-comparison`);
   }
 }

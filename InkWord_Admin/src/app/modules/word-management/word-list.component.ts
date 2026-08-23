@@ -9,6 +9,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSelectModule } from '@angular/material/select';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatBadgeModule } from '@angular/material/badge';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { Router, ActivatedRoute } from '@angular/router';
@@ -17,6 +18,7 @@ import { WordApiService } from '../../core/api/word-api.service';
 import { Word } from '../../core/models/models';
 import { WordEditComponent } from './word-edit.component';
 import { WordImportComponent } from './word-import.component';
+import { AiGenerateDialogComponent } from './ai-generate-dialog.component';
 
 /**
  * 词库列表页 (A-06)：
@@ -37,6 +39,7 @@ import { WordImportComponent } from './word-import.component';
     MatIconModule,
     MatSelectModule,
     MatProgressSpinnerModule,
+    MatBadgeModule,
     MatDialogModule,
   ],
   templateUrl: './word-list.component.html',
@@ -50,7 +53,9 @@ export class WordListComponent implements OnInit, AfterViewInit {
   private readonly route = inject(ActivatedRoute);
 
   readonly loading = signal(true);
-  readonly displayedColumns = ['text', 'phonetic', 'meaning', 'tag', 'difficulty', 'actions'];
+  /** AI 待审数量（角标；M1 路径 B） */
+  readonly aiPending = signal(0);
+  readonly displayedColumns = ['text', 'phonetic', 'meaning', 'tag', 'difficulty', 'aiStatus', 'actions'];
 
   dataSource = new MatTableDataSource<Word>([]);
   total = 0;
@@ -87,6 +92,11 @@ export class WordListComponent implements OnInit, AfterViewInit {
   }
 
   ngOnInit(): void {
+    // AI 待审数量（角标展示，失败静默）
+    this.wordApi.aiPendingCount().subscribe({
+      next: (res) => this.aiPending.set(res.data?.count ?? 0),
+    });
+
     // 从 URL Query 参数恢复状态
     this.route.queryParams.subscribe((params) => {
       if (params['keyword']) this.keyword = params['keyword'];
@@ -98,6 +108,27 @@ export class WordListComponent implements OnInit, AfterViewInit {
 
   onSearch(term: string): void {
     this.searchSubject.next(term);
+  }
+
+  /** AI 状态徽标文本（0 不展示） */
+  aiStatusBadge(word: Word): string {
+    switch (word.aiStatus) {
+      case 1: return '待审';
+      case 2: return '已应用';
+      case 3: return '失败';
+      default: return '';
+    }
+  }
+
+  /** 复位生成失败词（ai-reject 对 AiStatus=3 亦复位，重入生成队列） */
+  resetAiStatus(word: Word): void {
+    this.wordApi.aiReject(word.id).subscribe({
+      next: () => {
+        this.snackBar.open(`已复位「${word.text}」待重新生成`, '关闭', { duration: 2000 });
+        this.loadData();
+      },
+      error: () => this.snackBar.open('复位失败', '关闭', { duration: 2000 }),
+    });
   }
 
   onTagFilterChange(tag: string): void {
@@ -182,6 +213,16 @@ export class WordListComponent implements OnInit, AfterViewInit {
     ref.afterClosed().subscribe((result) => {
       if (result) this.loadData();
     });
+  }
+
+  /** AI 批量生成触发（M1 路径 B：入 Hangfire 队列，结果去 AI 审核台比对） */
+  openAiGenerate(): void {
+    this.dialog.open(AiGenerateDialogComponent, { width: '520px' });
+  }
+
+  /** 跳转 AI 审核台（待审建议比对） */
+  goAiReview(): void {
+    this.router.navigate(['/words/ai-review']);
   }
 
   /** 导出设备词库 words.json（含 cloudId）：下载后拷入 SD 卡，

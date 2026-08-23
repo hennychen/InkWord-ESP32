@@ -49,6 +49,16 @@ public class Word : BaseEntity
     /// <summary>是否归档（冷词）</summary>
     public bool Archived { get; set; }
 
+    // ---- AI 内容增强（M1 路径 B，2026-08-22）----
+    // AI 生成不直接覆盖词库字段：建议暂存 AiSuggestion，人工审核通过后
+    // 回填 Example/Root 并 Version++ 走既有增量同步（设备零改动）。
+
+    /// <summary>AI 生成状态：0=未生成 1=已生成待审 2=已应用 3=生成失败</summary>
+    public int AiStatus { get; set; }
+
+    /// <summary>AI 建议原文（JSON：kind/example/root/confusionNote；应用后清空）</summary>
+    public string? AiSuggestion { get; set; }
+
     // 导航
     public ICollection<LearningRecord> LearningRecords { get; set; } = new List<LearningRecord>();
 }

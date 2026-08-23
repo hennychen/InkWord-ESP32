@@ -115,6 +115,48 @@ public class AdminDashboardController : ControllerBase
         return Ok(ApiResponse<List<SrsLevelDto>>.Ok(items));
     }
 
+    /// <summary>SRS 算法对比（M3.3 路径 A）：按到期时间窗聚合 SM-2 主列
+    /// 与 FSRS 影子列的排期差异（今日/本周/本月/更远 + 平均间隔）。
+    /// FSRS 口径平均间隔取平均稳定性 S（目标留存 0.90 下 interval=round(S)）。</summary>
+    [HttpGet("srs-comparison")]
+    public async Task<IActionResult> SrsComparison(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var week = now.AddDays(7);
+        var month = now.AddDays(30);
+
+        var agg = await _db.LearningRecords.AsNoTracking()
+            .Where(r => !r.Device!.IsDeleted)
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                Sm2N = g.Count(r => r.ReviewCount > 0),
+                Sm2Today = g.Count(r => r.ReviewCount > 0 && r.NextReview <= now),
+                Sm2Week = g.Count(r => r.ReviewCount > 0 && r.NextReview > now && r.NextReview <= week),
+                Sm2Month = g.Count(r => r.ReviewCount > 0 && r.NextReview > week && r.NextReview <= month),
+                Sm2Future = g.Count(r => r.ReviewCount > 0 && r.NextReview > month),
+                Sm2Avg = g.Where(r => r.ReviewCount > 0).Average(r => (double?)r.IntervalDays) ?? 0,
+
+                FsrsN = g.Count(r => r.FsrsNextReview != null),
+                FsrsToday = g.Count(r => r.FsrsNextReview != null && r.FsrsNextReview <= now),
+                FsrsWeek = g.Count(r => r.FsrsNextReview != null && r.FsrsNextReview > now && r.FsrsNextReview <= week),
+                FsrsMonth = g.Count(r => r.FsrsNextReview != null && r.FsrsNextReview > week && r.FsrsNextReview <= month),
+                FsrsFuture = g.Count(r => r.FsrsNextReview != null && r.FsrsNextReview > month),
+                FsrsAvg = g.Where(r => r.FsrsNextReview != null).Average(r => (double?)r.FsrsStability) ?? 0,
+            })
+            .FirstOrDefaultAsync(ct);
+
+        if (agg == null)
+            return Ok(ApiResponse<SrsComparisonResp>.Ok(new SrsComparisonResp(0, 0, [])));
+
+        var items = new List<SrsComparisonItem>
+        {
+            new("sm2", agg.Sm2Today, agg.Sm2Week, agg.Sm2Month, agg.Sm2Future, Math.Round(agg.Sm2Avg, 1)),
+            new("fsrs", agg.FsrsToday, agg.FsrsWeek, agg.FsrsMonth, agg.FsrsFuture, Math.Round(agg.FsrsAvg, 1)),
+        };
+        return Ok(ApiResponse<SrsComparisonResp>.Ok(new SrsComparisonResp(agg.Sm2N, agg.FsrsN, items)));
+    }
+
     /// <summary>日活趋势（看板折线）：近 N 天每日活跃设备数，
     /// 缺日补 0，date 格式 yyyy-MM-dd。</summary>
     [HttpGet("daily-active")]

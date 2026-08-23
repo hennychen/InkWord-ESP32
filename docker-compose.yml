@@ -51,6 +51,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # ollama 弱依赖：仅保证启动顺序（模型拉取慢，不阻塞后端就绪）
+      ollama:
+        condition: service_started
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       # 双下划线 __ 映射 appsettings.json 的层级分隔符 :
@@ -59,8 +62,34 @@ services:
       Jwt__Issuer: "InkWord"
       Jwt__Audience: "InkWordAdmin"
       Jwt__Secret: "${JWT_SECRET:-InkWord_Super_Secret_Key_2024_ChangeMe_Please_32+}"
+      # M1 AI 内容生成（Ai__* → Ai:*）：容器内经服务名访问 ollama
+      Ai__Provider: "${AI_PROVIDER:-ollama}"
+      Ai__OllamaUrl: "http://ollama:11434"
+      Ai__Model: "${AI_MODEL:-qwen2.5:7b}"
+      Ai__CloudApiKey: "${AI_CLOUD_API_KEY:-}"
+      Ai__Concurrency: "${AI_CONCURRENCY:-2}"
+      # M3 FSRS 引擎开关：sm2（默认，影子运行）| fsrs（FSRS 生效）
+      Srs__Engine: "${SRS_ENGINE:-sm2}"
     ports:
       - "8080:8080"
+
+  # ── Ollama 本地 LLM（M1 路径 B：AI 词库内容增强）──
+  # 首次启动需拉模型：docker compose exec ollama ollama pull qwen2.5:7b
+  ollama:
+    image: ollama/ollama:latest
+    container_name: inkword-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollamadata:/root/.ollama
+    healthcheck:
+      # ollama list 即调 GET /api/tags（服务未就绪时退出非零）
+      test: ["CMD-SHELL", "ollama list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   # ── 前端管理后台 (Nginx + Angular SPA) ─────────
   frontend:
@@ -77,3 +106,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  ollamadata:

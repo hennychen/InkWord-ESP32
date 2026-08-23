@@ -43,7 +43,7 @@
 |:---|:---|:---:|:---|
 | 固件（生产/演示双环境） | `pio run -e inkword-s3 -e inkword-s3-demo` | ✅ | 2026-08-22（Flash 55% / RAM 17%；native-test 对拍 2/2 绿） |
 | 固件算法单测（host） | `pio test -e native-test` | ✅ 2/2 | 2026-08-22（FSRS 12 序列 76 向量对拍 + 锚点） |
-| 后端 | `dotnet build`（0 错误）＋ `dotnet test` 8/8 ＋ 本机运行冒烟（登录/影子链路/发音评测闭环） | ✅ | 2026-08-22 |
+| 后端 | `dotnet build`（0 错误）＋ `dotnet test` 8/8 ＋ 本机运行冒烟（登录/影子链路/发音评测/AI 失败标记与复位闭环） | ✅ | 2026-08-23 |
 | 管理后台 | `ng build`（16.3s 零警告）＋ AI 审核台/对比图表 | ✅ | 2026-08-22 |
 
 ---
@@ -249,7 +249,7 @@ cd InkWord_Firmware
 | 管理 | GET/POST | `/api/admin/ota` ＋ `/upload` | 固件包管理 |
 | 管理 | GET | `/api/admin/dashboard/stats` `/wrong-top` `/srs-distribution` `/daily-active` `/srs-comparison` | 看板统计/错词排行/SRS 分布/日活/SM-2 vs FSRS 影子对比 |
 | 管理 | POST | `/api/admin/words/ai-generate` | AI 批量生成入队（kind 0 例句/1 词根/2 辨析，Hangfire 异步） |
-| 管理 | GET/POST | `/api/admin/words/ai-pending[/count]` `/ai-apply/{id}` `/ai-reject/{id}` | AI 建议审核（人工 diff 比对通过后才落词库字段，防幻觉红线） |
+| 管理 | GET/POST | `/api/admin/words/ai-pending[/count]` `/ai-apply/{id}` `/ai-reject/{id}` | AI 建议审核（人工 diff 比对通过后才落词库字段，防幻觉红线）；`ai-reject` 兼复位生成失败词（AiStatus 3→0 重入队列） |
 | 设备 | POST | `/api/device/pronunciation` | 发音评测（WAV 16kHz/mono≤3s → 总分+音素明细，M5 路径 C） |
 
 > 统一响应包装 `ApiResponse{code=0 成功, message, data}`——前端判定 `code === 0`（非 200）。

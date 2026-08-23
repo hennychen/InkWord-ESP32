@@ -51,6 +51,8 @@ export interface Word {
   changeType: number;
   archived: boolean;
   createdAt?: string;
+  /** AI 内容状态（M1）：0=无 1=待审 2=已应用 3=生成失败 */
+  aiStatus?: number;
 }
 
 export interface WordCreateDto {
@@ -139,4 +141,50 @@ export interface WrongTopItem {
 export interface WrongTopResp {
   items: WrongTopItem[];
   collectedRecords: number;
+}
+
+// ── AI 内容增强（M1 路径 B，2026-08-22）─────────────────
+/** AI 批量生成触发：kind 0=分级例句 1=词根助记 2=易混辨析 */
+export interface AiGenerateReq {
+  kind: number;
+  tag?: string;
+  limit?: number;
+}
+
+/** 待审条目：现值 vs AI 建议（AiSuggestion 服务端解析后下发） */
+export interface AiPendingItem {
+  id: string;
+  text: string;
+  meaning: string;
+  tag: string;
+  grade: string;
+  currentExample: string;
+  currentRoot: string;
+  suggestedExample?: string | null;
+  suggestedRoot?: string | null;
+  suggestedConfusionNote?: string | null;
+  kind: number;
+  createdAt: string;
+}
+
+/** 审核通过（可携带编辑终值；null = 采用建议原值） */
+export interface AiApplyReq {
+  example?: string | null;
+  root?: string | null;
+}
+
+// ── SRS 算法对比（M3 路径 A）─────────────────────
+export interface SrsComparisonItem {
+  algorithm: string;
+  dueToday: number;
+  dueWeek: number;
+  dueMonth: number;
+  future: number;
+  avgIntervalDays: number;
+}
+
+export interface SrsComparisonResp {
+  sm2Records: number;
+  fsrsRecords: number;
+  items: SrsComparisonItem[];
 }

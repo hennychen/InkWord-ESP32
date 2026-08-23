@@ -1,0 +1,46 @@
+<h2 mat-dialog-title>
+  <mat-icon>auto_awesome</mat-icon>
+  AI 批量生成
+</h2>
+
+<mat-dialog-content>
+  <div class="gen-form">
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>生成类型</mat-label>
+      <mat-select [(ngModel)]="kind">
+        @for (opt of kindOptions; track opt.value) {
+          <mat-option [value]="opt.value">{{ opt.label }}</mat-option>
+        }
+      </mat-select>
+    </mat-form-field>
+
+    <div class="form-row">
+      <mat-form-field appearance="outline">
+        <mat-label>标签过滤（可选）</mat-label>
+        <input matInput [(ngModel)]="tag" placeholder="如 中考核心" />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>数量上限（可选）</mat-label>
+        <input matInput type="number" min="1" [(ngModel)]="limit" placeholder="留空 = 默认上限" />
+      </mat-form-field>
+    </div>
+
+    <p class="hint">
+      仅处理 AiStatus=0（未生成）的词条；生成结果需在「AI 审核」页人工比对通过后
+      才会写入词库字段（防幻觉污染）。
+    </p>
+  </div>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()">取消</button>
+  <button mat-raised-button color="primary" (click)="submit()" [disabled]="submitting()">
+    @if (submitting()) {
+      <mat-progress-spinner diameter="18" mode="indeterminate"></mat-progress-spinner>
+    } @else {
+      <mat-icon>play_arrow</mat-icon>
+    }
+    入队生成
+  </button>
+</mat-dialog-actions>

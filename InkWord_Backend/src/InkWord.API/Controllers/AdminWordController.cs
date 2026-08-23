@@ -1,10 +1,13 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using Hangfire;
 using InkWord.API.DTOs;
 using InkWord.Core.Common;
 using InkWord.Core.Entities;
 using InkWord.Core.Repositories;
+using InkWord.Jobs;
+using InkWord.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -20,8 +23,13 @@ namespace InkWord.API.Controllers;
 public class AdminWordController : ControllerBase
 {
     private readonly IWordRepository _wordRepo;
+    private readonly AiContentService _ai;
 
-    public AdminWordController(IWordRepository wordRepo) => _wordRepo = wordRepo;
+    public AdminWordController(IWordRepository wordRepo, AiContentService ai)
+    {
+        _wordRepo = wordRepo;
+        _ai = ai;
+    }
 
     /// <summary>B-13 单条新增（含去重校验）</summary>
     [HttpPost]
@@ -181,5 +189,127 @@ public class AdminWordController : ControllerBase
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
         return File(System.Text.Encoding.UTF8.GetBytes(json),
             "application/json", "words.json");
+    }
+
+    // ====== AI 内容增强（M1 路径 B，2026-08-22）======
+
+    /// <summary>手动触发 AI 批量生成（立即入 Hangfire 队列，进度见 /hangfire）</summary>
+    [HttpPost("ai-generate")]
+    public IActionResult AiGenerate([FromBody] AiGenerateReq req)
+    {
+        if (req.Kind is < 0 or > 2)
+            return BadRequest(ApiResponse.Fail(400, "kind must be 0/1/2"));
+        var jobId = BackgroundJob.Enqueue<AiContentJob>(
+            j => j.RunAsync(req.Kind, req.Tag, req.Limit, CancellationToken.None));
+        return Ok(ApiResponse<object>.Ok(new { jobId }, "AI 生成任务已入队"));
+    }
+
+    /// <summary>待审建议分页（AiStatus=1；服务端解析 AiSuggestion 下发 diff 视图）</summary>
+    [HttpGet("ai-pending")]
+    public async Task<IActionResult> AiPending([FromQuery] int page, [FromQuery] int size, CancellationToken ct)
+    {
+        page = page <= 0 ? 1 : page;
+        size = size <= 0 || size > 100 ? 20 : size;
+
+        var (words, total) = await _wordRepo.GetPagedAsync(page, size,
+            w => w.AiStatus == 1, ct);
+
+        var items = words.Select(ToPendingItem).ToList();
+        return Ok(ApiResponse<PagedResult<AiPendingItem>>.Ok(
+            new PagedResult<AiPendingItem>(items, total, page, size)));
+    }
+
+    /// <summary>待审数量（词库页角标）</summary>
+    [HttpGet("ai-pending/count")]
+    public async Task<IActionResult> AiPendingCount(CancellationToken ct)
+    {
+        var (_, total) = await _wordRepo.GetPagedAsync(1, 1, w => w.AiStatus == 1, ct);
+        return Ok(ApiResponse<object>.Ok(new { count = total }));
+    }
+
+    /// <summary>审核通过：建议写入词库字段并 Version++ 增量下发（可携带编辑终值）。</summary>
+    [HttpPost("ai-apply/{id:guid}")]
+    public async Task<IActionResult> AiApply(Guid id, [FromBody] AiApplyReq req, CancellationToken ct)
+    {
+        var word = await _wordRepo.GetByIdAsync(id, ct);
+        if (word == null) return NotFound(ApiResponse.Fail(404, "not found"));
+        if (word.AiStatus != 1 || string.IsNullOrEmpty(word.AiSuggestion))
+            return BadRequest(ApiResponse.Fail(400, "无待审建议"));
+
+        var sug = ParseSuggestion(word.AiSuggestion);
+        if (sug == null) return BadRequest(ApiResponse.Fail(400, "建议载荷损坏，请驳回重新生成"));
+
+        // 应用：kind 0 写 Example，kind 1 写 Root；kind 2（易混辨析）仅审阅参考不落设备字段。
+        // 长度红线：字节上限对齐固件缓冲（AiContentService 同源常量）。
+        if (sug.Kind == 0)
+        {
+            var example = req.Example ?? sug.Example ?? word.Example;
+            if (Encoding.UTF8.GetByteCount(example) > AiContentService.ExampleMaxBytes)
+                return BadRequest(ApiResponse.Fail(400,
+                    $"例句超长（{Encoding.UTF8.GetByteCount(example)}B > {AiContentService.ExampleMaxBytes}B）"));
+            word.Example = example;
+        }
+        else if (sug.Kind == 1)
+        {
+            var root = req.Root ?? sug.Root ?? word.Root;
+            if (Encoding.UTF8.GetByteCount(root) > AiContentService.RootMaxBytes)
+                return BadRequest(ApiResponse.Fail(400,
+                    $"助记超长（{Encoding.UTF8.GetByteCount(root)}B > {AiContentService.RootMaxBytes}B）"));
+            word.Root = root;
+        }
+
+        // 增量下发通道（照抄 Update 逻辑）：版本取全局最大 +1，变更类型 = 修改
+        word.ChangeType = 1;
+        word.Version = Math.Max(word.Version, await _wordRepo.GetMaxVersionAsync(ct)) + 1;
+        word.AiStatus = 2;
+        word.AiSuggestion = null;
+
+        await _wordRepo.UpdateAsync(word, ct);
+        await _wordRepo.SaveChangesAsync(ct);
+        return Ok(ApiResponse<Word>.Ok(word));
+    }
+
+    /// <summary>驳回/失败复位：AiStatus 归 0（可重新生成）并清建议缓存。
+    /// 1=驳回待审建议；3=复位生成失败词（否则永不被 AiStatus==0 查询重选）。</summary>
+    [HttpPost("ai-reject/{id:guid}")]
+    public async Task<IActionResult> AiReject(Guid id, CancellationToken ct)
+    {
+        var word = await _wordRepo.GetByIdAsync(id, ct);
+        if (word == null) return NotFound(ApiResponse.Fail(404, "not found"));
+        if (word.AiStatus is not (1 or 3))
+            return BadRequest(ApiResponse.Fail(400, "无待审建议或失败记录"));
+
+        var sug = ParseSuggestion(word.AiSuggestion);
+        word.AiStatus = 0;
+        word.AiSuggestion = null;
+        await _wordRepo.UpdateAsync(word, ct);
+        await _wordRepo.SaveChangesAsync(ct);
+
+        if (sug != null)
+            await _ai.InvalidateCacheAsync(word.Id, (AiContentKind)sug.Kind, ct);
+        return Ok(ApiResponse.Ok());
+    }
+
+    private static AiPendingItem ToPendingItem(Word w)
+    {
+        var sug = ParseSuggestion(w.AiSuggestion);
+        return new AiPendingItem(w.Id, w.Text, w.Meaning, w.Tag, w.Grade,
+            w.Example, w.Root,
+            sug?.Example, sug?.Root, sug?.ConfusionNote,
+            sug?.Kind ?? 0, w.CreatedAt);
+    }
+
+    private static WordAiSuggestion? ParseSuggestion(string? json)
+    {
+        if (string.IsNullOrEmpty(json)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<WordAiSuggestion>(json,
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 }

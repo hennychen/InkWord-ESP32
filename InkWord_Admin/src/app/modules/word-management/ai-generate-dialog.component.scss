@@ -1,0 +1,25 @@
+.gen-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 420px;
+}
+
+.form-row {
+  display: flex;
+  gap: 12px;
+
+  mat-form-field {
+    flex: 1;
+  }
+}
+
+.full-width {
+  width: 100%;
+}
+
+.hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  opacity: 0.7;
+}

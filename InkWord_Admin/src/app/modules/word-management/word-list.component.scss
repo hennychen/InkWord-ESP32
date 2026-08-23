@@ -68,3 +68,17 @@
   color: #f44336;
   font-weight: 500;
 }
+
+/* AI 状态徽标（M1）：待审/已应用灰色系，失败红色可复位 */
+.ai-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  background: #eceff1;
+  color: #546e7a;
+
+  &.ai-failed {
+    background: #ffebee;
+    color: #c62828;
+  }
+}

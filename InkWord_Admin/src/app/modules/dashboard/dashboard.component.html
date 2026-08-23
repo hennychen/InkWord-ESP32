@@ -65,5 +65,19 @@
       </mat-card-header>
       <div echarts [options]="pieChartOption()" class="chart-canvas"></div>
     </mat-card>
+
+    <!-- SM-2 vs FSRS 到期分布对比（M3 影子运行）：无影子数据时留空 -->
+    @if (srsComparison(); as cmp) {
+      <mat-card class="chart-card comparison-card">
+        <mat-card-header>
+          <mat-card-title>SM-2 vs FSRS 到期分布（影子）</mat-card-title>
+          <mat-card-subtitle>
+            影子记录 SM-2 {{ cmp.sm2Records }} 条 / FSRS {{ cmp.fsrsRecords }} 条；
+            平均间隔 SM-2 {{ avgInterval(0) }} 天 vs FSRS {{ avgInterval(1) }} 天
+          </mat-card-subtitle>
+        </mat-card-header>
+        <div echarts [options]="comparisonChartOption()" class="chart-canvas"></div>
+      </mat-card>
+    }
   </div>
 }

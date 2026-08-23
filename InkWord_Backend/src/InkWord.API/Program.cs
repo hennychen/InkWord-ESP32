@@ -10,8 +10,10 @@ using InkWord.Jobs;
 using InkWord.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.AI;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using OpenAI;
 using Serilog;
 using StackExchange.Redis;
 using System.Text;
@@ -46,10 +48,33 @@ builder.Services.AddScoped<IOtaPackageRepository, OtaPackageRepository>();
 
 // ---- Services ----
 builder.Services.AddScoped<SrsService>();
+builder.Services.AddScoped<FsrsService>();
+builder.Services.AddScoped<AiContentService>();
+builder.Services.AddScoped<PronunciationService>();
+
+// ---- AI IChatClient（M1 路径 B，2026-08-22）：按 Ai:Provider 装配具体实现 ----
+// 本地 Ollama（默认）/ OpenAI 兼容云 API 可切换；仅 API 层持有实现包，
+// AiContentService 面向 IChatClient 抽象（InkWord.Services 零具体依赖）
+var aiCfg = builder.Configuration.GetSection("Ai");
+var aiModel = aiCfg["Model"] ?? "qwen2.5:7b";
+if (string.Equals(aiCfg["Provider"], "openai", StringComparison.OrdinalIgnoreCase))
+{
+    var apiKey = aiCfg["CloudApiKey"];
+    if (string.IsNullOrEmpty(apiKey))
+        throw new InvalidOperationException("Ai:Provider=openai 需配置 Ai:CloudApiKey");
+    builder.Services.AddSingleton<IChatClient>(_ =>
+        new OpenAIClient(apiKey).GetChatClient(aiModel).AsIChatClient());
+}
+else
+{
+    builder.Services.AddSingleton<IChatClient>(_ => new OllamaChatClient(
+        new Uri(aiCfg["OllamaUrl"] ?? "http://localhost:11434"), aiModel, new HttpClient()));
+}
 
 // ---- Hangfire 任务类（需 DI 注入） ----
 builder.Services.AddTransient<DailyPushJob>();
 builder.Services.AddTransient<CleanupJob>();
+builder.Services.AddTransient<AiContentJob>();
 
 // ---- 设备认证过滤器 ----
 builder.Services.AddScoped<DeviceAuthFilter>();
@@ -134,10 +159,19 @@ if (app.Environment.IsDevelopment())
     // 引入后删除本补丁。
     var addCols = new[]
     {
+        // V2.1 词库扩展（2026-08-20）
         "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"Root\" text NOT NULL DEFAULT ''",
         "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"Inflections\" text NOT NULL DEFAULT ''",
         "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"Source\" text NOT NULL DEFAULT ''",
         "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"Grade\" text NOT NULL DEFAULT ''",
+        // AI 词库增强（M1 路径 B）：AiStatus 0 未生成/1 待审/2 已应用/3 失败
+        "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"AiStatus\" integer NOT NULL DEFAULT 0",
+        "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"AiSuggestion\" text",
+        // FSRS 影子列（M3 路径 A）+ 发音评分（M5 路径 C）
+        "ALTER TABLE \"LearningRecords\" ADD COLUMN IF NOT EXISTS \"FsrsStability\" double precision NOT NULL DEFAULT 0",
+        "ALTER TABLE \"LearningRecords\" ADD COLUMN IF NOT EXISTS \"FsrsDifficulty\" double precision NOT NULL DEFAULT 0",
+        "ALTER TABLE \"LearningRecords\" ADD COLUMN IF NOT EXISTS \"FsrsNextReview\" timestamptz",
+        "ALTER TABLE \"LearningRecords\" ADD COLUMN IF NOT EXISTS \"LastPronScore\" integer",
     };
     foreach (var sql in addCols)
         db.Database.ExecuteSqlRaw(sql);

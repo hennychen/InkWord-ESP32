@@ -35,6 +35,12 @@ export const routes: Routes = [
         title: '错词排行 — InkWord',
       },
       {
+        path: 'words/ai-review',
+        loadComponent: () =>
+          import('./modules/word-management/ai-review.component').then((m) => m.AiReviewComponent),
+        title: 'AI 审核 — InkWord',
+      },
+      {
         path: 'words',
         loadComponent: () =>
           import('./modules/word-management/word-list.component').then((m) => m.WordListComponent),

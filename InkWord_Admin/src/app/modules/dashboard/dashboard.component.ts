@@ -7,7 +7,7 @@ import { NgxEchartsDirective } from 'ngx-echarts';
 import type { EChartsOption } from 'echarts';
 import { DashboardApiService } from '../../core/api/dashboard-api.service';
 import {
-  DashboardStats, SrsDistribution, DailyActiveData,
+  DashboardStats, SrsDistribution, DailyActiveData, SrsComparisonResp,
 } from '../../core/models/models';
 
 /**
@@ -37,6 +37,8 @@ export class DashboardComponent implements OnInit {
   readonly stats = signal<DashboardStats | null>(null);
   readonly srsData = signal<SrsDistribution[]>([]);
   readonly dailyData = signal<DailyActiveData[]>([]);
+  /** SM-2 vs FSRS 影子对比（M3 路径 A：影子运行切换决策依据） */
+  readonly srsComparison = signal<SrsComparisonResp | null>(null);
 
   /** 折线图配置 */
   readonly lineChartOption = computed<EChartsOption>(() => {
@@ -76,8 +78,34 @@ export class DashboardComponent implements OnInit {
     };
   });
 
+  /** 分组柱状图：SM-2 vs FSRS 到期分布对比（影子运行观察窗口） */
+  readonly comparisonChartOption = computed<EChartsOption>(() => {
+    const items = this.srsComparison()?.items ?? [];
+    // 后端 algorithm 取值 "sm2"/"fsrs"（小写）
+    const names = items.map((i) => (i.algorithm === 'sm2' ? 'SM-2（现行）' : 'FSRS（影子）'));
+    return {
+      tooltip: { trigger: 'axis' },
+      legend: { bottom: 0 },
+      xAxis: { type: 'category', data: names },
+      yAxis: { type: 'value', name: '到期词数' },
+      series: [
+        { name: '今日', type: 'bar', data: items.map((i) => i.dueToday) },
+        { name: '本周', type: 'bar', data: items.map((i) => i.dueWeek) },
+        { name: '本月', type: 'bar', data: items.map((i) => i.dueMonth) },
+        { name: '更远', type: 'bar', data: items.map((i) => i.future) },
+      ],
+      grid: { left: '5%', right: '5%', bottom: '12%', containLabel: true },
+    };
+  });
+
   ngOnInit(): void {
     this.loadAll();
+  }
+
+  /** 对比图副标题：算法条目平均间隔（天，缺位安全） */
+  avgInterval(index: number): string {
+    const item = this.srsComparison()?.items[index];
+    return item ? item.avgIntervalDays.toFixed(1) : '—';
   }
 
   private loadAll(): void {
@@ -97,6 +125,11 @@ export class DashboardComponent implements OnInit {
     // 加载日活趋势
     this.dashboardApi.getDailyActive(30).subscribe({
       next: (res) => this.dailyData.set(res.data ?? []),
+    });
+
+    // 加载 SM-2 vs FSRS 对比（影子数据，无记录时图表留空）
+    this.dashboardApi.getSrsComparison().subscribe({
+      next: (res) => this.srsComparison.set(res.data ?? null),
     });
   }
 }

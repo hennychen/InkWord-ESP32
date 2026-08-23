@@ -1,0 +1,94 @@
+<div class="page-header">
+  <h2>
+    <button mat-icon-button (click)="back()" matTooltip="返回词库">
+      <mat-icon>arrow_back</mat-icon>
+    </button>
+    AI 审核台
+  </h2>
+  <span class="pending-count">待审核 {{ total() }} 条</span>
+</div>
+
+@if (loading()) {
+  <div class="loading-row">
+    <mat-progress-spinner diameter="40" mode="indeterminate"></mat-progress-spinner>
+  </div>
+} @else if (items().length === 0) {
+  <mat-card class="empty-card">
+    <mat-icon>task_alt</mat-icon>
+    <p>暂无待审核的 AI 建议</p>
+    <p class="hint">在词库页点「AI 生成」入队，生成完成后此处比对审核</p>
+  </mat-card>
+} @else {
+  <div class="review-list">
+    @for (item of items(); track item.id) {
+      <mat-card class="review-card">
+        <!-- 词头：单词 / 释义 / kind 徽章 -->
+        <div class="word-head">
+          <span class="word-text">{{ item.text }}</span>
+          <span class="word-meaning">{{ item.meaning }}</span>
+          <mat-chip-set>
+            <mat-chip [highlighted]="true">{{ kindLabels[item.kind] }}</mat-chip>
+            @if (item.tag) {
+              <mat-chip>{{ item.tag }}</mat-chip>
+            }
+          </mat-chip-set>
+        </div>
+
+        <!-- diff 区：现值 vs 建议（可编辑终值） -->
+        <div class="diff-grid">
+          <div class="diff-col current">
+            <div class="diff-label">现值</div>
+            <p class="diff-text">{{ currentValue(item) || '（空）' }}</p>
+          </div>
+
+          <div class="diff-col suggested">
+            <div class="diff-label">AI 建议</div>
+            @if (item.kind === 2) {
+              <!-- 易混辨析：仅审阅参考，不可编辑不落字段 -->
+              <p class="diff-text note">{{ suggestedText(item) }}</p>
+            } @else {
+              <textarea
+                matInput
+                rows="3"
+                [value]="editedText(item)"
+                (input)="onEdit(item, $any($event.target).value)"
+              ></textarea>
+            }
+          </div>
+        </div>
+
+        <!-- 操作 -->
+        <mat-card-actions align="end">
+          <button
+            mat-stroked-button
+            color="warn"
+            (click)="reject(item)"
+            [disabled]="busy() === item.id"
+          >
+            <mat-icon>close</mat-icon>
+            驳回
+          </button>
+          <button
+            mat-raised-button
+            color="primary"
+            (click)="apply(item)"
+            [disabled]="busy() === item.id"
+          >
+            <mat-icon>check</mat-icon>
+            {{ item.kind === 2 ? '确认已阅' : '通过并写入' }}
+          </button>
+        </mat-card-actions>
+      </mat-card>
+    }
+
+    <mat-paginator
+      [length]="total()"
+      [pageIndex]="currentPage"
+      [pageSize]="pageSize"
+      [pageSizeOptions]="[5, 10, 20]"
+      (page)="onPageChange($event)"
+      showFirstLastButtons
+    >
+    </mat-paginator>
+  </div>
+}
