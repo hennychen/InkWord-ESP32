@@ -72,8 +72,24 @@ services:
       Ai__Concurrency: "${AI_CONCURRENCY:-2}"
       # M3 FSRS 引擎开关：sm2（默认，影子运行）| fsrs（FSRS 生效）
       Srs__Engine: "${SRS_ENGINE:-sm2}"
+      # P0B TTS（Tts__* → Tts:*）：容器内 piper 走 volume 挂载，不入镜像层；
+      # 首次准备：宿主机 ./data/piper/ 放 piper 二进制 + voices/en_US-lessac-medium.onnx
+      Tts__PiperPath: "/data/piper/piper"
+      Tts__PiperVoice: "/data/piper/voices/en_US-lessac-medium.onnx"
+      Tts__AudioDir: "/data/audio"
+      # P2A ASR（Asr__* → Asr:*）：sherpa-onnx zipformer-en 模型 volume 挂载
+      # （native 库随 NuGet 入镜像，模型不入）；首次准备：宿主机
+      # ./data/sherpa/zipformer-en/ 放 encoder/decoder/joiner-epoch-99-avg-1.onnx
+      # + tokens.txt（github.com/k2-fsa/sherpa-onnx releases asr-models/
+      # sherpa-onnx-zipformer-en-2023-06-26），启用设 ASR_PROVIDER=sherpa
+      Asr__Provider: "${ASR_PROVIDER:-none}"
+      Asr__ModelDir: "/data/sherpa/zipformer-en"
     ports:
       - "8080:8080"
+    volumes:
+      - piperdata:/data/piper
+      - audiodata:/data/audio
+      - sherpa:/data/sherpa
 
   # ── Ollama 本地 LLM（M1 路径 B：AI 词库内容增强）──
   # 首次启动需拉模型：docker compose exec ollama ollama pull qwen2.5:7b
@@ -109,3 +125,6 @@ volumes:
   pgdata:
   redisdata:
   ollamadata:
+  piperdata:
+  sherpa:
+  audiodata:

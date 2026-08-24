@@ -52,6 +52,23 @@ builder.Services.AddScoped<SrsService>();
 builder.Services.AddScoped<FsrsService>();
 builder.Services.AddScoped<AiContentService>();
 builder.Services.AddScoped<PronunciationService>();
+builder.Services.AddScoped<TtsService>();
+builder.Services.AddScoped<ChatService>();
+
+// ---- ASR 转写引擎（P2A 2026-08-24）：sherpa-onnx C# 绑定（native 随 NuGet
+// 分发），模型 volume 挂载（Asr:ModelDir，与 M5 GOP 升级共用本绑定）；
+// Asr:Provider=none 时 Transcribe 恒 null，chat 端点 503——不炸启动 ----
+builder.Services.AddSingleton<IAsrTranscriber, SherpaAsrService>();
+
+// ---- TTS 合成引擎（P0B 2026-08-24）：Tts:Provider 切换 Piper/云 API，
+// 与 Ai:Provider 的 IChatClient 装配同模式；云实现预留（当前仅 piper） ----
+if (string.Equals(builder.Configuration["Tts:Provider"], "cloud",
+    StringComparison.OrdinalIgnoreCase))
+{
+    // 云 TTS（OpenAI 兼容 /v1/audio/speech）：一期预留，接入时在此装配
+    throw new InvalidOperationException("Tts:Provider=cloud 尚未接入，请使用 piper");
+}
+builder.Services.AddSingleton<ISpeechSynthesizer, PiperSynthesizer>();
 
 // ---- AI IChatClient（M1 路径 B，2026-08-22）：按 Ai:Provider 装配具体实现 ----
 // 本地 Ollama（默认）/ OpenAI 兼容云 API 可切换；仅 API 层持有实现包，
@@ -83,6 +100,8 @@ else
 builder.Services.AddTransient<DailyPushJob>();
 builder.Services.AddTransient<CleanupJob>();
 builder.Services.AddTransient<AiContentJob>();
+builder.Services.AddTransient<TtsJob>();
+builder.Services.AddTransient<ChatAudioCleanupJob>();
 
 // ---- 设备认证过滤器 ----
 builder.Services.AddScoped<DeviceAuthFilter>();

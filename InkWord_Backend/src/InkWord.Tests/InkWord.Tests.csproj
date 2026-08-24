@@ -24,6 +24,17 @@
 
   <ItemGroup>
     <ProjectReference Include="..\InkWord.Services\InkWord.Services.csproj" />
+    <ProjectReference Include="..\InkWord.Infrastructure\InkWord.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <!-- P0B：TtsServiceTests 需要 ConfigurationBuilder（内存配置） -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="9.10.2" />
+  </ItemGroup>
+
+  <!-- P2A：ChatServiceTests 的 IChatClient 替身（版本与 Services 对齐） -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.AI" Version="9.10.2" />
   </ItemGroup>
 
   <!-- 双端对拍向量（M3/M4）：与固件 test/test_srs_engine.c 共用同一 CSV，

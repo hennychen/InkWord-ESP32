@@ -23,13 +23,17 @@ public class DeviceController : ControllerBase
     private readonly IOtaPackageRepository _otaRepo;
     private readonly SrsService _srs;
     private readonly PronunciationService _pron;
+    private readonly TtsService _tts;
+    private readonly ChatService _chatSvc;
 
     public DeviceController(IDeviceRepository deviceRepo, IWordRepository wordRepo,
         ILearningRecordRepository recordRepo, IOtaPackageRepository otaRepo,
-        SrsService srs, PronunciationService pron)
+        SrsService srs, PronunciationService pron, TtsService tts, ChatService chatSvc)
     {
         _deviceRepo = deviceRepo; _wordRepo = wordRepo;
         _recordRepo = recordRepo; _otaRepo = otaRepo; _srs = srs; _pron = pron;
+        _tts = tts;
+        _chatSvc = chatSvc;
     }
 
     /// <summary>B-08 首次注册：生成 ApiKey</summary>
@@ -203,6 +207,52 @@ public class DeviceController : ControllerBase
         await _recordRepo.SaveChangesAsync(ct);
 
         return Ok(ApiResponse<PronunciationScore>.Ok(score));
+    }
+
+    /// <summary>P0B 音频下发：GET /api/device/audio/{file}。</summary>
+    /// <remarks>词条音频 {wordId:N}.mp3（TtsJob 批量合成）与对话音频
+    /// chat_*.mp3（P2A）共用本端点；文件名白名单校验（拒路径穿越），
+    /// PhysicalFile 流式返回 audio/mpeg。设备端 audio_sync 按 words.json
+    /// 的 cloudId 推导文件名拉取。</remarks>
+    [HttpGet("audio/{file}")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public IActionResult Audio(string file)
+    {
+        if (!_tts.TryResolveSafePath(file, out var fullPath) || !System.IO.File.Exists(fullPath))
+            return NotFound(ApiResponse.Fail(404, "audio not found"));
+        return PhysicalFile(fullPath, "audio/mpeg");
+    }
+
+    /// <summary>P2A 语音对话：multipart WAV（16kHz/16bit/mono ≤10s）→ ASR+LLM+TTS 单端点闭环。</summary>
+    /// <remarks>响应 { transcript, reply, engine, audioUrl }；audioUrl=null 表示
+    /// TTS 失败（文本仍可用）。错误：非 WAV/无话音 400、ASR 未配置 503、
+    /// LLM 故障 502、超限 413。会话上下文 Redis chat:{deviceId} 最近 12 轮
+    /// TTL 30 分钟，Redis 不可用降级单轮；回复 MP3 落 data/audio/chat_*.mp3
+    /// （ChatAudioCleanupJob 每小时回收超 1 小时文件）。</remarks>
+    [HttpPost("chat")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public async Task<IActionResult> Chat(IFormFile file, CancellationToken ct)
+    {
+        var device = (Device)HttpContext.Items["Device"]!;
+        if (file == null || file.Length == 0)
+            return BadRequest(ApiResponse.Fail(400, "empty file"));
+        if (file.Length > ChatService.MaxWavBytes)
+            return StatusCode(413, ApiResponse.Fail(413, "file too large"));
+
+        using var ms = new MemoryStream();
+        await file.CopyToAsync(ms, ct);
+
+        ChatReply reply;
+        try
+        {
+            reply = await _chatSvc.ConverseAsync(device.Id, ms.ToArray(), ct);
+        }
+        catch (ChatException ex)
+        {
+            return StatusCode(ex.StatusCode, ApiResponse.Fail(ex.StatusCode, ex.Message));
+        }
+
+        return Ok(ApiResponse<ChatReply>.Ok(reply));
     }
 
     // ---- helpers ----

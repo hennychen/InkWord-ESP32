@@ -10,7 +10,19 @@
 #include "gpio_config.h"
 #include "epd_driver.h"
 #include "audio_player.h"
+#include "storage_manager.h"   /* P0C：speak 文件存在性预检 */
+#include "haptic.h"            /* P0C：缺音频短震反馈（替代测试音兜底） */
 #include "word_parser.h"
+#include "mic_recorder.h"      /* P1：跟读录音+上传 */
+#include "wifi_manager.h"      /* P1：跟读前置 Wi-Fi 检查 */
+#include "chat_mode.h"         /* P2B：对话模式任务生命周期 */
+#include "sync_client.h"       /* P2B：enter_chat 前置 Key 检查 */
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <stdlib.h>
+#include <string.h>           /* pron_flow_start strncpy（P1） */
+#include <sys/stat.h>           /* P2B：enter_chat SD 在位预检 */
+#include <errno.h>
 #include "learning_state.h"
 #include "reader_engine.h"   /* READER 模式：页序列/字号切换/进度恢复 */
 
@@ -21,6 +33,16 @@ static const char *TAG = "MODE";
 
 static study_mode_t s_current = MODE_FLASH;
 
+/* ---- 跟读评测编排（P1：听-跟一体流，任务化不阻塞按键） ---- */
+static volatile bool s_pron_active  = false; /* 任务在跑（录音/上传） */
+static volatile bool s_pron_showing = false; /* 结果/失败屏亮着等键退出 */
+static volatile bool s_pron_cancel  = false; /* 录音循环逐块检查的取消位 */
+static char s_pron_cloud_id[WORD_CLOUD_ID_MAX];
+
+/* main.cpp 导出（C++ → C，ui_render_word 引用同款先例） */
+extern void ui_render_pron(pron_state_t st, int total, const char *engine);
+extern void ui_render_current(void);
+
 /* 当前词索引（各模式独立游标演示，实际可扩展为独立游标） */
 static int s_cursor = 0;
 
@@ -29,7 +51,7 @@ static int s_cursor = 0;
 static bool s_reveal = true;
 
 static const char *s_names[MODE_COUNT] =
-    { "Flash", "Dictation", "Review", "Reader", "WrongBook", "收藏" };
+    { "Flash", "Dictation", "Review", "Reader", "WrongBook", "收藏", "AI Chat" };
 
 /* ---- 序列抽象：默认全词库，错词本换连错过滤视图，阅读换页序列 ---- */
 
@@ -38,6 +60,7 @@ static int seq_total(void)
     if (s_current == MODE_WRONGBOOK)  return learning_state_wrong_count();
     if (s_current == MODE_COLLECTION) return learning_state_collected_count();
     if (s_current == MODE_READER)     return reader_page_count();
+    if (s_current == MODE_CHAT)       return 0;  /* 对话无词序列（状态栏 0/0） */
     return word_parser_get_count();
 }
 
@@ -59,12 +82,13 @@ static int seq_word_index(int cursor)
 
 void study_mode_init(void)
 {
-    /* 从 NVS 恢复上次模式（错词本是临时视图，不接受恢复） */
+    /* 从 NVS 恢复上次模式（错词本/收藏/对话是临时视图，不接受恢复） */
     nvs_handle_t h;
     if (nvs_open("inkword", NVS_READONLY, &h) == ESP_OK) {
         uint8_t m = 0;
         if (nvs_get_u8(h, "last_mode", &m) == ESP_OK &&
-            m < MODE_COUNT && m != MODE_WRONGBOOK && m != MODE_COLLECTION) {
+            m < MODE_COUNT && m != MODE_WRONGBOOK && m != MODE_COLLECTION &&
+            m != MODE_CHAT) {
             s_current = (study_mode_t)m;
         }
         nvs_close(h);
@@ -101,10 +125,11 @@ static void apply_mode(study_mode_t mode)
 
 study_mode_t study_mode_switch_next(void)
 {
-    /* 跳过两个临时视图（do-while 保证至少前进一步，不会死循环） */
+    /* 跳过临时视图（do-while 保证至少前进一步，不会死循环） */
     do {
         s_current = (study_mode_t)((s_current + 1) % MODE_COUNT);
-    } while (s_current == MODE_WRONGBOOK || s_current == MODE_COLLECTION);
+    } while (s_current == MODE_WRONGBOOK || s_current == MODE_COLLECTION ||
+             s_current == MODE_CHAT);
     apply_mode(s_current);
     return s_current;
 }
@@ -112,7 +137,8 @@ study_mode_t study_mode_switch_next(void)
 void study_mode_set(study_mode_t mode)
 {
     if (mode < 0 || mode >= MODE_COUNT) return;
-    if (mode == MODE_WRONGBOOK || mode == MODE_COLLECTION) return;
+    if (mode == MODE_WRONGBOOK || mode == MODE_COLLECTION ||
+        mode == MODE_CHAT) return;
     apply_mode(mode);   /* 同模式重入也归零游标，与 switch_next 语义一致 */
 }
 
@@ -123,6 +149,87 @@ const char *study_mode_name(study_mode_t mode)
 
 /* ---- 模式相关渲染桩：实际由 UI 渲染模块填充 ---- */
 extern void ui_render_word(study_mode_t mode, int index);  /* 定义在 main.c */
+
+/* ---- 跟读评测编排（P1：听-跟一体流，任务化不阻塞按键） ----
+ * 反馈优先 haptic（PRD 5.4）：录音起一短震、≥60 双短震（HAPTIC_PASS
+ * 预留位正配）、<60 一长震（HAPTIC_FAIL）。网络失败丢弃本次不缓存
+ * （3s WAV 重录成本低于缓存复杂度，偏离 SPEECH 文档缓存项，计划裁定） */
+static void pron_task(void *arg)
+{
+    (void)arg;
+
+    /* 等发音播完（上限 8s：超长音频兜底；否则录音会采到喇叭声） */
+    int waited = 0;
+    while (audio_is_playing() && waited < 8000) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        waited += 100;
+    }
+    if (s_pron_cancel) goto restore;
+
+    ui_render_pron(PRON_STATE_RECORDING, 0, NULL);
+    haptic_event(HAPTIC_KEYPRESS);          /* 录音起一短震 */
+
+    uint8_t *wav = NULL;
+    size_t wav_len = 0;
+    int rc = mic_recorder_record(&wav, &wav_len, &s_pron_cancel, NULL, 3000);
+    if (rc == 0) {
+        ui_render_pron(PRON_STATE_SCORING, 0, NULL);
+        pron_result_t res;
+        rc = mic_recorder_upload(s_pron_cloud_id, wav, wav_len, &res);
+        free(wav);
+        if (rc == 0) {
+            LOG_I("pron %s score=%d engine=%s dur=%dms", s_pron_cloud_id,
+                  res.total, res.engine, res.duration_ms);
+            haptic_event(res.total >= 60 ? HAPTIC_PASS : HAPTIC_FAIL);
+            ui_render_pron(PRON_STATE_RESULT, res.total, res.engine);
+            s_pron_showing = true;
+            s_pron_active = false;
+            vTaskDelete(NULL);
+            return;
+        }
+    } else if (rc == -2) {
+        goto restore;                       /* 用户取消：不提示直接回词卡 */
+    }
+
+    /* 失败（录音/I2S/网络/解析；无声单独提示，rc 经 total 透传） */
+    haptic_event(HAPTIC_ERROR);
+    ui_render_pron(PRON_STATE_FAIL, rc, NULL);
+    s_pron_showing = true;
+    s_pron_active = false;
+    vTaskDelete(NULL);
+    return;
+
+restore:
+    s_pron_active = false;   /* 先清位再渲染（ui_render_word 检查 pron 态） */
+    s_pron_cancel = false;
+    ui_render_current();
+    vTaskDelete(NULL);
+}
+
+static void pron_flow_start(const char *cloud_id)
+{
+    strncpy(s_pron_cloud_id, cloud_id, sizeof(s_pron_cloud_id) - 1);
+    s_pron_cloud_id[sizeof(s_pron_cloud_id) - 1] = '\0';
+    s_pron_cancel = false;
+    s_pron_active = true;   /* 先置位再建任务（瞬间跑完竞态防护） */
+    if (xTaskCreate(pron_task, "pron", 6 * 1024, NULL, 4, NULL) != pdPASS) {
+        s_pron_active = false;
+        LOG_E("pron task create failed");
+    }
+}
+
+bool study_mode_pron_active(void)    { return s_pron_active; }
+bool study_mode_pron_ui_visible(void) { return s_pron_showing; }
+
+void study_mode_pron_any_key(void)
+{
+    if (s_pron_active) {
+        s_pron_cancel = true;   /* 任务收尾自恢复词卡 */
+    } else if (s_pron_showing) {
+        s_pron_showing = false;
+        ui_render_current();
+    }
+}
 
 /* ---- 语义动作处理 ---- */
 void study_mode_handle_action(int action)
@@ -146,24 +253,32 @@ void study_mode_handle_action(int action)
         LOG_D("confirm action in %s mode (reveal=%d)",
               s_names[s_current], s_reveal);
         break;
-    case 3: { /* speak：播放当前词音频 */
+    case 3: { /* speak：播放当前词音频（P0C 命名解析）。w->audio 人工
+               * 命名词库优先，否则按云端约定取 {cloud_id}.mp3；文件
+               * 缺失（含无 SD）短震反馈，不再回退测试音（TEMP 已移除）。
+               * 异步入队即返，存在性在此先行检查 */
         if (s_current == MODE_READER) return;  /* 书页无词音频 */
         const WordEntry *w = word_parser_get(seq_word_index(s_cursor));
-        if (w && w->audio[0]) {
-            char path[128];
+        char path[128] = { 0 };
+        if (w && w->audio[0])
             snprintf(path, sizeof(path), "%s/%s", AUDIO_DIR, w->audio);
-            if (audio_play_file(path) != 0) {
-                /* TEMP 2026-08-23 SD 卡未挂载时降级为测试音（验证后移除） */
-                LOG_W("audio file not found, playing test tone");
-                extern void audio_play_test_tone(void);
-                audio_play_test_tone();
-            }
-        } else {
-            /* TEMP 2026-08-23 无音频字段时播放测试音（验证后移除） */
-            LOG_W("no audio field, playing test tone");
-            extern void audio_play_test_tone(void);
-            audio_play_test_tone();
+        else if (w && w->cloud_id[0])
+            snprintf(path, sizeof(path), "%s/%s.mp3", AUDIO_DIR, w->cloud_id);
+
+        if (!path[0] || !storage_file_exists(path)) {
+            LOG_W("speak: no audio '%s' (cloud_id=%s)",
+                  w ? w->text : "?", (w && w->cloud_id[0]) ? w->cloud_id : "-");
+            haptic_event(HAPTIC_ERROR);
+            break;
         }
+        if (audio_play_file(path) != 0)
+            LOG_W("speak: enqueue rejected (recording suspended?)");
+
+        /* P1 听-跟一体流：云端词播完自动进跟读（本地词零打扰，仅播）。
+         * 前置 Wi-Fi/未在跑；录音等播完由 pron_task 自理 */
+        if (w && w->cloud_id[0] && wifi_is_connected() &&
+            !study_mode_pron_active() && !study_mode_pron_ui_visible())
+            pron_flow_start(w->cloud_id);
         break;
     }
     default:
@@ -232,6 +347,37 @@ void study_mode_exit_collection(void)
     s_cursor = 0;
     s_reveal = true;
     LOG_I("left collection");
+}
+
+bool study_mode_enter_chat(void)
+{
+    /* 前置：对话全程依赖网络（上传/下载）与 SD（回复 MP3 落盘播放）；
+     * 不满足由调用方（快捷菜单）给边界反馈，不进入 */
+    if (!wifi_is_connected() || !sync_has_device_key()) {
+        LOG_W("chat enter rejected: wifi=%d key=%d",
+              wifi_is_connected(), sync_has_device_key());
+        return false;
+    }
+    if (mkdir(AUDIO_DIR, 0775) != 0 && errno != EEXIST) {
+        LOG_W("chat enter rejected: no SD (errno=%d)", errno);
+        return false;
+    }
+    s_current = MODE_CHAT;
+    s_cursor = 0;
+    s_reveal = true;
+    chat_mode_enter();          /* 启动常驻对话任务（失败自退标志） */
+    if (!chat_mode_is_active()) return false;
+    LOG_I("entered chat mode");
+    return true;
+}
+
+void study_mode_exit_chat(void)
+{
+    chat_mode_request_exit();   /* 停播+置消位，任务循环边界静默收尾 */
+    s_current = MODE_FLASH;
+    s_cursor = 0;
+    s_reveal = true;
+    LOG_I("left chat mode");
 }
 
 bool study_mode_after_uncollect(void)

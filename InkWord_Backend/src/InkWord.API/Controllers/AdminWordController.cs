@@ -211,6 +211,17 @@ public class AdminWordController : ControllerBase
         return Ok(ApiResponse<object>.Ok(new { jobId }, "AI 生成任务已入队"));
     }
 
+    /// <summary>P0B 手动触发词条 TTS 批量合成（立即入 Hangfire 队列）。</summary>
+    /// <remarks>补齐 data/audio/{Id:N}.mp3 缺失词条；幂等可重复触发。</remarks>
+    [HttpPost("tts-generate")]
+    public IActionResult TtsGenerate([FromQuery] int limit)
+    {
+        limit = limit <= 0 || limit > 2000 ? 200 : limit;
+        var jobId = BackgroundJob.Enqueue<TtsJob>(
+            j => j.RunAsync(limit, CancellationToken.None));
+        return Ok(ApiResponse<object>.Ok(new { jobId }, "TTS 合成任务已入队"));
+    }
+
     /// <summary>待审建议分页（AiStatus=1；服务端解析 AiSuggestion 下发 diff 视图）</summary>
     [HttpGet("ai-pending")]
     public async Task<IActionResult> AiPending([FromQuery] int page, [FromQuery] int size, CancellationToken ct)

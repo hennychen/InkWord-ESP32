@@ -25,6 +25,11 @@ RUN dotnet publish src/InkWord.API/InkWord.API.csproj \
 # ---- Stage 2: Runtime ----
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 
+# P0B（2026-08-24）：TTS 管线依赖 ffmpeg（piper WAV → MP3 32k mono）。
+# piper 二进制与音色模型（~70MB）不入镜像层，volume 挂载 /data/piper。
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=builder /app/publish ./
 

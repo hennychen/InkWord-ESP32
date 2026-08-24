@@ -36,6 +36,21 @@ public static class JobRegistrar
             j => j.RunAsync(0, null, 500, CancellationToken.None),
             Cron.Daily(2),
             TimeZoneInfo.Local);
+
+        // P0B（2026-08-24）：每天 03:00 词条 TTS 批量合成（错开 AI 内容任务）。
+        // 补齐 data/audio/{Id:N}.mp3 缺失词条；幂等，引擎不可用时止损空转。
+        RecurringJob.AddOrUpdate<TtsJob>(
+            "nightly-tts",
+            j => j.RunAsync(2000, CancellationToken.None),
+            Cron.Daily(3),
+            TimeZoneInfo.Local);
+
+        // P2A（2026-08-24）：每小时回收过期对话音频（chat_*.mp3 超 1 小时）。
+        RecurringJob.AddOrUpdate<ChatAudioCleanupJob>(
+            "hourly-chat-audio-cleanup",
+            j => j.RunAsync(),
+            Cron.Hourly(),
+            TimeZoneInfo.Local);
     }
 }
 

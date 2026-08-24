@@ -48,6 +48,7 @@
 #include "srs_engine.h"
 #include "learning_state.h"
 #include "study_mode_machine.h"
+#include "chat_mode.h"    /* P2B：AI 对话模式（MODE_CHAT 按键转发/屏显） */
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
 #include "menu_ui.h"      /* 快捷菜单（功能菜单，长按中进入） */
@@ -205,6 +206,7 @@ static int ui_fit_font(const char *text, int start_size, int max_w)
  * ============================================================ */
 extern "C" void ui_render_word(study_mode_t mode, int index);  /* 下方定义 */
 extern "C" void ui_render_current(void);  /* 下方定义（menu_ui 恢复退出用） */
+extern "C" void ui_render_chat(chat_state_t st, const char *text);  /* 下方定义（ui_render_current 首帧分流） */
 
 /* 释义正文流（全档位单列）：释义 + 全角空格(U+3000) + 词根（单列无
  * 独立词根槽，词根随释义滚动分页；空释义时前导空白被断行核心
@@ -412,6 +414,8 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
     if (wifi_config_ui_is_active()) return; /* 配置页期间不绘制学习页 */
     if (lan_server_is_active()) return;     /* LAN 接收页期间不绘制学习页 */
     if (menu_ui_is_active()) return;        /* 快捷菜单期间不绘制学习页 */
+    if (study_mode_pron_active() ||
+        study_mode_pron_ui_visible()) return; /* P1 跟读三态屏独占内容区 */
 
     /* 阅读模式（P3）：index=页码，渲染走 reader_engine，词库空判断
      * 不适用；实时页码由内容区页脚承担（局刷不重画状态栏） */
@@ -485,10 +489,134 @@ extern "C" void ui_render_current(void)
     if (m == MODE_READER)
         /* 阅读模式恢复当前页（无书显示占位页），不回待机页 */
         ui_render_word(m, study_mode_seq_pos());
+    else if (m == MODE_CHAT) {
+        /* P2B 对话首帧：整屏全刷一次（状态栏 + 内容区）；环路内仅
+         * 内容区局刷（ui_render_chat），进/出各一次全刷红线 */
+        ui_draw_status(m);
+        ui_render_chat(chat_mode_state(), chat_mode_reply());
+        epd_gfx_flush();
+    }
     else if (word_parser_get_count() > 0)
         ui_render_word(m, 0);
     else
         standby_render_full();
+}
+
+/* P1 跟读评测三态屏显（pron_task 驱动；状态栏不动，内容区局刷 350ms
+ * 级，符合对话环路禁全刷红线。反哺 P2B：chat_mode 状态区同策略）。
+ * FAIL 态 total 复用透传错误码：-3=未听到话音，其余=网络/录音失败 */
+extern "C" void ui_render_pron(pron_state_t st, int total, const char *engine)
+{
+    if (wifi_config_ui_is_active() || lan_server_is_active() ||
+        menu_ui_is_active())
+        return;                              /* 顶层覆盖层期间不绘制 */
+
+    epd_gfx_fill_rect(0, UI_STATUS_H, epd_gfx_width(),
+                      epd_gfx_height() - UI_STATUS_H, EPD_GFX_WHITE);
+
+    char buf[32];
+    switch (st) {
+    case PRON_STATE_RECORDING:
+        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Speak now",
+                          EPD_GFX_BLACK,
+                          ui_fit_font("Speak now", 4, UI_BODY_MAX_W));
+        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
+                      "请跟读 · 按任意键取消", EPD_GFX_BLACK);
+        break;
+    case PRON_STATE_SCORING:
+        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Scoring...",
+                          EPD_GFX_BLACK, 2);
+        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
+                      "评分中", EPD_GFX_BLACK);
+        break;
+    case PRON_STATE_RESULT:
+        /* 大分数 + 通过判定（≥60，与 haptic 映射同阈值）+ 引擎角标
+         * （heuristic=基础评分 / gop=精细评分，SPEECH 文档约定） */
+        snprintf(buf, sizeof(buf), "%d", total);
+        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, buf, EPD_GFX_BLACK, 4);
+        epd_gfx_draw_text(UI_MARGIN_X + 90, UI_WORD_BASE,
+                          total >= 60 ? "Pass!" : "Try again",
+                          EPD_GFX_BLACK, 2);
+        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
+                      (engine && strcmp(engine, "gop") == 0)
+                          ? "精细评分 · 任意键返回" : "基础评分 · 任意键返回",
+                      EPD_GFX_BLACK);
+        break;
+    case PRON_STATE_FAIL:
+        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE,
+                          total == -3 ? "No audio" : "Failed",
+                          EPD_GFX_BLACK, 2);
+        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
+                      total == -3 ? "未听到跟读 · 请靠近再试"
+                                  : "评分失败 · 稍后再试",
+                      EPD_GFX_BLACK);
+        break;
+    }
+
+    epd_gfx_flush_window(0, UI_STATUS_H, epd_gfx_width(),
+                         epd_gfx_height() - UI_STATUS_H);
+    LOG_I("pron ui state=%d total=%d", (int)st, total);
+}
+
+/* P2B AI 对话屏显（chat_mode 任务驱动；状态区局刷同 ui_render_pron
+ * 策略，环路内禁全刷红线。语音优先、屏幕克制：仅状态词 + 末句回复
+ * ≤2 行（听不清时看屏）。三色面板 partial_enabled=false 零渲染，
+ * 纯语音+震动（与待机页轮换停用同款 UX 降级先例） */
+extern "C" void ui_render_chat(chat_state_t st, const char *text)
+{
+    if (!epd_gfx_partial_supported()) return;   /* 三色降级：纯语音+震动 */
+    if (wifi_config_ui_is_active() || lan_server_is_active() ||
+        menu_ui_is_active())
+        return;                              /* 顶层覆盖层期间不绘制 */
+
+    epd_gfx_fill_rect(0, UI_STATUS_H, epd_gfx_width(),
+                      epd_gfx_height() - UI_STATUS_H, EPD_GFX_WHITE);
+
+    switch (st) {
+    case CHAT_STATE_IDLE:
+        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "AI Chat",
+                          EPD_GFX_BLACK,
+                          ui_fit_font("AI Chat", 4, UI_BODY_MAX_W));
+        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
+                      "按中键说话 · 长按中键退出", EPD_GFX_BLACK);
+        break;
+    case CHAT_STATE_RECORDING:
+        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Listening...",
+                          EPD_GFX_BLACK, 2);
+        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
+                      "请说话 · 停顿即发送 / 中键立即发", EPD_GFX_BLACK);
+        break;
+    case CHAT_STATE_UPLOADING:
+        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Sending...",
+                          EPD_GFX_BLACK, 2);
+        break;
+    case CHAT_STATE_THINKING:
+        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Thinking...",
+                          EPD_GFX_BLACK, 2);
+        break;
+    case CHAT_STATE_PLAYING:
+        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Speaking",
+                          EPD_GFX_BLACK, 2);
+        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
+                      "中键打断重说", EPD_GFX_BLACK);
+        break;
+    case CHAT_STATE_NETFAIL:
+        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Offline",
+                          EPD_GFX_BLACK, 2);
+        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
+                      "网络不可用 · 按中键重试", EPD_GFX_BLACK);
+        break;
+    }
+
+    /* 末句回复 ≤2 行（状态词下方；text 空时跳过） */
+    if (text && text[0])
+        cjk_text_draw_wrap_page(UI_MARGIN_X, UI_BODY_TOP + 2 * UI_BODY_LH,
+                                UI_BODY_MAX_W, UI_MEAN_LEVEL, UI_BODY_LH, 2,
+                                0, text, EPD_GFX_BLACK);
+
+    epd_gfx_flush_window(0, UI_STATUS_H, epd_gfx_width(),
+                         epd_gfx_height() - UI_STATUS_H);
+    LOG_I("chat ui state=%d", (int)st);
 }
 
 /* P5 幻影按键吞除武装标志：按键唤醒的会话置位（setup），on_button 吞掉
@@ -513,6 +641,24 @@ static void on_button(nav_key_t id, button_event_t event)
     /* 快捷菜单激活时，按键全部转发（顶层覆盖层，与配网页同级语义） */
     if (menu_ui_is_active()) {
         menu_ui_on_button(id, event);
+        return;
+    }
+
+    /* P1 跟读评测期间：任意键取消录音 / 关闭结果屏（吞键，pron_task
+     * 或 any_key 自恢复词卡；短事务期间不进菜单/翻词） */
+    if (study_mode_pron_active() || study_mode_pron_ui_visible()) {
+        study_mode_pron_any_key();
+        return;
+    }
+
+    /* P2B AI 对话模式：按键全转发（中=开始/发送/打断重说；长按中或
+     * RST=请求退出由编排层执行——模式状态归 study_mode_machine） */
+    if (study_mode_current() == MODE_CHAT) {
+        if (!chat_mode_on_button(id, event)) {
+            haptic_event(HAPTIC_MODE);   /* 退出模式 50ms（进/出同档） */
+            study_mode_exit_chat();
+            ui_render_current();         /* 模式变化自然全刷回闪卡 */
+        }
         return;
     }
 

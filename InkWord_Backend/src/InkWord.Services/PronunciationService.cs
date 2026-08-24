@@ -19,7 +19,7 @@ public record PhonemeScore(string Phoneme, int Score, float StartSec, float EndS
 /// 静默检测）提供可用闭环：它能区分「读满/没读/环境噪声」，不具备
 /// 音素级辨析能力——Engine 字段显式标识，前端/固件据此降级提示。
 /// 协议（WAV 16kHz/16bit/mono ≤3s + POST /api/device/pronunciation）先行
-/// 冻结，固件端（INMP441 录音上传）按此对接。
+/// 冻结，固件端（ES8311 ADC 录音上传）按此对接。
 /// </summary>
 public class PronunciationService
 {
@@ -42,12 +42,15 @@ public class PronunciationService
 
     // ---- WAV 解析（RIFF/PCM 16bit/mono/16kHz）----
 
-    internal static short[] ParsePcm(byte[] wav)
+    internal static short[] ParsePcm(byte[] wav) => ParsePcm(wav, MaxBytes);
+
+    /// <summary>带上限变体：ChatService 对话档复用（10s/512KB，P2A）</summary>
+    internal static short[] ParsePcm(byte[] wav, int maxBytes)
     {
         if (wav.Length < 44 || wav[0] != 'R' || wav[1] != 'I' || wav[2] != 'F' || wav[3] != 'F')
             throw new InvalidDataException("not a RIFF/WAV file");
-        if (wav.Length > MaxBytes)
-            throw new InvalidDataException($"wav too large (>{MaxBytes / 1024}KB)");
+        if (wav.Length > maxBytes)
+            throw new InvalidDataException($"wav too large (>{maxBytes / 1024}KB)");
 
         // fmt 块：快速路径限标准 44B 头（"fmt "@12, size@16=16, "data"@36）；
         // 含额外块（LIST/fact）或非标 fmt 尺寸时按 RIFF 块遍历兑底

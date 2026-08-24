@@ -7,6 +7,9 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.AI" Version="9.10.2" />
+    <!-- P2A（2026-08-24）：sherpa-onnx C# 绑定（native 库随包分发），
+         ASR 转写与 M5 GOP 升级共用；模型文件走 volume 挂载不入包 -->
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.5" />
   </ItemGroup>
 
   <PropertyGroup>

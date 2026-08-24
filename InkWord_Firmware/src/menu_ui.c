@@ -32,6 +32,7 @@
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
 #include "lan_display_server.h"
+#include "audio_sync.h"     /* P0C：音频同步徽标/后台任务启动 */
 #include "learning_state.h"
 #include "study_mode_machine.h"
 #include "word_parser.h"
@@ -98,6 +99,7 @@ static const char *mu_mode_label(study_mode_t m)
 
 /* 前向声明（activate 引用 exit/二级页绘制；绘制区引用菜单项表） */
 static void menu_ui_exit(void);
+static void draw_main(bool partial);
 static void draw_mode(bool partial);
 static void draw_info(void);
 static void draw_keys(bool partial);
@@ -120,6 +122,21 @@ static void badge_mode(char *buf, size_t n)
 static void badge_wifi(char *buf, size_t n)
 {
     snprintf(buf, n, "%s", wifi_is_connected() ? "已连接" : "未连接");
+}
+
+/* 音频同步徽标：同步中「...」/未统计「?」/闲时「缺N/云总M」（纯 ASCII，
+ * TINY 档可显）；缺失数读 audio_sync 缓存，任务结束时自动更新 */
+static void badge_audio_sync(char *buf, size_t n)
+{
+    if (audio_sync_is_running()) {
+        snprintf(buf, n, "...");
+        return;
+    }
+    int miss = audio_sync_missing_cached();
+    if (miss < 0)
+        snprintf(buf, n, "?");
+    else
+        snprintf(buf, n, "%d/%d", miss, audio_sync_cloud_total());
 }
 
 /* ============================================================
@@ -165,6 +182,48 @@ static void act_lan(void)
     lan_server_enter_receive_page();
 }
 
+/* AI 对话（P2B）：前置预检在 study_mode_enter_chat 内（Wi-Fi/Key/SD），
+ * 不满足长震回学习页；满足则进入对话临时视图（首帧全刷由
+ * ui_render_current 的 MODE_CHAT 分流承担） */
+static void act_chat(void)
+{
+    menu_ui_exit();
+    if (!study_mode_enter_chat()) {
+        haptic_event(HAPTIC_ERROR);   /* 无网/未配 Key/无 SD：边界反馈 */
+        ui_render_current();
+        return;
+    }
+    haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
+    ui_render_current();
+}
+
+/* 音频同步：菜单内唯一非独占后台动作（不 exit 菜单，任务 6KB 栈串行
+ * 下载，徽标转「...」，完成双短震反馈）。确认时现算缺失数（阻塞
+ * ~1s@5000 词，墨水屏节奏可接受），全齐则不启动 */
+static void act_audio_sync(void)
+{
+    if (audio_sync_is_running()) {   /* 已在跑：边界拒绝 */
+        haptic_event(HAPTIC_ERROR);
+        return;
+    }
+    int miss = audio_sync_refresh_stats();
+    if (miss < 0) {                  /* 无 SD 卡 */
+        haptic_event(HAPTIC_ERROR);
+        return;
+    }
+    if (miss == 0) {                 /* 全齐：轻反馈 + 徽标回 0/N */
+        haptic_event(HAPTIC_KEYPRESS);
+        draw_main(true);
+        return;
+    }
+    if (audio_sync_start() != 0) {   /* Wi-Fi 断/未配 Key */
+        haptic_event(HAPTIC_ERROR);
+        return;
+    }
+    haptic_event(HAPTIC_MODE);
+    draw_main(true);                 /* 徽标转「...」，任务后台跑 */
+}
+
 static void act_info(void)
 {
     s_page = MU_PAGE_INFO;
@@ -178,12 +237,14 @@ static void act_keys(void)
     draw_keys(false);
 }
 
-/* 一期 7 项（二期设置/词书：数组追加即扩展点） */
+/* 一期 9 项（二期设置/词书：数组追加即扩展点） */
 static const mu_item_t s_items[] = {
-    { "收藏列表",   badge_collected, act_collection },
-    { "模式选择",   badge_mode,      act_modesel },
-    { "Wi-Fi 配网", badge_wifi,      act_wifi },
-    { "AP 配网门户", NULL,           act_portal },
+    { "收藏列表",   badge_collected,  act_collection },
+    { "模式选择",   badge_mode,       act_modesel },
+    { "AI 对话",    NULL,             act_chat },
+    { "音频同步",   badge_audio_sync, act_audio_sync },
+    { "Wi-Fi 配网", badge_wifi,       act_wifi },
+    { "AP 配网门户", NULL,            act_portal },
     { "LAN 接收页", NULL,            act_lan },
     { "设备信息",   NULL,          act_info },
     { "按键说明",   NULL,          act_keys },
@@ -389,6 +450,9 @@ static const mu_keyrow_t s_keys[] = {
     { "中",     "发音" },
     { "SET",    "遮蔽 / 取消收藏" },
     { "RST",    "回首词 / 退出视图" },
+    { NULL,     "[ AI 对话 ]" },
+    { "中",     "说话·发送·重说" },
+    { "RST",    "退出回闪卡" },
     { NULL,     "[ 待机页 ]" },
     { "中",     "拉天气 / 功能菜单" },
     { "SET",    "轮换引文" },
