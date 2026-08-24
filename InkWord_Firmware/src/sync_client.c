@@ -73,6 +73,11 @@ bool sync_has_device_key(void)
     return s_device_key[0] != '\0';
 }
 
+const char *sync_get_device_key(void)
+{
+    return s_device_key;
+}
+
 /* 按 URL 前缀选传输：http: 明文 TCP（本地开发后端），其余 TLS + 证书包 */
 static void fill_cfg(esp_http_client_config_t *cfg, const char *url, int timeout_ms)
 {

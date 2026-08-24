@@ -1,9 +1,14 @@
 /**
  * @file audio_player.h
- * @brief I2S 音频驱动 (Task F-10)
+ * @brief I2S 音频驱动 (Task F-10；P0A 异步化 2026-08-24)
  *
- * 通过 MAX98357A 功放播放音频。配置标准飞利浦 I2S，44.1kHz/16bit。
- * 支持 WAV(PCM) 直接播放；MP3 经内置轻量解码后送 I2S。
+ * 通过 MAX98357A 功放播放音频。标准飞利浦 I2S，16bit。
+ * 支持 WAV(PCM) 直接播放；MP3 经 libhelix（src/mp3/）解码后送 I2S。
+ *
+ * 异步模型（音频播放异步化规范）：audio_play_file() 投递路径队列后
+ * 立即返回，专用音频任务消费播放——按键扫描/长按判定零阻塞；
+ * 重按打断重播由代际计数实现，audio_deinit() 等待任务退出后再卸载
+ * I2S（power_manager 深睡收口依赖此语义）。
  */
 #ifndef INKWORD_AUDIO_PLAYER_H
 #define INKWORD_AUDIO_PLAYER_H
@@ -16,13 +21,13 @@ extern "C" {
 #endif
 
 /**
- * @brief 初始化 I2S 总线与 MAX98357A。
+ * @brief 初始化 I2S 总线、播放队列与音频任务。
  * @return 0 成功，非 0 失败。
  */
 int audio_init(void);
 
 /**
- * @brief 释放 I2S 资源（停播）。
+ * @brief 停播、回收音频任务并释放 I2S 资源（阻塞至任务退出，≤2s）。
  */
 void audio_deinit(void);
 
@@ -32,18 +37,21 @@ void audio_deinit(void);
 int audio_set_sample_rate(uint32_t sample_rate);
 
 /**
- * @brief 播放 SD 卡中的音频文件。(F-10)
- *        支持 .wav 与 .mp3，依据扩展名自动选择解码路径。
- * @param path 绝对路径，如 "/sdcard/audio/hello.mp3"
- * @return 0 成功，非 0 失败（文件不存在/解码错误）。
+ * @brief 异步播放：路径入队立即返回（按键回调上下文安全）。
+ *        正在播放时自动打断当前曲目改播新路径（重按打断重播）。
+ * @param path 绝对路径，如 "/sdcard/audio/xxx.mp3"（.wav/.mp3）
+ * @return 0 已入队；非 0 参数错误/未初始化/录音让渡期被拒。
  */
 int audio_play_file(const char *path);
 
-/** 向后兼容别名（任务清单命名） */
-#define audio_play_mp3(p) audio_play_file(p)
+/**
+ * @brief 同步播放（阻塞至播完或被打断）。测试/诊断场景用，
+ *        勿在按键回调上下文调用（会阻塞按键扫描）。
+ */
+int audio_play_file_sync(const char *path);
 
 /**
- * @brief 停止当前播放（供按键打断用）。
+ * @brief 停止当前播放并清空待播队列（供按键打断/深睡收口）。
  */
 void audio_stop(void);
 
@@ -53,10 +61,16 @@ void audio_stop(void);
 bool audio_is_playing(void);
 
 /**
- * @brief TEMP 2026-08-23 测试音（验证后移除）：生成 440Hz/1s 正弦波。
- *        SD 卡未挂载时用于验证功放链路。
+ * @brief I2S 总线让渡（M5.2 跟读录音 / P2B 对话录音复用 I2S0）：
+ *        on=true 打断在播曲目并等待退出，此后播放请求被拒；
+ *        on=false 恢复接收。录音结束后须调 audio_bus_reconfigure()。
  */
-void audio_play_test_tone(void);
+void audio_suspend(bool on);
+
+/**
+ * @brief 录音占用 I2S0 后恢复播放侧配置（44.1k/16bit mono 重装）。
+ */
+int audio_bus_reconfigure(void);
 
 #ifdef __cplusplus
 }

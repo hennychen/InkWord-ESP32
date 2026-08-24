@@ -50,6 +50,11 @@ void sync_set_device_key(const char *key);
 bool sync_has_device_key(void);
 
 /**
+ * @brief 读取设备认证 Key（audio_sync 等复用 X-Device-Key 头模式）。
+ */
+const char *sync_get_device_key(void);
+
+/**
  * @brief 首次注册：POST /api/device/register（后端按 MAC 幂等，重复
  *        注册返回既有 ApiKey）。成功后调用方应持久化到 NVS。
  * @param mac         十六进制 MAC 字符串（如 "AABBCCDDEEFF"）。

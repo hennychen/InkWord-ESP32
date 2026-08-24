@@ -68,14 +68,44 @@ extern "C" {
 #define EPD_RESET_PIN       (13)    /**< 硬复位 (J2 pin8) */
 
 /* ============================================================
- * I2S 音频输出 -> MAX98357A 功放
- * 标准飞利浦 I2S 模式
+ * I2S 音频（ES8311+NS4150B CODEC 模块，2026-08-24 取代 MAX98357A）
+ * 播放/录音共用 I2S0 四线（模块排针 SCLK/LRCK/DIN/DOUT）；
+ * codec 寄存器经 I2C 配置（见 ES8311 段）；NS4150B CTRL 板载
+ * R10 上拉常开，无 MCU 控制线（关功放需挪 R10→R11 焊盘）
  * ============================================================ */
-#define I2S_BCK_PIN         (4)     /**< I2S BCLK  (位时钟) */
-#define I2S_WS_PIN          (5)     /**< I2S LRCK  (字选择/左右声道) */
-#define I2S_DATA_OUT_PIN    (6)     /**< I2S DOUT  (数据输出) */
+#define I2S_BCK_PIN         (4)     /**< I2S BCLK/SCLK (位时钟) → 模块 SCLK */
+#define I2S_WS_PIN          (5)     /**< I2S LRCK  (字选择/左右声道) → 模块 LRCK */
+#define I2S_DATA_OUT_PIN    (6)     /**< I2S DOUT (数据输出) → 模块 DIN（codec DAC 侧） */
 #define I2S_SAMPLE_RATE     (44100) /**< 默认采样率 */
 #define I2S_SAMPLE_BITS     (16)    /**< 每采样位数 */
+
+/* ============================================================
+ * ES8311 codec（I2C 寄存器配置 + 录音数据线，2026-08-24）
+ * 模块：ES8311+NS4150B CODEC（板载模拟麦 + FPC 外接麦 + 3W 功放，
+ * 5V 供电；无 5V 可接 3V3 功率稍小）。38/39 自「I2C 预留」正式定档。
+ * I2C 地址：7bit 0x18（CE 脚低电平接法，原理图默认；若实测 NACK
+ * 可能焊选 0x19——es8311_probe 双地址自适应）。
+ * MCLK 省线方案：默认不接 MCLK（-1），ES8311 REG01 选 SCLK 作主
+ * 时钟源（esp-adf LyraT-Mini 同款）；若实测时钟不稳，接任意空
+ *  GPIO 并改此宏 >0（i2s_pin_config_t.mck_io_num 输出 256×fs）。
+ * ============================================================ */
+#define ES8311_I2C_NUM      (0)     /**< I2C 控制器（本项目唯一 I2C 主设备） */
+#define ES8311_I2C_SDA_PIN  (38)    /**< → 模块 SDA（板载 2.2k 上拉） */
+#define ES8311_I2C_SCL_PIN  (39)    /**< → 模块 SCL */
+#define ES8311_I2C_FREQ_HZ  (100000)
+#define ES8311_I2C_ADDR     (0x18)  /**< 7bit（CE=GND）；探测自适应 0x19 */
+#define ES8311_MCLK_PIN     (-1)    /**< -1=SCLK 作 mclk 源（省线）；>0=独立 MCLK 脚 */
+
+/* ============================================================
+ * 录音数据线（ES8311 ADC → MCU；原 INMP441 方案 2026-08-24 废弃）
+ * 全双工共享时钟：SCLK/WS 与播放共 GPIO4/5，仅数据线区分方向；
+ * DOUT 首选 GPIO11，前置条件：BS 省线（J2-10 板侧短接 GND、
+ * EPD_BS_PIN 改 -1 重烧）；未省 BS 线时备选 GPIO38/39 已被 I2C
+ * 占用（ES8311 方案下无备选，必须省 BS 线）。
+ * ⚠ AI_SPEECH_ASSESSMENT §3.1 早期建议的 GPIO7 已被 EPD_SCK_PIN
+ * 占用（WIRING 全 GPIO 冲突校验勘误），不可用。
+ * ============================================================ */
+#define I2S_DATA_IN_PIN     (11)    /**< ES8311 DOUT(ASDOUT) → MCU 输入 */
 
 /* ============================================================
  * 五向导航按键（无源开关，2026-08 取代 6 独立按键方案）

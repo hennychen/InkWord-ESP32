@@ -19,6 +19,28 @@ idf_component_register(
         "panels/panel_opm021eb.cpp"          # 2.13" 122x250 BW 骨架（OPM021EB，bring-up 待硬件，2026-08-23）
         "panels/panel_e042a13bw.cpp"         # 4.2" 400x300 BW 骨架（E042A13-A0 黑白版，bring-up 待硬件，2026-08-23）
         "audio_player.c"
+        "audio_sync.c"       # P0C：词条发音音频同步（http/TLS 分流同 ota_fill_cfg）
+        "es8311.c"           # ES8311 codec I2C 寄存器驱动（2026-08-24，取代 MAX98357A+INMP441）
+        "mic_recorder.c"      # P1：ES8311 ADC 跟读录音+multipart 上传（I2S 全双工，DOUT=GPIO11）
+        "chat_mode.c"        # P2B：AI 对话五态状态机（录音 10s/上传/下载/播放，临时视图）
+        # libhelix MP3 解码器（P0A 2026-08-24 源码内嵌，arduino 框架
+        # 经 src/ 递归编译，本清单为 ESP-IDF CMake 迁移双轨同步；
+        # 上游来源与裁剪说明见 mp3/README.md）
+        "mp3/bitstream.c"
+        "mp3/buffers.c"
+        "mp3/dct32.c"
+        "mp3/dequant.c"
+        "mp3/dqchan.c"
+        "mp3/huffman.c"
+        "mp3/hufftabs.c"
+        "mp3/imdct.c"
+        "mp3/mp3dec.c"
+        "mp3/mp3tabs.c"
+        "mp3/polyphase.c"
+        "mp3/scalfact.c"
+        "mp3/stproc.c"
+        "mp3/subband.c"
+        "mp3/trigtabs.c"
         "button_handler.c"
         "haptic.c"
         "storage_manager.c"
