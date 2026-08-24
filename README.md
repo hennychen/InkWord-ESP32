@@ -18,13 +18,15 @@
 | 待硬件接线 | 固件就绪，等元件/接线（功放+喇叭、马达、SD 卡） | 3 项 |
 | V2.x 规划 | 深睡功耗、BLE 配网等下一代特性 | 6 项 |
 
-**AI 辅助学习接入（2026-08-22，三路径）**：
+**AI 辅助学习接入（2026-08-22，三路径；2026-08-24 音频闭环 + 对话模式）**：
 
 | 路径 | 内容 | 状态 |
 |:---|:---|:---:|
 | B：LLM 词库增强 | Ollama（可切云 API）批量生成分级例句/词根助记/易混辨析，管理端 diff 审核后写入（防幻觉红线） | ✅ 后端+前端 |
 | A：FSRS 替换 SM-2 | 后端 FsrsService 影子运行 + 对比看板；固件 srs_engine 已换 FSRS-4.5（LR03），双端共享对拍向量全绿 | ✅ 影子运行中 |
-| C：语音跟读评测 | 发音评测协议端点 + 设计文档（sherpa-onnx 升级路径）；固件待 INMP441 接线 | ◐ 后端先行 |
+| C：语音跟读评测 | 发音评测端到端（固件听-跟一体流 + heuristic 引擎，GOP 升级路径已就绪）；待 ES8311 实机（docs/AI_SPEECH_ASSESSMENT.md） | ◐ 待实机 |
+| 发音音频闭环 | Piper TTS 批量合成 + 按需下发 + SD 自动同步（P0A/B/C；中键真实发音，libhelix MP3 异步播放） | ✅ 代码完成（待硬件实机） |
+| AI 语音对话 | ASR(sherpa-onnx)+LLM+TTS 单端点编排（P2A）；固件 MODE_CHAT 五态状态机、语音优先/三色屏降级（P2B，docs/AI_CHAT_MODE.md） | ◐ 待 ES8311 实机 |
 
 ### 1.2 里程碑（对照 PRD §九）
 
@@ -41,10 +43,10 @@
 
 | 端 | 构建命令 | 状态 | 最近验证 |
 |:---|:---|:---:|:---|
-| 固件（生产/演示双环境） | `pio run -e inkword-s3 -e inkword-s3-demo` | ✅ | 2026-08-22（Flash 55% / RAM 17%；native-test 对拍 2/2 绿） |
-| 固件算法单测（host） | `pio test -e native-test` | ✅ 2/2 | 2026-08-22（FSRS 12 序列 76 向量对拍 + 锚点） |
+| 固件（8 面板构建矩阵） | `pio run`（8 env：生产/演示/三色/BW 骨架） | ✅ | 2026-08-24（Flash 76.9%；libhelix MP3 + audio_sync + mic_recorder + chat_mode 全量纳入） |
+| 固件算法单测（host） | `pio test -e native-test` | ✅ 2/2 | 2026-08-24（FSRS 对拍向量 + 锚点；mp3/chat 不入 filter 零污染） |
 | 固件音标修复（IPA 点阵） | clean 全量零警告 + wf0270 抽查 + native-test 2/2；真机 2407 词条 `/səˈsaɪəti/` 重音符/斜杠直渲（详见 InkWord_Firmware/README.md） | ✅ | 2026-08-24 |
-| 后端 | `dotnet build`（0 错误）＋ `dotnet test` 8/8 ＋ 本机运行冒烟（登录/影子链路/发音评测/AI 失败标记与复位闭环） | ✅ | 2026-08-23 |
+| 后端 | `dotnet build`（0 错误）＋ `dotnet test` 39/39 ＋ 本机运行冒烟（登录/影子链路/发音评测/AI 失败标记与复位闭环） | ✅ | 2026-08-24（P0B/P2A 增 Tts/Chat/Asr 编排与端点测试） |
 | M1 AI 真实生成验收 | Ollama qwen2.5:1.5b（brew 原生，Metal）：生成→待审→应用→驳回→导出全链路；Example≤108B / Root≤20B 红线合规 | ✅ | 2026-08-23 |
 | 云端 LLM 接入 | Provider=openai + CloudEndpoint（DeepSeek/Qwen/智谱三家实测）；kind=2 辨析链路通过 | ✅ | 2026-08-23 |
 | 管理后台 UI 实测 | 登录/看板对比图/词表 AI 徽标（含失败+复位交互）/生成弹窗/审核台空态浏览器全过 | ✅ | 2026-08-23 |
@@ -137,7 +139,7 @@ InkWord-ESP32/
 - **内存布局**（8MB PSRAM 三层共享）: 词池 4000 词×1096B（逐半降级兜底）＋ 词库 JSON 缓冲 2MB ＋ 阅读器书文件 ≤4MB（最坏 8.2MB 仅"满词库+大书"同时存在触顶）＋ 学习状态数组 4000×24B
 - **字体**: FreeSans 9/18/24pt（ASCII）+ 三级点阵中文字库 16/20/24px（3892 字/646KB bin 嵌入，Kaiti SC Bold 优先回退链，`tools/gen_cjk_font.swift` 生成）+ `cjk_text` 中英混排（CJK 按字断行 / ASCII 按词断行）
 - **存储**: NVS（LR03 sparse 学习状态：非默认词 21B/条、脏标记 5s 延迟落盘）+ SD 卡 SPI+FAT（待接线）
-- **音频**: I2S + MAX98357A（`audio_player.c`，待接线验证）
+- **音频**: I2S + ES8311+NS4150B CODEC（`audio_player.c`：WAV/MP3（libhelix 源码内嵌）异步任务队列播放，重按打断重播）＋ ES8311 ADC 录音（`mic_recorder.c`：全双工录音 3s 跟读/10s 对话双档）＋ 云端音频同步（`audio_sync.c`）
 - **网络**: Wi-Fi STA + SoftAP 配网门户（captive portal）+ LAN 网页直传文本/图片（浏览器端转码 1bpp）+ HTTP 同步 + OTA 双分区
 
 ### 5.2 后端（`InkWord_Backend/`）
@@ -247,7 +249,7 @@ cd InkWord_Firmware
 
 屏幕 9 根线（按转接板丝印）：SCK=GPIO7、SDO=GPIO8、D/C=GPIO9、CS=GPIO10、BS=GPIO11、RES=GPIO13、BUSY=GPIO12、3V3→J2-16(VCI)、GND→J2-1（必须共地）。⚠️ BS 只能接 GPIO11（固件驱动 LOW）或板侧短接 GND，绝不可悬空。
 
-外设：五向导航 UP/DOWN=GPIO1/2、LEFT/RIGHT=GPIO14/15、CENTER=GPIO21、SET/RST 侧键=GPIO42/40、COM→GND；音频 I2S=GPIO4/5/6（MAX98357A）；马达=GPIO41（MOS 驱动）；SD=SPI3 GPIO16/17/18/47。详见 `docs/WIRING_DIAGRAM.md`。
+外设：五向导航 UP/DOWN=GPIO1/2、LEFT/RIGHT=GPIO14/15、CENTER=GPIO21、SET/RST 侧键=GPIO42/40、COM→GND；音频 ES8311 CODEC I2C(38/39)+I2S(4/5/6/11)；马达=GPIO41（MOS 驱动）；SD=SPI3 GPIO16/17/18/47。详见 `docs/WIRING_DIAGRAM.md`。
 
 ---
 
@@ -269,6 +271,8 @@ cd InkWord_Firmware
 | 管理 | POST | `/api/admin/words/ai-generate` | AI 批量生成入队（kind 0 例句/1 词根/2 辨析，Hangfire 异步） |
 | 管理 | GET/POST | `/api/admin/words/ai-pending[/count]` `/ai-apply/{id}` `/ai-reject/{id}` | AI 建议审核（人工 diff 比对通过后才落词库字段，防幻觉红线）；`ai-reject` 兼复位生成失败词（AiStatus 3→0 重入队列） |
 | 设备 | POST | `/api/device/pronunciation` | 发音评测（WAV 16kHz/mono≤3s → 总分+音素明细，M5 路径 C） |
+| 设备 | GET | `/api/device/audio/{file}` | 词条/chat 音频下发（Piper TTS 产物，流式返回，X-Device-Key） |
+| 设备 | POST | `/api/device/chat` | AI 语音对话（WAV ≤10s/512KB → ASR+LLM+TTS 单端点 → reply/audioUrl，P2A） |
 
 > 统一响应包装 `ApiResponse{code=0 成功, message, data}`——前端判定 `code === 0`（非 200）。
 
@@ -325,11 +329,15 @@ NVS blob = {magic "LR03", count, used, lr_sparse_t[used]}
 | 词卡中文渲染（释义/词根/溯源标签行） | cjk_text.c + main.cpp | 混排断行、缺字占位框 |
 | LR03 sparse 学习状态（FSRS 字段） | learning_state.c | 评分/收藏重启保持、NVS 容量；旧 LR02 状态自动作废重建 |
 | haptic 事件表 | haptic.c | （需马达接线后） |
+| 词条音频同步 | audio_sync.c | 菜单「音频同步」缺 N/总 M 徽标，后台串行下载，网络熔断 |
+| 跟读评测（听-跟一体流） | mic_recorder.c + pron_task | 中键播完自动进跟读，三态屏 + 震动映射（待 ES8311 实机） |
+| AI 对话模式 | chat_mode.c（MODE_CHAT） | 五态状态机：中键三义（说话/发送/重说），三色屏纯语音降级（待 ES8311 实机） |
 
 ### 11.2 待硬件接线（固件就绪）
 | 项 | 接线 | 固件入口 |
 |:---|:---|:---|
-| 音频功放+喇叭（MAX98357A） | I2S GPIO4/5/6 | audio_player.c（兼提示音，蜂鸣器方案已取消） |
+| ES8311+NS4150B CODEC 模块 | I2C(38/39)+I2S(4/5/6/11)+5V | audio_player.c（WAV/MP3 异步队列播放）+ es8311.c（codec 驱动）+ mic_recorder.c（ADC 录音） |
+| （已取代 MAX98357A+INMP441 双件套，模块已购，驱动预写完成） | — | — |
 | 震动马达 | GPIO41 + MOS | haptic.c |
 | SD 卡（书籍/音频/词库文件） | SPI3 GPIO16/17/18/47 | storage_manager.c |
 
@@ -337,8 +345,8 @@ NVS blob = {magic "LR03", count, used, lr_sparse_t[used]}
 | 项 | 依赖/说明 |
 |:---|:---|
 | SoC 深睡 + 定时唤醒刷新 | 功耗指标兑现（<5µA 待机/≥15 天续航）；需与待机页引文轮换分模式定义 |
-| I2S 全双工 + 语音跟读评测 | INMP441 麦克风（DOUT 首选 GPIO11 前置 BS 省线，退路 38/39）；协议已冻结（POST /api/device/pronunciation，见 docs/AI_SPEECH_ASSESSMENT.md），固件待接线 |
-| 提示音 | 经 MAX98357A 播短样本（依赖功放接线） |
+| I2S 全双工 + 语音跟读评测实机验收 | ES8311 模块到货接线后（§11.2）；固件/后端均已交付（docs/AI_SPEECH_ASSESSMENT.md §4 勾选），GOP 音素级升级路径基建已随 P2A 就绪 |
+| 提示音 | 经 ES8311 DAC 播短样本（依赖模块接线） |
 | BLE 配网主链路 | ble_provision.cpp 已有雏形；需 BLE/Wi-Fi coex 或 IDF 迁移评估 |
 | 设备挑战-应答认证 | 现为静态 ApiKey |
 | 学习分析按用户/时间筛选 | 后端 wrong-top/srs-distribution 已通，筛选维度 V2 加 |
@@ -356,7 +364,7 @@ NVS blob = {magic "LR03", count, used, lr_sparse_t[used]}
 | 文档 | 内容 |
 |:---|:---|
 | `docs/PRD_V2.1.md` | 需求全集：功能树/硬件 BOM/GPIO 分配/接口契约/验收标准/里程碑/风险 |
-| `docs/AI_SPEECH_ASSESSMENT.md` | 语音跟读评测：协议冻结（WAV 上行/JSON 评分）/INMP441 省线接线/I2S 全双工纪律/sherpa-onnx 升级路径 |
+| `docs/AI_SPEECH_ASSESSMENT.md` | 语音跟读评测：协议冻结（WAV 上行/JSON 评分）/ES8311 CODEC 接线/I2S 全双工纪律/sherpa-onnx 升级路径 |
 | `docs/WIRING_DIAGRAM.md` | 接线全集：屏幕/按键/音频/马达/SD + 历史演变速记 |
 | `docs/PANEL_COMPAT_DESIGN.md` | 多屏兼容设计：面板描述符/五层架构/色彩平面与调色板/构建矩阵/Phase 0-8 迁移路径 |
 | `InkWord_Firmware/README.md` | 固件详解：模块/构建/刷新策略/词库扩容与内存布局 |
