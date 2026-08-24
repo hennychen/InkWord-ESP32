@@ -103,7 +103,7 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 | — | CS2 | 片选 2 | **v1.4 新增**，双芯片屏用，DEPG0370 悬空即可 |
 
 > **v1.4 关键差异**：
-> 1. **无 BS 引脚**：板上硬接 4 线 SPI，`EPD_BS_PIN` 改 -1，GPIO11 释放给 INMP441 麦克风；
+> 1. **无 BS 引脚**：板上硬接 4 线 SPI，`EPD_BS_PIN` 改 -1，GPIO11 释放给 ES8311 DOUT；
 > 2. **自主升压**：板上自带振荡器，上电 3V3 即开始升压，不再依赖 COG GDR 输出，
 >    升压与 COG 型号解耦，换屏不用重新调时序；
 > 3. **三合一 FPC**：24P/26P/34P 排线均可接入，一块板通吃主流尺寸；
@@ -111,6 +111,55 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 >
 > **上板验证**：接 3V3 后测 FPC 座 PREVGH/PREVGL 测试点，
 > PREVGH 应 >10V，PREVGL 应 < -5V（无需插屏即可验证升压电路）。
+
+### 1.3 ES8311+NS4150B CODEC 音频模块接线（2026-08-24，取代 MAX98357A+INMP441）
+
+> 板载 ES8311 codec（I2C 寄存器配置）+ NS4150B 3W 模拟功放一体模块。
+> 播放：DAC→NS4150B→喇叭；录音：板载/外接模拟麦→ADC→DOUT。
+> MCLK 省线：不接 MCLK，REG01 bit7=1 选 SCLK 作内部主时钟源。
+> NS4150B CTRL 板载 R10 上拉常开，无 MCU 控制线。
+> 供电：5V 优先（无 5V 可接 3V3，功率稍小）。
+> 固件驱动：[`src/es8311.c`](src/es8311.c)（移植自 esp-adf MIT，双地址自适应）。
+
+```
+  ESP32-S3              ES8311+NS4150B CODEC           喇叭
+  ┌────────┐           ┌──────────────┐          ┌───────────┐
+  │        │     黄线   │ SDA          │          │ 4Ω 3W     │
+  │ GPIO38 ├──────────►│              │          │           │
+  │        │     白线   │ SCL          │          │           │
+  │ GPIO39 ├──────────►│              │          │           │
+  │        │     黄线   │ SCLK (BCLK)  │          │           │
+  │ GPIO4  ├──────────►│              │          │           │
+  │        │     绿线   │ LRCK (WS)    │          │           │
+  │ GPIO5  ├──────────►│              │          │           │
+  │        │     蓝线   │ DIN          │          │           │
+  │ GPIO6  ├──────────►│              │    +──►│  +        │
+  │        │     紫线   │ DOUT (ASDOUT)│    └──►│  -        │
+  │ GPIO11 │◄──────────┤              │          │           │
+  │        │     红线   │ 5V           │          │           │
+  │ 5V     ├──────────►│              │          └───────────┘
+  │        │     黑线   │ GND          │
+  │ GND    ├──────────►│              │
+  └────────┘           └──────────────┘
+```
+
+| ESP32-S3 引脚 | 模块信号 | 总线 | 说明 |
+|:---:|:---:|:---:|:---|
+| GPIO38 | SDA | I2C | I2C 数据（板载 2.2k 上拉） |
+| GPIO39 | SCL | I2C | I2C 时钟（地址 0x18，CE=GND） |
+| GPIO4 | SCLK (BCLK) | I2S | 位时钟（播放/录音共享） |
+| GPIO5 | LRCK (WS) | I2S | 字选择 |
+| GPIO6 | DIN | I2S | MCU→codec DAC（播放方向） |
+| GPIO11* | DOUT (ASDOUT) | I2S | codec ADC→MCU（录音方向）；*前置 BS 省线 |
+| 5V | 5V | 电源 | 模块供电（无 5V 可接 3V3） |
+| GND | GND | 电源 | 共地 |
+
+> **I2C 线长**：SDA/SCL ≤5cm（说明书要求）。
+> **采样率**：播放 44.1kHz/16bit；录音 16kHz/32bit 槽（16bit 有效数据居高位，固件 `>>16` 截取）。
+> **PGA 增益**：默认档 3（18dB），可调 0~7（0/6/12/18/24/30/36/42dB）。
+> **MCLK 省线**：不接 MCLK 线，ES8311 内部从 SCLK 生成主时钟（esp-adf LyraT-Mini 同款方案）。
+> **DOUT 前置条件**：BS 省线后 GPIO11 释放（`EPD_BS_PIN=-1`），详见 §1.2 铁律。
+> 详细接线图见 [`../docs/WIRING_DIAGRAM.md`](../docs/WIRING_DIAGRAM.md) §2.2/§2.7。
 
 ---
 
@@ -130,11 +179,14 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 | — BUSY | GPIO12 | 忙信号（LOW=忙） |
 | — VCI/GND | 3V3 / GND | 供电与共地（必须！） |
 | — CS2 | — | **仅 v1.4**：双芯片屏片选 2，DEPG0370 悬空 |
-| **I2S 音频** | | 标准飞利浦 I2S |
-| — BCLK | GPIO4 | 位时钟 |
-| — LRCK | GPIO5 | 字选择 |
-| — DOUT | GPIO6 | 数据输出 |
-| — DIN | GPIO11 | INMP441 数据输入（仅 v1.4 驱动板：BS 板上硬接释放该脚；EVK011 下被 BS 占用） |
+| **I2S 音频**（ES8311 CODEC，播放/录音共享） | | 标准飞利浦 I2S |
+| — BCLK/SCLK | GPIO4 | 位时钟（播放/录音共享） |
+| — LRCK/WS | GPIO5 | 字选择 |
+| — DOUT→DIN | GPIO6 | 数据输出（MCU→codec DAC，播放方向） |
+| — DOUT(ASDOUT) | GPIO11 | 数据输入（codec ADC→MCU，录音方向；BS 省线后释放该脚） |
+| **I2C 控制**（ES8311 寄存器配置） | | |
+| — SDA | GPIO38 | I2C 数据（板载 2.2k 上拉） |
+| — SCL | GPIO39 | I2C 时钟（地址 0x18） |
 | **五向导航开关** | | 无源开关，上拉输入，COM 接地，五向全 RTC 域可深睡 |
 | — UP | GPIO1 | 上一条 / 长按清残影全刷 |
 | — DOWN | GPIO2 | 下一条 / 长按切换学习模式 |
@@ -151,7 +203,7 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 
 > ⚠️ SD 卡引脚勿与墨水屏混淆：GPIO10/12/13 全部为 EPD 占用
 > (CS/BUSY/RST)，SD 必须用 GPIO16/17/18/47。
-> v1.4 方案下 GPIO11 释放（BS 硬接），可改作 INMP441 麦克风 DOUT。
+> v1.4 方案下 GPIO11 释放（BS 硬接），已定档 ES8311 DOUT（录音数据输入）。
 
 ## 多屏切换与新屏适配（2026-08-22）
 
@@ -229,23 +281,23 @@ VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `i
 | **主入口** | [`main.cpp`](src/main.cpp) | 启动流程编排、按键路由、单词卡片 UI 渲染（局刷/全刷策略）、后台心跳/OTA任务 |
 | **日志** | [`debug_log`](src/debug_log.h) | 统一 LOG_I / LOG_W / LOG_E / LOG_D 宏封装 |
 | **屏幕驱动** | [`epd_driver`](src/epd_driver.h) + [`epd_panel`](src/epd_panel.h) + `src/panels/*` | 多屏注册表架构：面板单元自包含驱动序列（ops 函数表），L3 渲染层（canvas 转置/双平面展开/局刷调度）面板无关；epd_gfx_* C 接口；双坐标体系（面板物理坐标 / GFX 层横屏坐标，gfx_rotation 派生） |
-| **音频播放** | [`audio_player`](src/audio_player.h) + `src/mp3/`（libhelix 内嵌） | I2S + MAX98357A, 44.1kHz/16bit, WAV/MP3 异步任务队列播放（提交即返、重按打断重播；P0A） |
+| **音频播放** | [`audio_player`](src/audio_player.h) + `src/mp3/`（libhelix 内嵌） | I2S + ES8311 CODEC DAC, 44.1kHz/16bit, WAV/MP3 异步任务队列播放（提交即返、重按打断重播；P0A） |
 | **音频同步** | [`audio_sync`](src/audio_sync.h) | 云端词条音频补齐：`{cloud_id}.mp3` 缺失串行下载（tmp+rename 防半文件），功能菜单入口 + 「缺 N/总 M」徽标（P0C） |
-| **麦克风录音** | [`mic_recorder`](src/mic_recorder.h) | INMP441 全双工录音（录音期 TX 持续写静音零样本）；3s 跟读/10s 对话双档（send_now 说完即发、尾静音提前断），PSRAM 缓冲录完即释、就地组 WAV 头（P1/P2B） |
+| **麦克风录音** | [`mic_recorder`](src/mic_recorder.h) | ES8311 ADC 全双工录音（板载/FPC 模拟麦→DOUT=GPIO11；录音期 TX 持续写静音零样本）；3s 跟读/10s 对话双档（send_now 说完即发、尾静音提前断），PSRAM 缓冲录完即释、就地组 WAV 头（P1/P2B） |
 | **AI 对话** | [`chat_mode`](src/chat_mode.h) | MODE_CHAT 五态状态机（录音→上传→下载→播放；常驻任务+触发位），录音复用 mic_recorder、播放走 audio_play_file 零新路径，三色屏降级纯语音+震动（P2B，docs/AI_CHAT_MODE.md） |
 | **按键** | [`button_handler`](src/button_handler.h) | 五向导航开关轮询去抖, 区分短按 / 长按 (1.5s) |
 | **存储** | [`storage_manager`](src/storage_manager.h) | SD 卡 SPI 挂载至 `/sdcard`, 文件读写 |
 | **刷新调度** | [`refresh_scheduler`](src/refresh_scheduler.h) | 局刷计数, 达阈值例行全刷（学习页阈值 8；待机页引文轮换阈值 12 低频保养） |
 | **词库** | [`word_parser`](src/word_parser.h) | 解析 `words.json` 至 PSRAM 词池（4000 词；JSON 缓冲 2MB）；出厂内嵌兜底词库约 2400 条（`src/default_words.json` embed，无 SD 卡开箱即用，SD 卡 `words.json` 优先；生成链 [`tools/default_vocab`](../tools/default_vocab/README.md)） |
 | **SRS 引擎** | [`srs_engine`](src/srs_engine.h) | FSRS-4.5 间隔重复算法（M4 路径 A 2026-08-22；纯算法，与后端 FsrsService 对拍，`pio test -e native-test`） |
-| **学习状态** | [`learning_state`](src/learning_state.h) | 每词 FSRS stability/difficulty/连错/收藏；LR03 sparse NVS + 脏标记延迟落盘（旧 LR02 升级自动作废） |
-| **模式状态机** | [`study_mode_machine`](src/study_mode_machine.h) | 闪卡 / 听写 / 复习 / 阅读四模式切换 + 听-跟一体流（云端词播完自动进跟读评测，P1）+ AI 对话临时视图 MODE_CHAT 进出（P2B） |
+| **学习状态** | [`learning_state`](src/learning_state.h) | 每词 FSRS stability/difficulty/连错/收藏；LR03 sparse NVS + 脏标记延迟落盘（旧 LR02 升级自动作废）；到期词视图（due_count/due_at，会话 done bitmap 去重）；今日统计（新学/复习次数/连续天数，NVS lr_stats UTC+8 跨日结算，2026-08-24） |
+| **模式状态机** | [`study_mode_machine`](src/study_mode_machine.h) | 闪卡 / 听写 / 复习 / 阅读四模式切换（复习序列=FSRS 到期词，自评即出队）+ 听-跟一体流（云端词播完自动进跟读评测，P1）+ AI 对话临时视图 MODE_CHAT 进出（P2B） |
 | **CJK 字库/文本** | [`cjk_font`](src/cjk_font.h) + [`cjk_text`](src/cjk_text.h) | 三级点阵字库 bin（16/20/24px，3892 字，646KB 嵌入）+ UTF-8 混排绘制层（词卡释义/tag、阅读器、待机页共用；CJK 按字断行 / ASCII 按词断，墨迹盒变宽渲染；断行量测/分页绘制 API 与绘制同源，词卡释义分页基建） |
 | **Wi-Fi 联网** | [`wifi_manager`](src/wifi_manager.h) | 网络栈/STA 连接、NVS 凭据持久化、SoftAP、AP 扫描、快速+慢速断线重连、异步连接 |
 | **HTTP 同步** | [`sync_client`](src/sync_client.h) | 增量词库拉取、学习记录回传、心跳上报、天气拉取（附带校时） |
 | **OTA** | [`ota_manager`](src/ota_manager.h) | 双分区升级: 下载 / 校验 / 切换 / 回滚 |
 | **Wi-Fi 配置 UI** | [`wifi_config_ui`](src/wifi_config_ui.h) | 扫描列表 + QWERTY 软键盘配网向导（经功能菜单进入；独立任务+队列） |
-| **快捷菜单** | [`menu_ui`](src/menu_ui.h) | 长按中键进入的功能菜单九项：收藏列表/模式选择/AI 对话/音频同步/Wi-Fi 配网/AP 门户/LAN 接收页/设备信息/按键说明（三段式反选列表+徽标，几何按 layout_profile 档位运行期派生；回调内同步绘制，无任务无队列；设计见 [`docs/MENU_DESIGN.md`](../docs/MENU_DESIGN.md)） |
+| **快捷菜单** | [`menu_ui`](src/menu_ui.h) | 长按中键进入的功能菜单分组 12 行（2026-08-24：[学习] 收藏列表/模式选择/AI 对话、[同步] 音频同步/Wi-Fi 配网/AP 门户/LAN 接收页、[系统] 设备信息/按键说明；组头小字不可选中光标跳过）（三段式反选列表+徽标，几何按 layout_profile 档位运行期派生；回调内同步绘制，无任务无队列；设计见 [`docs/MENU_DESIGN.md`](../docs/MENU_DESIGN.md)） |
 | **LAN 直传/配网门户** | [`lan_display_server`](src/lan_display_server.h) | 设备端 HTTP 服务器 + 内嵌发送页 + Wi-Fi 配网页 + mDNS + SoftAP captive portal + DNS 劫持 |
 | **待机页** | [`standby_page`](src/standby_page.h) | 无词库时的《传习录》引文整页（引文独占：居中楷体 Bold 24px 点阵每 5 分钟轮换 + 右下角出处；HTTP Date+后端双校时、NVS 天气缓存；轮换默认局刷 + 差分/计数智能分流全刷防残影；深睡时钟 checkpoint/restore RTC 差分交接） |
 | **电源管理** | [`power_manager`](src/power_manager.h) | SoC 深睡 + 定时唤醒（P5）：无操作 10 分钟入睡全流程、唤醒原因分流、静默心跳会话入口（见下文「电源管理」节） |
@@ -280,7 +332,7 @@ setup() (Arduino)
 |------|------|
 | **闪卡** (FLASH) | 看词猜义，C 键发音 |
 | **听写** (DICTATION) | 听音拼写 |
-| **复习** (REVIEW) | SRS 到期词复习 |
+| **复习** (REVIEW) | FSRS 到期词紧凑词表（左词右义，会话去重）→中键词卡详情→左右自评即出队（2026-08-24 两态化） |
 | **阅读** (READER) | SD 卡 books 目录 TXT 阅读（16/20/24px 三级字号，进度记忆） |
 
 > 中键发音（P0C）：`w->audio` 人工命名词库优先，否则 `{cloud_id}.mp3`
@@ -723,15 +775,19 @@ httpd_uri_match_wildcard`），POST 精确注册；captive portal 探测域名 3
 
 | 键 | 短按 | 长按 |
 |----|------|------|
-| 上 | 上一条（释义多页时先翻上一释义页） | 清残影全刷 |
-| 下 | 下一条（释义多页时先翻下一释义页） | 切换学习模式 |
-| 中 | 发音（缺音频短震；云端词播完自动进跟读） | 进入功能菜单（收藏列表/模式选择/AI 对话/音频同步/Wi-Fi 配网/AP 门户/LAN 接收页/设备信息/按键说明，2026-08-24 九项） |
-| 左 | 自评「忘记」Q1（连错+1，>0 入错词本） | 进入 AP 直连/配网门户（手机连 InkWord-Setup 热点直传） |
-| 右 | 自评「简单」Q5（连错清零，错词本内移出） | 进入 LAN 接收页（同网浏览器直传） |
-| SET | 遮蔽/揭晓释义（闪卡自测，再按切换） | 收藏/取消当前词（已收藏词音标行右缘显 `*`；收藏视图内取消后移出序列、清空自动退回闪卡） |
-| RST | 回到当前模式第一条 | 临时视图进出（错词本：连错>0 过滤，答对移出/清空退回；收藏浏览：退出回闪卡；AI 对话：退出回闪卡） |
+| 上 | 上一条（释义多页时先翻上一释义页；复习列表态=选择上一词） | 清残影全刷 |
+| 下 | 下一条（释义多页时先翻下一释义页；复习列表态=选择下一词） | 切换学习模式 |
+| 中 | 发音（缺音频短震；云端词播完自动进跟读；复习列表态=进词卡详情） | 进入功能菜单（收藏列表/模式选择/AI 对话/音频同步/Wi-Fi 配网/AP 门户/LAN 接收页/设备信息/按键说明，分组 [学习]/[同步]/[系统]） |
+| 左 | 自评「忘记」Q1（连错+1，>0 入错词本；复习=自评出队） | 进入 AP 直连/配网门户（手机连 InkWord-Setup 热点直传） |
+| 右 | 自评「简单」Q5（连错清零，错词本内移出；复习=自评出队） | 进入 LAN 接收页（同网浏览器直传） |
+| SET | 遮蔽/揭晓（闪卡自测，再按切换；复习列表态忽略） | 收藏/取消当前词（已收藏词音标行右缘显 `*`；收藏视图内取消后移出序列、清空自动退回闪卡） |
+| RST | 回到当前模式第一条（复习列表态=回首行） | 临时视图进出（错词本：连错>0 过滤，答对移出/清空退回；收藏浏览：退出回闪卡；AI 对话：退出回闪卡） |
 
-> 释义遮蔽态右栏显示 `[SET] to reveal` 提示；翻词/切模式后自动回全显。
+> 遮蔽态（2026-08-24 重设计，中文提示取代英文）：闪卡族居中大问号「？」+
+> 「[SET] 揭晓」；听写模式藏词与音标、画首字母+拼写空格线（听音忆拼，
+> 提示「中键重播 · SET 揭晓」）；翻词/切模式后自动回全显。
+> 复习词表底部提示行：「中 详情 · 左/右 自评出队 · RST 回首行」；
+> 详情态自评后回列表，序列清空显空态页（今日无到期词）。
 > 释义分页（2026-08-23）：行数按屏高派生，超出一屏自动分页（多页时
 > 右下角页码指示）；上下键先词内翻页、到边界再翻词，换词/翻义/切
 > 模式页游标自动归零；SMALL 档（2.7"）为单列版式，词根随释义分页。
@@ -739,20 +795,22 @@ httpd_uri_match_wildcard`），POST 精确注册；captive portal 探测域名 3
 > 接收页 / portal 激活期间，**任意按键**退出并回到学习界面（portal 模式同时关热点回 STA）。
 > 接收页与配网期间学习页渲染自动屏蔽，直刷后会强制下次全刷，无残影/花屏风险。
 
-### 功能菜单（2026-08-23）
+### 功能菜单（2026-08-23；2026-08-24 分组化）
 
-长按中键（学习页/待机页）进入 `menu_ui`，一期九项（2026-08-24 增 AI 对话/音频同步）：**收藏列表**（徽标=收藏数，
-空收藏确认长震不进入；进入与错词本同构的收藏浏览临时视图）、**模式选择**（二级
-4 项列表，光标预定位当前模式，确认与长按下循环切换终态一致）、**AI 对话**
-（进 MODE_CHAT 临时视图，联网 + device key 前置校验，docs/AI_CHAT_MODE.md）、
-**音频同步**（徽标「缺 N/总 M」，后台串行下载云端词条 MP3）、**Wi-Fi 配网**、
-**AP 配网门户**、**LAN 接收页**、**设备信息**（固件版本/词库/收藏·错词/运行时长/IP/PSRAM）、
-**按键说明**（五组分页键位速查：学习页/收藏·错词视图/待机页/菜单内/AI 对话，含词卡 `*` 收藏标记含义）。
+长按中键（学习页/待机页）进入 `menu_ui`，分组 12 行 = 3 组头 + 9 项（组头
+16px 小字不可选中，光标循环跳过）：**[学习]** 收藏列表（徽标=收藏数，空收藏确认长震不进入；进入与错词本同构的收藏浏览临时视图）、模式选择（二级
+4 项列表，光标预定位当前模式，确认与长按下循环切换终态一致）、AI 对话
+（进 MODE_CHAT 临时视图，联网 + device key 前置校验，docs/AI_CHAT_MODE.md）；
+**[同步]** 音频同步（徽标「缺 N/总 M」，后台串行下载云端词条 MP3）、Wi-Fi
+配网、AP 配网门户、LAN 接收页；**[系统]** 设备信息（分页：学习概况 词库/
+收藏·错词/今日进度/连续学习天数 + 设备信息 版本/运行时长/IP/PSRAM，上/下
+翻页）、按键说明（六组分页键位速查：学习页/复习词表/收藏·错词视图/
+AI 对话/待机页/菜单内，含词卡 `*` 收藏标记含义）。
 
 | 键 | 主菜单 | 模式列表/信息页/按键说明页 |
 |----|--------|--------------------------|
-| 上/下 | 移动选择（循环滚动，局刷） | 模式列表：移动选择；信息页：忽略；按键说明页：翻页（循环） |
-| 中 | 确认/进入 | 模式列表：确认切换；信息页：返回主菜单；按键说明页：下一页 |
+| 上/下 | 移动选择（循环滚动，组头跳过，局刷） | 模式列表：移动选择；信息页：翻页（循环）；按键说明页：翻页（循环） |
+| 中 | 确认/进入 | 模式列表：确认切换；信息页：下一页；按键说明页：下一页 |
 | SET | 退出菜单（恢复原页面） | 返回上级 |
 | RST | 任意层级直接退出回学习页/待机页 | 同左 |
 | 长按 | 全部忽略（防误触） | 同左 |
@@ -783,7 +841,11 @@ InkWord_Firmware/
 │   ├── GxEPD2_374_DEPG0370.{cpp,h} # GxEPD2 面板类 (DEPG0370 专用初始化序列)
 │   ├── Fonts/Arial14pt7b.h    # 字体 (fontconvert 生成)
 │   ├── epd_driver.{cpp,h}      # 墨水屏驱动适配层 (epd_gfx_* C API)
-│   ├── audio_player.{c,h}      # I2S 音频
+│   ├── audio_player.{c,h}      # I2S 音频（ES8311 CODEC DAC，异步任务队列）
+│   ├── audio_sync.{c,h}        # 云端词条音频补齐（P0C）
+│   ├── es8311.{c,h}            # ES8311 CODEC 驱动（I2C 寄存器，移植自 esp-adf）
+│   ├── mic_recorder.{c,h}      # ES8311 ADC 录音（P1/P2B）
+│   ├── chat_mode.{c,h}         # AI 对话状态机（P2B）
 │   ├── button_handler.{c,h}    # 按键扫描去抖
 │   ├── storage_manager.{c,h}   # SD 卡存储
 │   ├── refresh_scheduler.{c,h} # 刷新调度
