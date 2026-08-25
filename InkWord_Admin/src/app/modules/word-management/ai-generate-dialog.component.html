@@ -14,6 +14,15 @@
       </mat-select>
     </mat-form-field>
 
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>科目（prompt 占位符，v1.5 全科入口）</mat-label>
+      <mat-select [(ngModel)]="subject">
+        @for (s of subjectOptions; track s) {
+          <mat-option [value]="s">{{ s }}</mat-option>
+        }
+      </mat-select>
+    </mat-form-field>
+
     <div class="form-row">
       <mat-form-field appearance="outline">
         <mat-label>标签过滤（可选）</mat-label>

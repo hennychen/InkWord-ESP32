@@ -129,6 +129,20 @@ export interface DailyActiveData {
   count: number;
 }
 
+// ── 今日学习统计（v1.3 T3.2）─────────────────────
+/** 今日学习统计（后端 TodayStatsResp，camelCase）。
+ * 口径近似：今日 = lastStudiedAt ≥ 当日 0 点；首学/复习以 reviewCount 1/>1 近似；
+ * 答对/答错以最后评分 lastQuality ≥/<3 近似（与固件 quality 口径一致）。 */
+export interface TodayStats {
+  activeDevices: number;
+  touchedRecords: number;
+  newWords: number;
+  reviewWords: number;
+  correctToday: number;
+  wrongToday: number;
+  avgQuality: number;
+}
+
 // ── WrongBook (P1) ──────────────────────────────────
 /** 错词排行条目（后端 WrongTopItem，camelCase） */
 export interface WrongTopItem {
@@ -144,14 +158,17 @@ export interface WrongTopResp {
 }
 
 // ── AI 内容增强（M1 路径 B，2026-08-22）─────────────────
-/** AI 批量生成触发：kind 0=分级例句 1=词根助记 2=易混辨析 */
+/** AI 批量生成触发：kind 0=分级例句 1=词根助记 2=易混辨析；
+ * subject 科目占位符（v1.3 T3.3，空=英语默认；v1.5 全科生成入口） */
 export interface AiGenerateReq {
   kind: number;
   tag?: string;
+  subject?: string;
   limit?: number;
 }
 
-/** 待审条目：现值 vs AI 建议（AiSuggestion 服务端解析后下发） */
+/** 待审条目：现值 vs AI 建议（AiSuggestion 服务端解析后下发）；
+ * suggestedFront/Back/Phonetic/Meaning 为 T5.4 卡组条目建议（kind=3 专用） */
 export interface AiPendingItem {
   id: string;
   text: string;
@@ -165,12 +182,37 @@ export interface AiPendingItem {
   suggestedConfusionNote?: string | null;
   kind: number;
   createdAt: string;
+  suggestedFront?: string | null;
+  suggestedBack?: string | null;
+  suggestedPhonetic?: string | null;
+  suggestedMeaning?: string | null;
 }
 
-/** 审核通过（可携带编辑终值；null = 采用建议原值） */
+/** 审核通过（可携带编辑终值；null = 采用建议原值）；
+ * front/back/phonetic/meaning 为 T5.4 kind=3 卡组条目终值 */
 export interface AiApplyReq {
   example?: string | null;
   root?: string | null;
+  front?: string | null;
+  back?: string | null;
+  phonetic?: string | null;
+  meaning?: string | null;
+}
+
+/** T5.4 AI 卡组生成触发：素材（课文/知识点清单）+ 条数上限 */
+export interface DeckGenReq {
+  source?: string;
+  limit?: number;
+}
+
+/** 管理端卡组概览（T5.4 AI 生成弹窗下拉） */
+export interface AdminDeckInfo {
+  id: string;
+  code: string;
+  name: string;
+  payloadType: string;
+  subjectId?: string | null;
+  itemCount: number;
 }
 
 // ── SRS 算法对比（M3 路径 A）─────────────────────

@@ -50,6 +50,36 @@
     }
   </div>
 
+  <!-- 今日学习分析（v1.3 T3.2：LearningRecord 按日聚合，口径见后端 TodayStatsResp） -->
+  @if (todayStats(); as t) {
+    <mat-card class="today-card">
+      <mat-card-header>
+        <mat-card-title>今日学习分析</mat-card-title>
+        <mat-card-subtitle>
+          学习人次 {{ t.touchedRecords }} · 活跃设备 {{ t.activeDevices }} · 答对 {{ t.correctToday }} / 答错 {{ t.wrongToday }}
+        </mat-card-subtitle>
+      </mat-card-header>
+      <div class="today-metrics">
+        <div class="metric">
+          <span class="metric-value">{{ t.newWords }}</span>
+          <span class="metric-label">首学词</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value">{{ t.reviewWords }}</span>
+          <span class="metric-label">复习词</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value">{{ correctRate() }}%</span>
+          <span class="metric-label">正确率</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value">{{ t.avgQuality }}</span>
+          <span class="metric-label">平均质量（0-5）</span>
+        </div>
+      </div>
+    </mat-card>
+  }
+
   <!-- 图表区 -->
   <div class="charts-grid">
     <mat-card class="chart-card">

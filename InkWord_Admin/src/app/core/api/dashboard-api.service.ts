@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import {
   DashboardStats, SrsDistribution, DailyActiveData, WrongTopResp,
-  SrsComparisonResp, ApiResponse,
+  SrsComparisonResp, TodayStats, ApiResponse,
 } from '../models/models';
 
 /**
@@ -38,6 +38,11 @@ export class DashboardApiService {
     return this.http.get<ApiResponse<WrongTopResp>>(
       `${this.base}/wrong-top`, { params: { top } },
     );
+  }
+
+  /** 今日学习统计（v1.3 T3.2：LearningRecord 按日聚合，无需新设备协议） */
+  getTodayStats(): Observable<ApiResponse<TodayStats>> {
+    return this.http.get<ApiResponse<TodayStats>>(`${this.base}/today-stats`);
   }
 
   /** SM-2 vs FSRS 到期分布对比（M3 路径 A：影子运行切换决策依据） */

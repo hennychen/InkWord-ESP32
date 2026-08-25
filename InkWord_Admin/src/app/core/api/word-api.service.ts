@@ -5,6 +5,7 @@ import { environment } from '../../../environments/environment';
 import {
   Word, WordCreateDto, WordUpdateDto, WordQueryDto,
   PagedResult, ApiResponse, AiGenerateReq, AiPendingItem, AiApplyReq,
+  DeckGenReq, AdminDeckInfo,
 } from '../models/models';
 
 /**
@@ -89,5 +90,20 @@ export class WordApiService {
   /** 驳回：状态复位 0（可重新生成） */
   aiReject(id: string): Observable<ApiResponse<null>> {
     return this.http.post<ApiResponse<null>>(`${this.base}/ai-reject/${id}`, null);
+  }
+
+  // ====== AI 卡组生成（v1.5 T5.4）======
+
+  private readonly deckBase = `${environment.apiUrl}/admin/decks`;
+
+  /** 管理端卡组列表（AI 生成弹窗下拉；含条目计数） */
+  adminDecks(): Observable<ApiResponse<AdminDeckInfo[]>> {
+    return this.http.get<ApiResponse<AdminDeckInfo[]>>(this.deckBase);
+  }
+
+  /** AI 批量生成卡组：素材→占位待审条目（审核台通过后 Version++ 下发） */
+  deckAiGenerate(id: string, req: DeckGenReq): Observable<ApiResponse<{ jobId: string }>> {
+    return this.http.post<ApiResponse<{ jobId: string }>>(
+      `${this.deckBase}/${id}/ai-generate`, req);
   }
 }

@@ -47,8 +47,14 @@ export class AiGenerateDialogComponent {
     { value: 2, label: '易混辨析（仅审阅参考）' },
   ];
 
+  /** 科目（v1.3 T3.3 prompt 参数化）：注入后端 prompt 占位符，v1.5 全科生成入口 */
+  readonly subjectOptions = [
+    '英语', '语文', '数学', '物理', '化学', '生物', '历史', '地理', '政治',
+  ];
+
   kind = 0;
   tag = '';
+  subject = '英语';
   limit: number | null = null;
 
   submit(): void {
@@ -57,6 +63,7 @@ export class AiGenerateDialogComponent {
       .aiGenerate({
         kind: this.kind,
         tag: this.tag.trim() || undefined,
+        subject: this.subject.trim() || undefined,
         limit: this.limit && this.limit > 0 ? this.limit : undefined,
       })
       .subscribe({

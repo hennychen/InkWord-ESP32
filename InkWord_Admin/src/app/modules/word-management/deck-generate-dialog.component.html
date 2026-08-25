@@ -1,0 +1,59 @@
+<h2 mat-dialog-title>
+  <mat-icon>auto_awesome</mat-icon>
+  AI 生成卡组条目
+</h2>
+
+<mat-dialog-content class="dialog-content">
+  @if (loading()) {
+    <div class="loading-row">
+      <mat-progress-spinner diameter="36" mode="indeterminate"></mat-progress-spinner>
+    </div>
+  } @else if (decks().length === 0) {
+    <p class="hint">暂无卡组——先在设备端或 App 创建卡组后再生成</p>
+  } @else {
+    <mat-form-field appearance="outline" class="full">
+      <mat-label>目标卡组（版式决定生成模板）</mat-label>
+      <mat-select [(ngModel)]="deckId">
+        @for (d of decks(); track d.id) {
+          <mat-option [value]="d.id">
+            {{ d.name }}（{{ d.code }}） · {{ payloadLabel(d.payloadType) }} · {{ d.itemCount }} 条
+          </mat-option>
+        }
+      </mat-select>
+    </mat-form-field>
+
+    @if (deckId) {
+      <p class="hint">{{ sourceHint(selectedDeck()) }}</p>
+      <mat-form-field appearance="outline" class="full">
+        <mat-label>素材（课文 / 知识点清单）</mat-label>
+        <textarea
+          matInput
+          rows="8"
+          [(ngModel)]="source"
+          placeholder="静夜思 李白&#10;床前明月光，疑是地上霜。&#10;举头望明月，低头思故乡。"
+        ></textarea>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="limit-field">
+        <mat-label>条数上限（1~{{ maxLimit }}）</mat-label>
+        <input matInput type="number" min="1" [max]="maxLimit" [(ngModel)]="limit">
+      </mat-form-field>
+    }
+  }
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()">取消</button>
+  <button
+    mat-raised-button
+    color="primary"
+    [disabled]="submitting() || !deckId || !source.trim()"
+  >
+    @if (submitting()) {
+      <mat-progress-spinner diameter="18" mode="indeterminate"></mat-progress-spinner>
+    } @else {
+      <mat-icon>bolt</mat-icon>
+      生成并送审
+    }
+  </button>
+</mat-dialog-actions>

@@ -120,3 +120,37 @@
     line-height: 1.5;
   }
 }
+
+// T5.4 kind=3 卡组条目四字段审校卡（题面/拼音/译文只读 + 背面可编辑）
+.deck-item-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+
+  .deck-item-row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 12px;
+    align-items: start;
+
+    .fld {
+      font-size: 12px;
+      color: rgba(0, 0, 0, 0.54);
+      padding-top: 3px;
+    }
+
+    .val {
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      resize: vertical;
+      font: inherit;
+      line-height: 1.5;
+    }
+  }
+}

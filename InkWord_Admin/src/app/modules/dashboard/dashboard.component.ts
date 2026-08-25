@@ -7,12 +7,13 @@ import { NgxEchartsDirective } from 'ngx-echarts';
 import type { EChartsOption } from 'echarts';
 import { DashboardApiService } from '../../core/api/dashboard-api.service';
 import {
-  DashboardStats, SrsDistribution, DailyActiveData, SrsComparisonResp,
+  DashboardStats, SrsDistribution, DailyActiveData, SrsComparisonResp, TodayStats,
 } from '../../core/models/models';
 
 /**
  * 数据看板大屏 (A-05)：
  * - 卡片：总词数 / 总设备数 / 今日活跃设备 / 今日学习用户 / 平均学习时长
+ * - 今日学习分析条（v1.3 T3.2）：首学/复习/正确率/平均质量
  * - 折线图：日活趋势
  * - 饼图：SRS 分布
  * 异步加载数据时显示 Loading 骨架屏。
@@ -39,6 +40,16 @@ export class DashboardComponent implements OnInit {
   readonly dailyData = signal<DailyActiveData[]>([]);
   /** SM-2 vs FSRS 影子对比（M3 路径 A：影子运行切换决策依据） */
   readonly srsComparison = signal<SrsComparisonResp | null>(null);
+  /** 今日学习统计（v1.3 T3.2：LearningRecord 按日聚合） */
+  readonly todayStats = signal<TodayStats | null>(null);
+
+  /** 今日正确率（%）：答对 /（答对 + 答错），无人次时为 0 */
+  readonly correctRate = computed(() => {
+    const t = this.todayStats();
+    if (!t) return 0;
+    const total = t.correctToday + t.wrongToday;
+    return total === 0 ? 0 : Math.round((t.correctToday / total) * 100);
+  });
 
   /** 折线图配置 */
   readonly lineChartOption = computed<EChartsOption>(() => {
@@ -130,6 +141,11 @@ export class DashboardComponent implements OnInit {
     // 加载 SM-2 vs FSRS 对比（影子数据，无记录时图表留空）
     this.dashboardApi.getSrsComparison().subscribe({
       next: (res) => this.srsComparison.set(res.data ?? null),
+    });
+
+    // 加载今日学习统计（v1.3 T3.2）
+    this.dashboardApi.getTodayStats().subscribe({
+      next: (res) => this.todayStats.set(res.data ?? null),
     });
   }
 }

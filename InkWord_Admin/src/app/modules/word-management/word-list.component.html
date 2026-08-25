@@ -16,6 +16,10 @@
       <mat-icon>auto_awesome</mat-icon>
       AI 生成
     </button>
+    <button mat-raised-button (click)="openDeckGenerate()" matTooltip="T5.4：课文/知识点素材批量生成卡组条目，审校通过后才下发设备">
+      <mat-icon>deck</mat-icon>
+      AI 生成卡组
+    </button>
     <button mat-raised-button (click)="exportLibrary()" matTooltip="导出 words.json（含 cloudId），拷入 SD 卡后设备可上报评分/收藏">
       <mat-icon>download</mat-icon>
       导出设备词库

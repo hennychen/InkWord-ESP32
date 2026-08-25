@@ -58,6 +58,7 @@ export class AiReviewComponent implements OnInit {
     0: '分级例句 → Example',
     1: '词根助记 → Root',
     2: '易混辨析（仅参考）',
+    3: '卡组条目生成（T5.4）',
   };
 
   ngOnInit(): void {
@@ -77,11 +78,14 @@ export class AiReviewComponent implements OnInit {
         const result = res.data;
         this.items.set(result?.items ?? []);
         this.total.set(result?.total ?? 0);
-        // 编辑态初始化：kind 0/1 预填建议原值（可改），kind 2 无可编辑字段
+        // 编辑态初始化：kind 0/1/3 预填建议原值（可改），kind 2 无可编辑字段；
+        // kind 3（T5.4 卡组条目）编辑背面（题面/拼音/译文取建议原值）
         const next: Record<string, string> = {};
         for (const it of this.items()) {
-          const text = it.kind === 0 ? it.suggestedExample : it.suggestedRoot;
-          if (it.kind !== 2 && text != null) next[it.id] = text;
+          const text = it.kind === 0 ? it.suggestedExample
+            : it.kind === 3 ? it.suggestedBack
+            : it.suggestedRoot;
+          if ((it.kind === 0 || it.kind === 1 || it.kind === 3) && text != null) next[it.id] = text;
         }
         this.edits.set(next);
         this.loading.set(false);
@@ -117,7 +121,9 @@ export class AiReviewComponent implements OnInit {
       ? {} // 易混辨析仅审阅参考：通过即标记已审，不落设备字段
       : item.kind === 0
         ? { example: this.editedText(item).trim() || null }
-        : { root: this.editedText(item).trim() || null };
+        : item.kind === 3
+          ? { back: this.editedText(item).trim() || null } // T5.4：编辑终值仅背面
+          : { root: this.editedText(item).trim() || null };
     this.wordApi.aiApply(item.id, req).subscribe({
       next: () => {
         this.snackBar.open(`"${item.text}" 已通过，版本已递增待设备增量同步`, '关闭', {

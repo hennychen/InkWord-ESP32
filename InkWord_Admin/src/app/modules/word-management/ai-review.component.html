@@ -34,7 +34,36 @@
           </mat-chip-set>
         </div>
 
-        <!-- diff 区：现值 vs 建议（可编辑终值） -->
+        <!-- diff 区：现值 vs 建议（可编辑终值）；kind 3（T5.4 卡组条目）四字段特化 -->
+        @if (item.kind === 3) {
+          <div class="deck-item-grid">
+            <div class="deck-item-row">
+              <span class="fld">题面</span>
+              <span class="val">{{ item.suggestedFront || item.text }}</span>
+            </div>
+            @if (item.suggestedPhonetic) {
+              <div class="deck-item-row">
+                <span class="fld">拼音/音标</span>
+                <span class="val">{{ item.suggestedPhonetic }}</span>
+              </div>
+            }
+            @if (item.suggestedMeaning) {
+              <div class="deck-item-row">
+                <span class="fld">译文</span>
+                <span class="val">{{ item.suggestedMeaning }}</span>
+              </div>
+            }
+            <div class="deck-item-row">
+              <span class="fld">背面（可编辑）</span>
+              <textarea
+                matInput
+                rows="2"
+                [value]="editedText(item)"
+                (input)="onEdit(item, $any($event.target).value)"
+              ></textarea>
+            </div>
+          </div>
+        } @else {
         <div class="diff-grid">
           <div class="diff-col current">
             <div class="diff-label">现值</div>
@@ -56,6 +85,7 @@
             }
           </div>
         </div>
+        }
 
         <!-- 操作 -->
         <mat-card-actions align="end">
