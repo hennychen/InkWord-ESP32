@@ -6,6 +6,7 @@ using InkWord.API.DTOs;
 using InkWord.Core.Common;
 using InkWord.Core.Entities;
 using InkWord.Core.Repositories;
+using InkWord.Infrastructure.DbContext;
 using InkWord.Jobs;
 using InkWord.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -19,16 +20,18 @@ namespace InkWord.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/admin/words")]
-[Authorize]
+[Authorize(Roles = "Admin,Operator")]
 public class AdminWordController : ControllerBase
 {
     private readonly IWordRepository _wordRepo;
     private readonly AiContentService _ai;
+    private readonly AppDbContext _db; // T4.1：export v2 归属映射
 
-    public AdminWordController(IWordRepository wordRepo, AiContentService ai)
+    public AdminWordController(IWordRepository wordRepo, AiContentService ai, AppDbContext db)
     {
         _wordRepo = wordRepo;
         _ai = ai;
+        _db = db;
     }
 
     /// <summary>B-13 单条新增（含去重校验）</summary>
@@ -53,7 +56,10 @@ public class AdminWordController : ControllerBase
             Grade = dto.Grade ?? "",
             Difficulty = dto.Difficulty,
             Version = maxVer + 1,
-            ChangeType = 0
+            ChangeType = 0,
+            // v2 卡面冗余镜像（T4.1）：word-card 的 Front/Back 随写随同步
+            Front = dto.Text,
+            Back = dto.Meaning ?? "",
         };
         await _wordRepo.AddAsync(word, ct);
         await _wordRepo.SaveChangesAsync(ct);
@@ -80,6 +86,8 @@ public class AdminWordController : ControllerBase
         word.Difficulty = dto.Difficulty;
         word.ChangeType = 1;
         word.Version = Math.Max(word.Version, await _wordRepo.GetMaxVersionAsync(ct)) + 1;
+        word.Front = dto.Text;             // v2 卡面镜像随写同步（T4.1）
+        word.Back = dto.Meaning ?? "";
 
         await _wordRepo.UpdateAsync(word, ct);
         await _wordRepo.SaveChangesAsync(ct);
@@ -160,7 +168,9 @@ public class AdminWordController : ControllerBase
                 Source = f.Length > 9 ? f[9].Trim() : "",
                 Grade = f.Length > 10 ? f[10].Trim() : "",
                 Version = ++maxVer,
-                ChangeType = 0
+                ChangeType = 0,
+                Front = text,                          // v2 卡面镜像（T4.1）
+                Back = f.Length > 2 ? f[2].Trim() : "",
             };
             await _wordRepo.AddAsync(word, ct);
             ok++;
@@ -173,22 +183,47 @@ public class AdminWordController : ControllerBase
     /// <summary>B-16 导出设备词库文件（words.json）：设备端评分/收藏上报的
     /// Guid 映射入口。id 为设备本地序号（依赖导出顺序稳定，顺序/规模变化
     /// 会触发设备侧学习状态整体作废重建），cloudId 为云端词条身份，
-    /// 设备据此前报 WordId（P2 上报闭环，见固件 word_parser/sync_client）。</summary>
+    /// 设备据此前报 WordId（P2 上报闭环，见固件 word_parser/sync_client）。
+    /// v2（T4.1 全科地基）：新增 subject/deckId/payloadType/front/back/
+    /// payloadJson 六字段与旧字段过渡期双写；旧固件 cJSON 忽略未知键
+    /// （native 用例固化），cloudId/Version/ChangeType 语义不变。</summary>
     [HttpGet("export")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
         var words = await _wordRepo.GetIncrementalAsync(0, 100_000, ct);
         var version = await _wordRepo.GetMaxVersionAsync(ct);
 
+        // deck/subject 身份映射（表行数个位数；与 DeviceController.SyncWords
+        // 同源逻辑）：Word.SubjectId/DeckId 直查，null/失配兜底 en/junior。
+        var deckById = await _db.Decks.AsNoTracking()
+            .ToDictionaryAsync(d => d.Id, ct);
+        var subCodes = await _db.Subjects.AsNoTracking()
+            .ToDictionaryAsync(s => s.Id, s => s.Code, ct);
+
         var payload = new
         {
             version,
-            words = words.Select((w, i) => new
+            v = 2,
+            words = words.Select((w, i) =>
             {
-                id = i + 1,
-                cloudId = w.Id.ToString(),
-                w.Text, w.Phonetic, w.Meaning, w.Example, w.Audio, w.Tag, w.Difficulty,
-                w.Root, w.Inflections, w.Source, w.Grade,
+                var deck = w.DeckId.HasValue && deckById.TryGetValue(w.DeckId.Value, out var d) ? d : null;
+                var subject = w.SubjectId.HasValue && subCodes.TryGetValue(w.SubjectId.Value, out var sc)
+                    ? sc
+                    : deck != null ? subCodes.GetValueOrDefault(deck.SubjectId, "en") : "en";
+                return new
+                {
+                    id = i + 1,
+                    cloudId = w.Id.ToString(),
+                    w.Text, w.Phonetic, w.Meaning, w.Example, w.Audio, w.Tag, w.Difficulty,
+                    w.Root, w.Inflections, w.Source, w.Grade,
+                    // ---- v2 全科地基 ----
+                    subject,
+                    deckId = deck?.Code ?? "junior",
+                    payloadType = deck?.PayloadType ?? "word-card",
+                    front = w.Front != "" ? w.Front : w.Text,
+                    back = w.Back != "" ? w.Back : w.Meaning,
+                    payloadJson = w.PayloadJson ?? "",
+                };
             }),
         };
 
@@ -207,7 +242,7 @@ public class AdminWordController : ControllerBase
         if (req.Kind is < 0 or > 2)
             return BadRequest(ApiResponse.Fail(400, "kind must be 0/1/2"));
         var jobId = BackgroundJob.Enqueue<AiContentJob>(
-            j => j.RunAsync(req.Kind, req.Tag, req.Limit, CancellationToken.None));
+            j => j.RunAsync(req.Kind, req.Tag, req.Subject, req.Limit, CancellationToken.None));
         return Ok(ApiResponse<object>.Ok(new { jobId }, "AI 生成任务已入队"));
     }
 
@@ -275,6 +310,18 @@ public class AdminWordController : ControllerBase
                     $"助记超长（{Encoding.UTF8.GetByteCount(root)}B > {AiContentService.RootMaxBytes}B）"));
             word.Root = root;
         }
+        else if (sug.Kind == 3)
+        {
+            // T5.4 卡组条目：按目标卡组版式映射写入正字段（AiContentService
+            // 内部按版式分派 + 字节截断；poem 对齐 T4.4 云通道契约，word/qa
+            // 对齐 T4.3）。req 携人工编辑终值（优先于建议原值）
+            var payloadType = await _db.Decks.AsNoTracking()
+                .Where(d => d.Id == word.DeckId)
+                .Select(d => d.PayloadType)
+                .FirstOrDefaultAsync(ct);
+            AiContentService.ApplyDeckSuggestion(word, payloadType, sug,
+                req.Front, req.Back, req.Phonetic, req.Meaning, req.Example);
+        }
 
         // 增量下发通道（照抄 Update 逻辑）：版本取全局最大 +1，变更类型 = 修改
         word.ChangeType = 1;
@@ -314,7 +361,8 @@ public class AdminWordController : ControllerBase
         return new AiPendingItem(w.Id, w.Text, w.Meaning, w.Tag, w.Grade,
             w.Example, w.Root,
             sug?.Example, sug?.Root, sug?.ConfusionNote,
-            sug?.Kind ?? 0, w.CreatedAt);
+            sug?.Kind ?? 0, w.CreatedAt,
+            sug?.Front, sug?.Back, sug?.Phonetic, sug?.Meaning);
     }
 
     private static WordAiSuggestion? ParseSuggestion(string? json)

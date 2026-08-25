@@ -28,6 +28,7 @@
        DefaultWordSeeder 读取；tools/default_vocab 可重新生成 -->
   <ItemGroup>
     <None Update="SeedData\default_words.csv" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="SeedData\poems_cb.csv" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

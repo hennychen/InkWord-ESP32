@@ -34,24 +34,31 @@ public class AuthController : ControllerBase
         if (user == null || !VerifyPassword(req.Password, user.PasswordHash))
             return Unauthorized(ApiResponse.Fail(401, "用户名或密码错误"));
 
-        var token = IssueToken(user.Username, user.Role);
+        var token = IssueToken(_cfg, user.Username, user.Role);
         return Ok(ApiResponse<LoginResp>.Ok(new LoginResp(user.Username, token, 3600)));
     }
 
-    private string IssueToken(string username, string role)
+    /// <summary>
+    /// JWT 签发（public static 供 AccountController learner 路径复用，
+    /// v1.5 T5.3；accountId 非空时附带 NameIdentifier claim 供卡组归属）。
+    /// </summary>
+    public static string IssueToken(
+        IConfiguration cfg, string username, string role, Guid? accountId = null)
     {
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_cfg["Jwt:Secret"]!));
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(cfg["Jwt:Secret"]!));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
-        var claims = new[]
+        var claims = new List<Claim>
         {
-            new Claim(ClaimTypes.Name, username),
-            new Claim(ClaimTypes.Role, role)
+            new(ClaimTypes.Name, username),
+            new(ClaimTypes.Role, role)
         };
+        if (accountId.HasValue)
+            claims.Add(new Claim(ClaimTypes.NameIdentifier, accountId.Value.ToString()));
 
         var token = new JwtSecurityToken(
-            issuer: _cfg["Jwt:Issuer"],
-            audience: _cfg["Jwt:Audience"],
+            issuer: cfg["Jwt:Issuer"],
+            audience: cfg["Jwt:Audience"],
             claims: claims,
             expires: DateTime.UtcNow.AddHours(1),
             signingCredentials: creds);
@@ -59,10 +66,10 @@ public class AuthController : ControllerBase
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
-    /// <summary>简单哈希校验（演示用；生产应替换为 PBKDF2/BCrypt）。</summary>
-    private static bool VerifyPassword(string input, string storedHash)
+    /// <summary>哈希校验（salt:hash PBKDF2；public 供 AccountController/测试复用）。</summary>
+    public static bool VerifyPassword(string input, string storedHash)
     {
-        // storedHash 形如 "salt:hash"，此处用 SHA256 占位
+        // storedHash 形如 "salt:hash"
         var parts = storedHash.Split(':');
         if (parts.Length != 2) return false;
         var salt = Convert.FromHexString(parts[0]);

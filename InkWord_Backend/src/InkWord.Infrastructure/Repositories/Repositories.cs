@@ -54,6 +54,14 @@ public class UserRepository : RepositoryBase<User>, IUserRepository
         => DbContext.Users.FirstOrDefaultAsync(u => u.Username == username, ct);
 }
 
+public class AccountRepository : RepositoryBase<Account>, IAccountRepository
+{
+    public AccountRepository(AppDbContext context) : base(context) { }
+
+    public Task<Account?> GetByUsernameAsync(string username, CancellationToken ct = default)
+        => DbContext.Accounts.FirstOrDefaultAsync(a => a.Username == username, ct);
+}
+
 public class LearningRecordRepository : RepositoryBase<LearningRecord>, ILearningRecordRepository
 {
     public LearningRecordRepository(AppDbContext context) : base(context) { }

@@ -48,9 +48,10 @@ public class AiContentJob
         _logger = logger;
     }
 
-    /// <summary>kind：0 分级例句 1 词根助记 2 易混辨析；tag 可选过滤；limit 可选覆盖单轮上限</summary>
+    /// <summary>kind：0 分级例句 1 词根助记 2 易混辨析；tag 可选过滤；subject 科目占位符
+    /// （v1.3 T3.3，null=英语默认）；limit 可选覆盖单轮上限</summary>
     [AutomaticRetry(Attempts = 2)]
-    public async Task RunAsync(int kind, string? tag, int limit, CancellationToken ct)
+    public async Task RunAsync(int kind, string? tag, string? subject, int limit, CancellationToken ct)
     {
         if (!Enum.IsDefined(typeof(AiContentKind), kind))
         {
@@ -84,7 +85,7 @@ public class AiContentJob
             var tasks = page.Select(async (w, i) =>
             {
                 await semaphore.WaitAsync(ct);
-                try { results[i] = (w.Id, await _ai.GenerateAsync(w, contentKind, ct)); }
+                try { results[i] = (w.Id, await _ai.GenerateAsync(w, contentKind, subject, ct)); }
                 finally { semaphore.Release(); }
             });
             await Task.WhenAll(tasks);

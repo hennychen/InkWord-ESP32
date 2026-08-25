@@ -25,6 +25,14 @@ public interface IUserRepository : IRepository<User>
     Task<User?> GetByUsernameAsync(string username, CancellationToken ct = default);
 }
 
+/// <summary>
+/// 学习者账户仓储（v1.5 T5.3 轻账户，与 User 分表）。
+/// </summary>
+public interface IAccountRepository : IRepository<Account>
+{
+    Task<Account?> GetByUsernameAsync(string username, CancellationToken ct = default);
+}
+
 public interface ILearningRecordRepository : IRepository<LearningRecord>
 {
     Task<LearningRecord?> GetAsync(Guid deviceId, Guid wordId, CancellationToken ct = default);

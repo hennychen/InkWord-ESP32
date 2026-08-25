@@ -50,6 +50,8 @@ public static class DefaultWordSeeder
                 Grade = f.Length > 10 ? f[10] : "",
                 Version = ++version,
                 ChangeType = 0,
+                Front = f[0],                    // v2 卡面镜像（T4.1）
+                Back = f.Length > 2 ? f[2] : "",
             });
         }
 

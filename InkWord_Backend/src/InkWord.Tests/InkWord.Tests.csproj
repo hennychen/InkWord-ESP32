@@ -25,6 +25,9 @@
   <ItemGroup>
     <ProjectReference Include="..\InkWord.Services\InkWord.Services.csproj" />
     <ProjectReference Include="..\InkWord.Infrastructure\InkWord.Infrastructure.csproj" />
+    <!-- v1.5 T5.3：AccountTests 直测 AuthController 哈希/JWT 与
+         MyDeckController.FillWord 条目映射 -->
+    <ProjectReference Include="..\InkWord.API\InkWord.API.csproj" />
   </ItemGroup>
 
   <!-- P0B：TtsServiceTests 需要 ConfigurationBuilder（内存配置） -->

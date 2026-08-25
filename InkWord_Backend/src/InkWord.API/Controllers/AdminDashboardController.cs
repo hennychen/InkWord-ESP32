@@ -10,7 +10,7 @@ namespace InkWord.API.Controllers;
 /// <summary>数据看板统计（B-18）。</summary>
 [ApiController]
 [Route("api/admin/dashboard")]
-[Authorize]
+[Authorize(Roles = "Admin,Operator")]
 public class AdminDashboardController : ControllerBase
 {
     private readonly AppDbContext _db;
@@ -50,6 +50,37 @@ public class AdminDashboardController : ControllerBase
             AvgStudyMinutes: 0, srsDist, dailyActive);
 
         return Ok(ApiResponse<DashboardStats>.Ok(stats));
+    }
+
+    /// <summary>今日学习统计（v1.3 T3.2）：LearningRecord 按日聚合，
+    /// 口径近似见 TodayStatsResp 注释；无记录时返回全 0。</summary>
+    [HttpGet("today-stats")]
+    public async Task<IActionResult> TodayStats(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var todayStart = now.Date;
+
+        var agg = await _db.LearningRecords.AsNoTracking()
+            .Where(r => r.LastStudiedAt >= todayStart)
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                ActiveDevices = g.Select(r => r.DeviceId).Distinct().Count(),
+                Touched = g.Count(),
+                NewWords = g.Count(r => r.ReviewCount == 1),
+                Reviews = g.Count(r => r.ReviewCount > 1),
+                Correct = g.Count(r => r.LastQuality >= 3),
+                Wrong = g.Count(r => r.LastQuality < 3),
+                AvgQ = g.Average(r => (double?)r.LastQuality) ?? 0,
+            })
+            .FirstOrDefaultAsync(ct);
+
+        var resp = agg == null
+            ? new TodayStatsResp(0, 0, 0, 0, 0, 0, 0)
+            : new TodayStatsResp(agg.ActiveDevices, agg.Touched, agg.NewWords,
+                agg.Reviews, agg.Correct, agg.Wrong, Math.Round(agg.AvgQ, 2));
+
+        return Ok(ApiResponse<TodayStatsResp>.Ok(resp));
     }
 
     /// <summary>错词排行（P1 错词本）：ConsecutiveWrong&gt;0 聚合，

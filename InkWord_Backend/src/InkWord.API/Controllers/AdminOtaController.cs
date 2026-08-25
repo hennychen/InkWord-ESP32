@@ -11,7 +11,7 @@ namespace InkWord.API.Controllers;
 /// <summary>OTA 升级包管理（B-17）。</summary>
 [ApiController]
 [Route("api/admin/ota")]
-[Authorize]
+[Authorize(Roles = "Admin,Operator")]
 public class AdminOtaController : ControllerBase
 {
     private readonly IOtaPackageRepository _otaRepo;

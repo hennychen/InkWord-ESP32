@@ -59,6 +59,28 @@ public class Word : BaseEntity
     /// <summary>AI 建议原文（JSON：kind/example/root/confusionNote；应用后清空）</summary>
     public string? AiSuggestion { get; set; }
 
+    // ---- 全科地基（v1.4 T4.1）：Item 混合模型 ----
+    // Words 表语义泛化为「词条/卡片条目」（Subject/Deck/Item 三表中的 Item）。
+    // word-card：Front/Back 冗余镜像 Text/Meaning（导出 v2 双写）；
+    // qa-card / poem-card（T4.3/T4.4）：Front=题面/上句，Back=答案/下句，
+    // PayloadJson 携版式扩展载荷（拼音行/译文/默写上下句等）。
+    // cloudId(Id)/Version/ChangeType 语义不变 —— FSRS 双端一致红线。
+
+    /// <summary>归属科目（null = 默认英语 en，导出时兜底）</summary>
+    public Guid? SubjectId { get; set; }
+
+    /// <summary>归属卡组（null = 默认卡组 junior，导出时兜底）</summary>
+    public Guid? DeckId { get; set; }
+
+    /// <summary>卡面正面（word-card 冗存 Text；qa/poem 为题面/上句）</summary>
+    public string Front { get; set; } = string.Empty;
+
+    /// <summary>卡面背面（word-card 冗存 Meaning；qa/poem 为答案/下句）</summary>
+    public string Back { get; set; } = string.Empty;
+
+    /// <summary>版式扩展载荷 JSON（T4.3 card_layout / T4.4 默写等）</summary>
+    public string? PayloadJson { get; set; }
+
     // 导航
     public ICollection<LearningRecord> LearningRecords { get; set; } = new List<LearningRecord>();
 }

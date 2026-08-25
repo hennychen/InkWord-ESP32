@@ -33,7 +33,7 @@ public static class JobRegistrar
         // 管理端手动触发。限流/重试/熔断见 AiContentJob。
         RecurringJob.AddOrUpdate<AiContentJob>(
             "nightly-ai-content",
-            j => j.RunAsync(0, null, 500, CancellationToken.None),
+            j => j.RunAsync(0, null, null, 500, CancellationToken.None),
             Cron.Daily(2),
             TimeZoneInfo.Local);
 

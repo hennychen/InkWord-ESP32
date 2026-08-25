@@ -44,6 +44,7 @@ builder.Services.AddSingleton<IRedisCache, RedisCache>();
 builder.Services.AddScoped<IWordRepository, WordRepository>();
 builder.Services.AddScoped<IDeviceRepository, DeviceRepository>();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<IAccountRepository, AccountRepository>(); // v1.5 T5.3 轻账户
 builder.Services.AddScoped<ILearningRecordRepository, LearningRecordRepository>();
 builder.Services.AddScoped<IOtaPackageRepository, OtaPackageRepository>();
 
@@ -199,8 +200,81 @@ if (app.Environment.IsDevelopment())
         "ALTER TABLE \"LearningRecords\" ADD COLUMN IF NOT EXISTS \"FsrsDifficulty\" double precision NOT NULL DEFAULT 0",
         "ALTER TABLE \"LearningRecords\" ADD COLUMN IF NOT EXISTS \"FsrsNextReview\" timestamptz",
         "ALTER TABLE \"LearningRecords\" ADD COLUMN IF NOT EXISTS \"LastPronScore\" integer",
+        // 全科地基（v1.4 T4.1）：Words 六列（Item 混合模型）
+        "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"SubjectId\" uuid",
+        "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"DeckId\" uuid",
+        "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"Front\" text NOT NULL DEFAULT ''",
+        "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"Back\" text NOT NULL DEFAULT ''",
+        "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"PayloadJson\" text",
     };
     foreach (var sql in addCols)
+        db.Database.ExecuteSqlRaw(sql);
+
+    // T4.1 全科地基：Subjects/Decks 建表（列集与 EnsureCreated 新库一致；
+    // Word 侧纯 Id 关联不建 FK）+ 固定 Guid 种子（en 科目 + junior 默认卡组，
+    // 供存量英语词条整体迁移归属）+ 存量回填。全程幂等，新库空转。
+    var t41Sql = new[]
+    {
+        @"CREATE TABLE IF NOT EXISTS ""Subjects"" (
+            ""Id"" uuid NOT NULL PRIMARY KEY,
+            ""Code"" varchar(16) NOT NULL,
+            ""Name"" varchar(64) NOT NULL,
+            ""SortOrder"" integer NOT NULL,
+            ""CreatedAt"" timestamp with time zone NOT NULL,
+            ""UpdatedAt"" timestamp with time zone,
+            ""IsDeleted"" boolean NOT NULL)",
+        @"CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Subjects_Code"" ON ""Subjects"" (""Code"")",
+        @"CREATE TABLE IF NOT EXISTS ""Decks"" (
+            ""Id"" uuid NOT NULL PRIMARY KEY,
+            ""SubjectId"" uuid NOT NULL,
+            ""Code"" varchar(16) NOT NULL,
+            ""Name"" varchar(128) NOT NULL,
+            ""PayloadType"" varchar(16) NOT NULL,
+            ""Description"" varchar(512) NOT NULL,
+            ""CreatedAt"" timestamp with time zone NOT NULL,
+            ""UpdatedAt"" timestamp with time zone,
+            ""IsDeleted"" boolean NOT NULL)",
+        @"CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Decks_SubjectId_Code"" ON ""Decks"" (""SubjectId"", ""Code"")",
+        @"CREATE INDEX IF NOT EXISTS ""IX_Words_SubjectId"" ON ""Words"" (""SubjectId"")",
+        @"CREATE INDEX IF NOT EXISTS ""IX_Words_DeckId"" ON ""Words"" (""DeckId"")",
+        // 种子：固定 Guid（导出 v2 映射稳定性不依赖，仅回填/归属一致性）
+        @"INSERT INTO ""Subjects"" (""Id"",""Code"",""Name"",""SortOrder"",""CreatedAt"",""IsDeleted"")
+           VALUES ('ee000000-0000-0000-0000-000000000001','en','英语',0,now(),false)
+           ON CONFLICT (""Code"") DO NOTHING",
+        @"INSERT INTO ""Decks"" (""Id"",""SubjectId"",""Code"",""Name"",""PayloadType"",""Description"",""CreatedAt"",""IsDeleted"")
+           VALUES ('ee000000-0000-0000-0000-0000000000d1',
+                   'ee000000-0000-0000-0000-000000000001','junior','初中英语（默认）','word-card',
+                   '存量英语词条整体迁移归属（T4.1）',now(),false)
+           ON CONFLICT (""SubjectId"",""Code"") DO NOTHING",
+        // 存量回填：英语整体迁为 en 默认卡组 + v2 卡面镜像（幂等：仅补空）
+        @"UPDATE ""Words"" SET ""SubjectId""='ee000000-0000-0000-0000-000000000001' WHERE ""SubjectId"" IS NULL",
+        @"UPDATE ""Words"" SET ""DeckId""='ee000000-0000-0000-0000-0000000000d1' WHERE ""DeckId"" IS NULL",
+        @"UPDATE ""Words"" SET ""Front""=""Text"" WHERE ""Front""=''
+           AND ""Text""<>''",
+        @"UPDATE ""Words"" SET ""Back""=""Meaning"" WHERE ""Back""=''
+           AND ""Meaning""<>''",
+    };
+    foreach (var sql in t41Sql)
+        db.Database.ExecuteSqlRaw(sql);
+
+    // v1.5 T5.3 轻账户（ACCOUNT_MODEL_DECISION §四）：Accounts 建表
+    // （与 Users 分表——决策 §三.5）+ Decks.OwnerId 归属列（null=官方）。
+    // 全程幂等，新库 EnsureCreated 已含，此段空转。
+    var t53Sql = new[]
+    {
+        @"CREATE TABLE IF NOT EXISTS ""Accounts"" (
+            ""Id"" uuid NOT NULL PRIMARY KEY,
+            ""Username"" varchar(64) NOT NULL,
+            ""PasswordHash"" varchar(256) NOT NULL,
+            ""DisplayName"" varchar(64) NOT NULL,
+            ""CreatedAt"" timestamp with time zone NOT NULL,
+            ""UpdatedAt"" timestamp with time zone,
+            ""IsDeleted"" boolean NOT NULL)",
+        @"CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Accounts_Username"" ON ""Accounts"" (""Username"")",
+        @"ALTER TABLE ""Decks"" ADD COLUMN IF NOT EXISTS ""OwnerId"" uuid",
+        @"CREATE INDEX IF NOT EXISTS ""IX_Decks_OwnerId"" ON ""Decks"" (""OwnerId"")",
+    };
+    foreach (var sql in t53Sql)
         db.Database.ExecuteSqlRaw(sql);
 
     // 管理端无注册入口（AuthController 仅登录）：首次启动种子默认账号
@@ -235,6 +309,24 @@ using (var seedScope = app.Services.CreateScope())
     catch (Exception ex)
     {
         Log.Warning(ex, "默认词库种子跳过（表未就绪或文件缺失）");
+    }
+}
+
+// 语文古诗文 Deck 种子（v1.4 T4.4）：按卡组幂等（Decks 含 poems 即跳过），
+// 英语库存在与否均可补第二科目；同步协议 v2 随增量下发
+using (var poemScope = app.Services.CreateScope())
+{
+    try
+    {
+        var poemDb = poemScope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+        var poems = await InkWord.API.PoemSeeder.SeedAsync(poemDb);
+        if (poems > 0)
+            Log.Information("古诗 Deck 已导入 {Count} 条", poems);
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "古诗 Deck 种子跳过（表未就绪或文件缺失）");
     }
 }
 

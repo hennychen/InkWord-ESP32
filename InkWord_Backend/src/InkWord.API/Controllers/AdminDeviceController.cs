@@ -10,7 +10,7 @@ namespace InkWord.API.Controllers;
 /// <summary>设备管理与远程指令（B-16）。</summary>
 [ApiController]
 [Route("api/admin/devices")]
-[Authorize]
+[Authorize(Roles = "Admin,Operator")]
 public class AdminDeviceController : ControllerBase
 {
     private readonly IDeviceRepository _deviceRepo;

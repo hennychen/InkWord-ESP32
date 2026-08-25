@@ -4,9 +4,11 @@ using InkWord.API.Filters;
 using InkWord.Core.Common;
 using InkWord.Core.Entities;
 using InkWord.Core.Repositories;
+using InkWord.Infrastructure.DbContext;
 using InkWord.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace InkWord.API.Controllers;
 
@@ -25,15 +27,18 @@ public class DeviceController : ControllerBase
     private readonly PronunciationService _pron;
     private readonly TtsService _tts;
     private readonly ChatService _chatSvc;
+    private readonly AppDbContext _db; // T4.1：v2 归属映射（deck/subject 身份）
 
     public DeviceController(IDeviceRepository deviceRepo, IWordRepository wordRepo,
         ILearningRecordRepository recordRepo, IOtaPackageRepository otaRepo,
-        SrsService srs, PronunciationService pron, TtsService tts, ChatService chatSvc)
+        SrsService srs, PronunciationService pron, TtsService tts, ChatService chatSvc,
+        AppDbContext db)
     {
         _deviceRepo = deviceRepo; _wordRepo = wordRepo;
         _recordRepo = recordRepo; _otaRepo = otaRepo; _srs = srs; _pron = pron;
         _tts = tts;
         _chatSvc = chatSvc;
+        _db = db;
     }
 
     /// <summary>B-08 首次注册：生成 ApiKey</summary>
@@ -77,9 +82,30 @@ public class DeviceController : ControllerBase
         device.WordVersion = newVersion;
         await _deviceRepo.SaveChangesAsync(ct);
 
-        var dto = new SyncResp(newVersion, words.Select(w => new WordDto(
-            w.Text, w.Phonetic, w.Meaning, w.Example, w.Audio, w.Tag,
-            w.Difficulty, w.Version, w.ChangeType)).ToList());
+        // v2（T4.1 全科地基）双写：deck/subject 身份映射，与 export 端点同源。
+        // 表行数极小（个位数），每请求全量拉取无压力。
+        var decks = await _db.Decks.AsNoTracking()
+            .Select(d => new { d.Id, d.Code, d.PayloadType, d.SubjectId }).ToListAsync(ct);
+        var deckById = decks.ToDictionary(d => d.Id);
+        var subCodes = await _db.Subjects.AsNoTracking()
+            .ToDictionaryAsync(s => s.Id, s => s.Code, ct);
+
+        var dto = new SyncResp(newVersion, words.Select(w =>
+        {
+            var deck = w.DeckId.HasValue && deckById.TryGetValue(w.DeckId.Value, out var d) ? d : null;
+            var subject = w.SubjectId.HasValue && subCodes.TryGetValue(w.SubjectId.Value, out var sc)
+                ? sc
+                : deck != null ? subCodes.GetValueOrDefault(deck.SubjectId, "en") : "en";
+            return new WordDto(
+                w.Text, w.Phonetic, w.Meaning, w.Example, w.Audio, w.Tag,
+                w.Difficulty, w.Version, w.ChangeType,
+                subject,
+                deck?.Code ?? "junior",
+                deck?.PayloadType ?? "word-card",
+                w.Front != "" ? w.Front : w.Text,
+                w.Back != "" ? w.Back : w.Meaning,
+                w.PayloadJson ?? "");
+        }).ToList());
 
         Response.Headers["X-Word-Version"] = newVersion.ToString();
         return Ok(ApiResponse<SyncResp>.Ok(dto));
