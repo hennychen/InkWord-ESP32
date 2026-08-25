@@ -580,10 +580,24 @@ static void handle_password(nav_key_t id, button_event_t evt)
         if (col >= kb_row_lens[row]) col = kb_row_lens[row] - 1;
         break;
     case NAV_LEFT:
-        if (col > 0) col--;
+        /* 行首左移 → 上一行行尾（回绕）：光标初始位 (0,0) 在行首，
+         * 无回绕时按左完全无反应，真机测试误判“左键失灵”（2026-08-25）
+         */
+        if (col > 0) {
+            col--;
+        } else if (row > 0) {
+            row--;
+            col = kb_row_lens[row] - 1;
+        }
         break;
     case NAV_RIGHT:
-        if (col < kb_row_lens[row] - 1) col++;
+        /* 行尾右移 → 下一行行首（与左键对称，跨行连续导航） */
+        if (col < kb_row_lens[row] - 1) {
+            col++;
+        } else if (row < 3) {
+            row++;
+            col = 0;
+        }
         break;
     case NAV_CENTER: {
         int func = kb_func_at(row, col);
