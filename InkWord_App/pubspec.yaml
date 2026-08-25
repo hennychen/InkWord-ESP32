@@ -41,6 +41,7 @@ dependencies:
   multicast_dns: ^0.3.3
   shared_preferences: ^2.5.3
   flutter_blue_plus: ^2.3.12
+  file_picker: ^8.1.2   # v1.3 T3.4：词书 LAN 直传选文件
 
 dev_dependencies:
   flutter_test:

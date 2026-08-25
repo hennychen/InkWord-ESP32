@@ -71,6 +71,53 @@ class WifiAp {
   );
 }
 
+/// 设备词书条目（v1.3 T3.4：GET /api/decks）
+class DeckInfo {
+  final String id;
+  final String name;
+  final int count;
+  const DeckInfo(this.id, this.name, this.count);
+
+  factory DeckInfo.fromJson(Map<String, dynamic> j) => DeckInfo(
+    j['id'] as String? ?? '',
+    j['name'] as String? ?? '',
+    (j['count'] as num?)?.toInt() ?? 0,
+  );
+}
+
+/// 设备学习统计（v1.3 T3.4：GET /api/stats，lr_stats 口径）
+class DeviceStats {
+  final String activeDeck;
+  final int totalWords;
+  final int todayNew;
+  final int todayReviews;
+  final int streakDays;
+  final int wrongCount;
+  final int dueCount;
+  final int collectedCount;
+  const DeviceStats({
+    required this.activeDeck,
+    required this.totalWords,
+    required this.todayNew,
+    required this.todayReviews,
+    required this.streakDays,
+    required this.wrongCount,
+    required this.dueCount,
+    required this.collectedCount,
+  });
+
+  factory DeviceStats.fromJson(Map<String, dynamic> j) => DeviceStats(
+    activeDeck: j['activeDeck'] as String? ?? '',
+    totalWords: (j['totalWords'] as num?)?.toInt() ?? 0,
+    todayNew: (j['todayNew'] as num?)?.toInt() ?? 0,
+    todayReviews: (j['todayReviews'] as num?)?.toInt() ?? 0,
+    streakDays: (j['streakDays'] as num?)?.toInt() ?? 0,
+    wrongCount: (j['wrongCount'] as num?)?.toInt() ?? 0,
+    dueCount: (j['dueCount'] as num?)?.toInt() ?? 0,
+    collectedCount: (j['collectedCount'] as num?)?.toInt() ?? 0,
+  );
+}
+
 class DeviceHttpClient {
   /// 设备主机（IP 或 inkword.local）
   final String host;
@@ -173,6 +220,93 @@ class DeviceHttpClient {
           )
           .timeout(const Duration(seconds: 5));
       _checkStatus(resp);
+    } catch (e) {
+      if (e is DeviceBusyException || e is DeviceHttpException) rethrow;
+      throw _mapError(e);
+    }
+  }
+
+  // ---- 词书管理与学习统计（v1.3 T3.4） ----
+
+  /// 词书列表（含活跃 id；[0] 恒为默认词库）
+  Future<(String active, List<DeckInfo> decks)> fetchDecks() async {
+    try {
+      final resp = await _http
+          .get(_u(EpdProtocol.pathDecks))
+          .timeout(const Duration(seconds: 5));
+      _checkStatus(resp);
+      final j = _decodeJson(resp.body) as Map<String, dynamic>;
+      final decks = (j['decks'] as List? ?? [])
+          .map((e) => DeckInfo.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
+      return (j['active'] as String? ?? '', decks);
+    } catch (e) {
+      if (e is DeviceBusyException || e is DeviceHttpException) rethrow;
+      throw _mapError(e);
+    }
+  }
+
+  /// 切换词书（空 id = 切回默认；设备侧复用菜单切书编排，
+  /// 含 NVS 记录/词库重载/学习状态作废/阅读进度隔离）
+  Future<void> postDeckActive(String id) async {
+    try {
+      final resp = await _http
+          .post(
+            _u(EpdProtocol.pathDeckActive),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'id': id}),
+          )
+          .timeout(const Duration(seconds: 30));
+      _checkStatus(resp);
+    } catch (e) {
+      if (e is DeviceBusyException || e is DeviceHttpException) rethrow;
+      throw _mapError(e);
+    }
+  }
+
+  /// 上传词书（words.json 原文；设备流式落 SD + manifest 登记重扫）。
+  /// query 经 Uri 构造自动 URL 编码（中文 name；设备侧 url_decode 还原）。
+  /// MB 级传输 + SD 写入，超时放宽至 60s。
+  /// [type] 版式（v1.5 T5.3 编辑器推送：word-card/qa-card/poem-card；
+  /// 空 = 设备缺省 word-card，向后兼容 T3.4 旧调用）。
+  Future<void> uploadDeck(
+    String id,
+    String name,
+    int count,
+    Uint8List bytes, {
+    String? type,
+  }) async {
+    final uri = Uri.http(host, EpdProtocol.pathDeckUpload, {
+      'id': id,
+      'name': name,
+      if (count > 0) 'count': count.toString(),
+      if (type != null && type.isNotEmpty) 'type': type,
+    });
+    try {
+      final resp = await _http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/octet-stream'},
+            body: bytes,
+          )
+          .timeout(const Duration(seconds: 60));
+      _checkStatus(resp);
+    } catch (e) {
+      if (e is DeviceBusyException || e is DeviceHttpException) rethrow;
+      throw _mapError(e);
+    }
+  }
+
+  /// 设备学习统计（今日/连续/错词/到期/收藏）
+  Future<DeviceStats> fetchStats() async {
+    try {
+      final resp = await _http
+          .get(_u(EpdProtocol.pathStats))
+          .timeout(const Duration(seconds: 5));
+      _checkStatus(resp);
+      return DeviceStats.fromJson(
+        _decodeJson(resp.body) as Map<String, dynamic>,
+      );
     } catch (e) {
       if (e is DeviceBusyException || e is DeviceHttpException) rethrow;
       throw _mapError(e);

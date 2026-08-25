@@ -31,6 +31,16 @@ class EpdProtocol {
   static const String pathWifiStatus = '/api/wifi/status';
   static const String pathWifiConnect = '/api/wifi/connect';
 
+  /* 词书管理与学习统计（v1.3 T3.4 App 一期）
+   * GET  pathDecks      {"active":"", "decks":[{id,name,count}]}
+   * POST pathDeckUpload  ?id=&name=&count=，body = words.json 文本
+   * POST pathDeckActive  {"id":""}（空 = 切回默认词库）
+   * GET  pathStats       今日统计/连续天数（设备 lr_stats 口径） */
+  static const String pathDecks = '/api/decks';
+  static const String pathDeckUpload = '/api/deck/upload';
+  static const String pathDeckActive = '/api/deck/active';
+  static const String pathStats = '/api/stats';
+
   /// mDNS 主机名（STA 在线模式注册 _http._tcp）
   static const String mdnsHost = 'inkword.local';
 
