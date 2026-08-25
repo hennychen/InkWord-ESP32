@@ -197,7 +197,7 @@ V2.0 新增硬件需求：INMP441 数据线 ×1（时钟可与输出共享，见
    （或单列"IDF 迁移"决策项，动机含 BLE coex 解锁）；
 5. 5.3 交互表按 §三 重写：补 SET/RST、解决长按中键冲突、定义左右键自评；
 6. 5.6 刷新伪代码对齐 refresh_scheduler 实际（阈值计数 + 分页面阈值）；
-7. 6.2 数据表：决策学习者账户体系（V1 设备即用户 vs 引入 UserId）；
+7. 6.2 数据表：决策学习者账户体系（V1 设备即用户 vs 引入 UserId）——✅ 已决策 2026-08-24（v1.4 T4.6）：[ACCOUNT_MODEL_DECISION.md](ACCOUNT_MODEL_DECISION.md)（v1.5 轻账户只管内容归属 / v2.0 完整 UserId + 多设备，LearningRecord 挂 DeviceId 不动）；
    Words 补 Root/Inflections/Source/Grade；LearningRecords 补 ConsecutiveWrong/IsCollected；
 8. 新增"移动端（InkWord_App）"章节或范围声明；
 9. 8.1 待机功耗/续航指标补充架构前提（深睡+定时唤醒模式定义后）；
