@@ -197,6 +197,14 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
  * 左/右自评即出队（游标钳位），列表态/详情态两态由渲染层承载 ---- */
 #define RV_ITEM_H   (UI_TINY ? 28 : (layout_profile_get()->kind == LAYOUT_SMALL \
                                     ? 36 : 44))    /* 对齐 menu_ui 列表行高 */
+/* 测验纵列选项区顶（题干 1/3 内容区）；行高在 ui_draw_quiz_option
+ * 内由可用区四等分与 RV_ITEM_H 取小（2026-08-25 真机反馈收窄：
+ * QUIZ_DESIGN §5「一屏四行」在 MID 416x240 沿用 RV_ITEM_H=44 实测
+ * 违约——opt_top 93 + 4×44 = 269 出屏（提示栏 206），D 项不可见且
+ * 测验选项恒 4 项无滚动语义；收窄后 MID 416x240 行高 27、400x300=37，
+ * TINY 竖屏充裕仍 28，SMALL 恒网格不进纵列） */
+#define QZ_OPT_TOP  (UI_STATUS_H + (epd_gfx_height() - UI_STATUS_H \
+                                    - RV_HINT_H) / 3)
 #define RV_LIST_TOP (UI_STATUS_H + 4)
 #define RV_HINT_H   (UI_TINY ? 18 : 24)            /* 底部提示行预留 */
 #define RV_VISIBLE  ((epd_gfx_height() - UI_STATUS_H - RV_HINT_H - 4) / RV_ITEM_H)
@@ -338,6 +346,10 @@ static bool quiz_grid_active(void)
     if (!quiz_session_at(s_quiz_i, &q)) return false;
     if (q.type == QUIZ_T3) return true;
     if (q.type == QUIZ_TF) return false;
+    /* SMALL 264x176 纵列四行数学上放不下（可用 70px < 4×16px 释义行），
+     * 恒 2×2 网格（P2 变体本为小屏省空间设计，2026-08-25）；
+     * 用户开关仅 MID+ 档生效 */
+    if (layout_profile_get()->kind == LAYOUT_SMALL) return true;
     return settings_quiz_grid();
 }
 
@@ -399,27 +411,32 @@ extern "C" void quiz_flow_start(void)
 }
 
 /* 选项行渲染：槽号 A-D + 释义首行 16px 点阵；反选=黑底白字
- * （复习词表同款）；× = 答错标记（用户所选槽） */
+ * （复习词表同款）；× = 答错标记（用户所选槽）。行高可用区四等分
+ * 与 RV_ITEM_H 取小（见 QZ_OPT_TOP 注释，非复习词表 RV_ITEM_H） */
 static void ui_draw_quiz_option(int k, const char *txt, bool invert,
                                 bool mark_x, int opt_top)
 {
-    int y = opt_top + k * RV_ITEM_H;
+    int qz_h = ((UI_TINY ? epd_gfx_height() : UI_FOOT_TOP - 4) - opt_top)
+               / QUIZ_OPTS;
+    if (qz_h > RV_ITEM_H) qz_h = RV_ITEM_H;
+
+    int y = opt_top + k * qz_h;
     int w = epd_gfx_width() - 2 * UI_MARGIN_X;
     if (invert)
-        epd_gfx_fill_rect(UI_MARGIN_X, y, w, RV_ITEM_H - 4, EPD_GFX_BLACK);
+        epd_gfx_fill_rect(UI_MARGIN_X, y, w, qz_h - 4, EPD_GFX_BLACK);
 
     char slot[3] = { (char)('A' + k), '.', 0 };
-    epd_gfx_draw_text(UI_MARGIN_X + 4, y + RV_ITEM_H * 3 / 4,
+    epd_gfx_draw_text(UI_MARGIN_X + 4, y + qz_h * 3 / 4,
                       slot, invert ? EPD_GFX_WHITE : EPD_GFX_BLACK, 2);
     int tw, th;
     epd_gfx_text_bounds(slot, 2, &tw, &th);
     int mx = UI_MARGIN_X + 4 + tw + 8;
     int mw = UI_MARGIN_X + w - 8 - mx;
     if (mw >= 32 && txt[0])
-        cjk_text_draw_wrap(mx, y + (RV_ITEM_H - 16) / 2, mw, 0, 0, 1,
+        cjk_text_draw_wrap(mx, y + (qz_h - 16) / 2, mw, 0, 0, 1,
                            txt, invert ? EPD_GFX_WHITE : EPD_GFX_BLACK);
     if (mark_x)
-        epd_gfx_draw_text(UI_MARGIN_X + w - 20, y + RV_ITEM_H * 3 / 4,
+        epd_gfx_draw_text(UI_MARGIN_X + w - 20, y + qz_h * 3 / 4,
                           "x", EPD_GFX_BLACK, 2);
 }
 
@@ -495,8 +512,7 @@ static void ui_draw_quiz(void)
 
     bool grid = quiz_grid_active();
     const WordEntry *w = word_parser_get(s_quiz_pool[q.word_idx]);
-    int opt_top = UI_STATUS_H +
-                  (epd_gfx_height() - UI_STATUS_H - RV_HINT_H) / 3;
+    int opt_top = QZ_OPT_TOP;
     if (grid)                       /* 网格版式：题干 1/3 + 网格 2/3 */
         opt_top = UI_STATUS_H + (UI_FOOT_TOP - UI_STATUS_H) / 3;
 
