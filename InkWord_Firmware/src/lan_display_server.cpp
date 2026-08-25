@@ -18,6 +18,14 @@
  *                       直刷。BW 面板两长度相等自然退化 v1
  *   GET  /wifi          Wi-Fi 配网页：扫描列表选 SSID + 密码输入（两种模式均可用）
  *   GET  /api/wifi/scan|status、POST /api/wifi/connect（异步连接，状态轮询）
+ *   GET  /api/decks     词书列表（v1.3 T3.4 App 换书）：id/name/count/active
+ *   POST /api/deck/upload?id=&name=&count=&type= 词书 LAN 直传
+ *                        （body=words.json 文本，流式落 SD decks/<id>/ +
+ *                        manifest 登记重扫；type 可选版式 word-card/
+ *                        qa-card/poem-card，v1.5 T5.3 编辑器推送兑现预留）
+ *   POST /api/deck/active  切换词书（body {"id":""}；复用菜单切书编排
+ *                        deck_flow_switch：NVS+重载+状态作废+进度隔离）
+ *   GET  /api/stats     今日统计/连续天数（lr_stats 口径 + 错词/到期/收藏数）
  *   GET  其他任意 URI   302 重定向（captive portal 探测域名 → 弹出配网页）
  *
  * 两种工作模式：
@@ -37,6 +45,11 @@
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
 #include "study_mode_machine.h"
+#include "deck_manager.h"
+#include "learning_state.h"
+#include "word_parser.h"
+#include "storage_manager.h"
+#include "gpio_config.h"      /* SD_MOUNT_POINT */
 
 #include "esp_http_server.h"
 #include "esp_netif.h"
@@ -73,6 +86,8 @@ static TaskHandle_t s_portal_task = NULL;
 extern "C" void ui_force_full_refresh_next(void);
 /* main.cpp 提供：学习界面渲染入口（portal 结束后恢复画面用） */
 extern "C" void ui_render_word(study_mode_t mode, int index);
+/* main.cpp 提供：切书编排（v1.3 T3.1：NVS+词库重载+状态作废+进度隔离） */
+extern "C" bool deck_flow_switch(int idx);
 
 /* ============================================================
  * 内嵌网页（单文件，无外部依赖；手机浏览器打开即用）
@@ -597,6 +612,10 @@ static esp_err_t wifi_connect_post_handler(httpd_req_t *req)
     return resp;
 }
 
+/* 词书/统计端点（定义见后「词书管理与学习统计」区块；catchall 先行分发） */
+static esp_err_t deck_list_get_handler(httpd_req_t *req);
+static esp_err_t stats_get_handler(httpd_req_t *req);
+
 /* GET 总入口（路径通配）：路径分发；未知路径 302（captive portal 探测域名重定向） */
 static esp_err_t catchall_get_handler(httpd_req_t *req)
 {
@@ -609,6 +628,8 @@ static esp_err_t catchall_get_handler(httpd_req_t *req)
     if (strcmp(path, "/wifi") == 0)             return wifi_page_get_handler(req);
     if (strcmp(path, "/api/wifi/scan") == 0)    return wifi_scan_get_handler(req);
     if (strcmp(path, "/api/wifi/status") == 0)  return wifi_status_get_handler(req);
+    if (strcmp(path, "/api/decks") == 0)        return deck_list_get_handler(req);
+    if (strcmp(path, "/api/stats") == 0)        return stats_get_handler(req);
 
     /* 其余：captive portal 探测域名（connectivitycheck.gstatic.com 等）
      * 或未知路径 → 302；手机连热点后系统探测被重定向到配网页 → 自动弹出 */
@@ -691,6 +712,254 @@ static esp_err_t display_post_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * 词书管理与学习统计（v1.3 T3.4，App LAN 直连链路）
+ * ============================================================ */
+
+/* query 值 URL 解码（%XX）：name 中文经 URL 编码传输 */
+static void url_decode(char *s)
+{
+    char *o = s;
+    while (*s) {
+        if (s[0] == '%' && s[1] && s[2]) {
+            int hi = strchr("0123456789abcdefABCDEF", s[1]) ?
+                     (s[1] <= '9' ? s[1] - '0' : (s[1] | 0x20) - 'a' + 10) : -1;
+            int lo = strchr("0123456789abcdefABCDEF", s[2]) ?
+                     (s[2] <= '9' ? s[2] - '0' : (s[2] | 0x20) - 'a' + 10) : -1;
+            if (hi >= 0 && lo >= 0) {
+                *o++ = (char)((hi << 4) | lo);
+                s += 3;
+                continue;
+            }
+        }
+        *o++ = *s++;
+    }
+    *o = '\0';
+}
+
+static bool deck_id_valid(const char *id)
+{
+    size_t n = strlen(id);
+    if (n == 0 || n > DECK_ID_MAX) return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = id[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') || c == '_' || c == '-'))
+            return false;
+    }
+    return true;
+}
+
+static esp_err_t deck_list_get_handler(httpd_req_t *req)
+{
+    deck_manager_scan();                    /* 幂等重扫：上传后清单最新 */
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "active", deck_manager_active_id());
+    cJSON *arr = cJSON_AddArrayToObject(root, "decks");
+    for (int i = 0; i < deck_manager_count(); i++) {
+        const deck_info_t *d = deck_manager_at(i);
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "id", d->id);
+        cJSON_AddStringToObject(o, "name", d->name);
+        cJSON_AddNumberToObject(o, "count", d->count);
+        cJSON_AddItemToArray(arr, o);
+    }
+    char *body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!body) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_send(req, NULL, 0);
+    }
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t e = httpd_resp_send(req, body, strlen(body));
+    free(body);
+    return e;
+}
+
+static esp_err_t stats_get_handler(httpd_req_t *req)
+{
+    char body[256];
+    snprintf(body, sizeof(body),
+             "{\"activeDeck\":\"%s\",\"totalWords\":%d,"
+             "\"todayNew\":%d,\"todayReviews\":%d,\"streakDays\":%d,"
+             "\"wrongCount\":%d,\"dueCount\":%d,\"collectedCount\":%d}",
+             deck_manager_active_name(), word_parser_get_count(),
+             learning_state_today_new(), learning_state_today_reviews(),
+             learning_state_streak_days(), learning_state_wrong_count(),
+             learning_state_due_count(), learning_state_collected_count());
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, strlen(body));
+}
+
+static esp_err_t deck_upload_post_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 ||
+        (size_t)req->content_len > 4 * 1024 * 1024) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "empty or oversized body");
+        return ESP_OK;
+    }
+
+    char query[192];
+    char id[DECK_ID_MAX + 1] = "", name[40] = "", cnt[12] = "";
+    char dtype[20] = "";                    /* v1.5 T5.3：版式透传 */
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "id", id, sizeof(id));
+        httpd_query_key_value(query, "name", name, sizeof(name));
+        httpd_query_key_value(query, "count", cnt, sizeof(cnt));
+        httpd_query_key_value(query, "type", dtype, sizeof(dtype));
+    }
+    url_decode(id);
+    url_decode(name);
+    if (!deck_id_valid(id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "id required (1-7 chars [0-9a-zA-Z_-])");
+        return ESP_OK;
+    }
+    if (!name[0]) strlcpy(name, id, sizeof(name));
+    int count = atoi(cnt);
+
+    /* 版式白名单（T4.3 card_layout 分派键；不传走 word-card 缺省，
+     * 向后兼容 T3.4 旧调用；非法值拒绝防拼错静默降级） */
+    const char *ptype = NULL;
+    if (dtype[0]) {
+        if (strcmp(dtype, "word-card") == 0 ||
+            strcmp(dtype, "qa-card") == 0 ||
+            strcmp(dtype, "poem-card") == 0)
+            ptype = dtype;
+        else {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_sendstr(req, "type must be word-card/qa-card/poem-card");
+            return ESP_OK;
+        }
+    }
+
+    char dir[64], tmp[80], final[80];
+    snprintf(dir, sizeof(dir), SD_MOUNT_POINT "/decks/%s", id);
+    snprintf(tmp, sizeof(tmp), "%s/words.json.tmp", dir);
+    snprintf(final, sizeof(final), "%s/words.json", dir);
+    if (storage_mkdir_p(dir) != 0) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "mkdir failed (SD?)");
+        return ESP_OK;
+    }
+
+    FILE *f = fopen(tmp, "w");
+    if (!f) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "open failed");
+        return ESP_OK;
+    }
+
+    /* 流式落盘（words.json 可达 MB 级，不占整块 RAM）；首块抽验 JSON 头 */
+    char buf[1024];
+    int received = 0;
+    bool head_ok = false;
+    while (received < req->content_len) {
+        int r = httpd_req_recv(req, buf, (int)sizeof(buf));
+        if (r <= 0) {
+            fclose(f);
+            remove(tmp);
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_sendstr(req, "recv failed");
+            return ESP_FAIL;
+        }
+        if (!head_ok) {
+            head_ok = (buf[0] == '{' || buf[0] == '[');
+            if (!head_ok) {
+                fclose(f);
+                remove(tmp);
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_set_type(req, "text/plain");
+                httpd_resp_sendstr(req, "body not json");
+                return ESP_OK;
+            }
+        }
+        fwrite(buf, 1, (size_t)r, f);
+        received += r;
+    }
+    fclose(f);
+    if (rename(tmp, final) != 0) {
+        remove(tmp);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "rename failed");
+        return ESP_OK;
+    }
+
+    /* manifest 登记 + 重扫（词书内容解析与切换由 App 另发 active；
+     * subject 预留 NULL 走 en 缺省；payloadType v1.5 T5.3 兑现透传
+     * ——编辑器推 qa/poem 卡组时 manifest 登记版式，T4.3 渲染分派
+     * 依此选版式 */
+    if (deck_manager_upsert(id, name, count, NULL, ptype) != 0) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "manifest write failed");
+        return ESP_OK;
+    }
+
+    LOG_I("deck uploaded: %s (%d B, %d words)", id, received, count);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+static esp_err_t deck_active_post_handler(httpd_req_t *req)
+{
+    char body[96];
+    if (req->content_len >= (int)sizeof(body)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "body too large");
+        return ESP_OK;
+    }
+    int r = httpd_req_recv(req, body, req->content_len);
+    if (r <= 0) return ESP_FAIL;
+    body[r] = '\0';
+
+    cJSON *j = cJSON_Parse(body);
+    if (!j) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "bad json");
+        return ESP_OK;
+    }
+    const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(j, "id"));
+    if (!id) id = "";                        /* 缺省 = 切回默认词库 */
+
+    deck_manager_scan();
+    int idx = 0;                              /* "" 恒在 [0] */
+    for (int i = 0; i < deck_manager_count(); i++) {
+        if (strcmp(deck_manager_at(i)->id, id) == 0) {
+            idx = i;
+            break;
+        }
+    }
+    cJSON_Delete(j);
+
+    /* 切书编排与菜单路径同源（NVS+词库重载+学习状态作废+进度隔离
+     * +归位闪卡）；与按键任务的渲染竞争同 /api display 既有模型 */
+    if (!deck_flow_switch(idx)) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "switch failed (deck file?)");
+        return ESP_OK;
+    }
+
+    char resp[96];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"active\":\"%s\"}",
+             deck_manager_active_id());
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+/* ============================================================
  * 公共接口
  * ============================================================ */
 static void register_mdns(void)
@@ -718,7 +987,7 @@ int lan_server_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = 80;
     cfg.stack_size = 8192;                   /* handler 内执行整帧全刷，留足调用栈 */
-    cfg.max_uri_handlers = 4;                /* GET 通配 + POST×2 */
+    cfg.max_uri_handlers = 6;                /* GET 通配 + POST×4（display/wifi/deck×2） */
     cfg.uri_match_fn = httpd_uri_match_wildcard;  /* 支持路径通配路由 */
 
     esp_err_t err = httpd_start(&s_server, &cfg);
@@ -746,6 +1015,18 @@ int lan_server_start(void)
     uri_conn.method = HTTP_POST;
     uri_conn.handler = wifi_connect_post_handler;
     httpd_register_uri_handler(s_server, &uri_conn);
+
+    httpd_uri_t uri_deck_up = {};
+    uri_deck_up.uri = "/api/deck/upload";
+    uri_deck_up.method = HTTP_POST;
+    uri_deck_up.handler = deck_upload_post_handler;
+    httpd_register_uri_handler(s_server, &uri_deck_up);
+
+    httpd_uri_t uri_deck_act = {};
+    uri_deck_act.uri = "/api/deck/active";
+    uri_deck_act.method = HTTP_POST;
+    uri_deck_act.handler = deck_active_post_handler;
+    httpd_register_uri_handler(s_server, &uri_deck_act);
 
     /* mDNS：仅 STA 在线模式注册 inkword.local（失败不影响 IP 直访）。
      * portal 模式跳过，待配网完成回 STA 后由 monitor 补注册 */

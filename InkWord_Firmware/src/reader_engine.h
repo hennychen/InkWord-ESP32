@@ -53,6 +53,14 @@ int reader_font_step(int dir, int cur_page);
 int reader_progress_page(void);
 
 /**
+ * @brief 进度键卡组隔离（v1.3 T3.1）：非空 scope 时 rd_* 键加后缀
+ *        （rd_page_<scope>），切词书不丢阅读进度；NULL/"" 用原键
+ *        （默认卡组零迁移）。≤7 字符（NVS 键名 15 上限）；随时可切
+ *        （下一页保存即落新键，旧键自然遗留不冲突）。
+ */
+void reader_set_progress_scope(const char *scope);
+
+/**
  * @brief 渲染第 page 页到内容区（状态栏以下整幅，逐页全刷由调用方控制）
  *        并自动保存进度（页码 + 字号级，NVS "inkword"/rd_*）。
  */

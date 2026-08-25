@@ -188,6 +188,13 @@ static int64_t sb_epoch_now(void)
     return s_time_epoch + (esp_timer_get_time() - s_time_timer_us) / 1000000;
 }
 
+/* 公共导出（.h 声明）：learning_state 今日统计日结判定用。
+ * 未同步返回 -1，调用方挂起日结（计数不推进，同步后首个评分补结） */
+int64_t standby_time_now(void)
+{
+    return sb_epoch_now();
+}
+
 /* 校时：无效 epoch 忽略；已同步且偏差 <60s 不重置（避免频繁重画时钟） */
 static void sb_time_adjust(int64_t epoch)
 {

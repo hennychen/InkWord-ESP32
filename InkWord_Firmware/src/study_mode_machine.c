@@ -24,6 +24,7 @@
 #include <sys/stat.h>           /* P2B：enter_chat SD 在位预检 */
 #include <errno.h>
 #include "learning_state.h"
+#include "settings_ui.h"  /* v1.2 T2.5：发音门控（set_audio） */
 #include "reader_engine.h"   /* READER 模式：页序列/字号切换/进度恢复 */
 
 #include "nvs_flash.h"
@@ -51,7 +52,8 @@ static int s_cursor = 0;
 static bool s_reveal = true;
 
 static const char *s_names[MODE_COUNT] =
-    { "Flash", "Dictation", "Review", "Reader", "WrongBook", "收藏", "AI Chat" };
+    { "Flash", "Dictation", "Review", "Reader", "WrongBook", "收藏",
+      "AI Chat", "测验" };
 
 /* ---- 序列抽象：默认全词库，错词本换连错过滤视图，阅读换页序列 ---- */
 
@@ -59,8 +61,10 @@ static int seq_total(void)
 {
     if (s_current == MODE_WRONGBOOK)  return learning_state_wrong_count();
     if (s_current == MODE_COLLECTION) return learning_state_collected_count();
+    if (s_current == MODE_REVIEW)     return learning_state_due_count();
     if (s_current == MODE_READER)     return reader_page_count();
     if (s_current == MODE_CHAT)       return 0;  /* 对话无词序列（状态栏 0/0） */
+    if (s_current == MODE_QUIZ)       return 0;  /* 测验题号由 main.cpp 自绘状态栏 */
     return word_parser_get_count();
 }
 
@@ -72,11 +76,13 @@ static void reader_cursor_restore(void)
     if (p >= 0) s_cursor = p;
 }
 
-/* 游标 -> 词库索引（错词本/收藏浏览模式下为过滤序列内第 cursor 个词） */
+/* 游标 -> 词库索引（错词本/收藏/复习模式下为过滤序列内第 cursor 个词；
+ * 复习=FSRS 到期视图，2026-08-24 PRD「复习=SRS 到期词」落地） */
 static int seq_word_index(int cursor)
 {
     if (s_current == MODE_WRONGBOOK)  return learning_state_wrong_at(cursor);
     if (s_current == MODE_COLLECTION) return learning_state_collected_at(cursor);
+    if (s_current == MODE_REVIEW)     return learning_state_due_at(cursor);
     return cursor;
 }
 
@@ -88,7 +94,7 @@ void study_mode_init(void)
         uint8_t m = 0;
         if (nvs_get_u8(h, "last_mode", &m) == ESP_OK &&
             m < MODE_COUNT && m != MODE_WRONGBOOK && m != MODE_COLLECTION &&
-            m != MODE_CHAT) {
+            m != MODE_CHAT && m != MODE_QUIZ) {
             s_current = (study_mode_t)m;
         }
         nvs_close(h);
@@ -129,7 +135,7 @@ study_mode_t study_mode_switch_next(void)
     do {
         s_current = (study_mode_t)((s_current + 1) % MODE_COUNT);
     } while (s_current == MODE_WRONGBOOK || s_current == MODE_COLLECTION ||
-             s_current == MODE_CHAT);
+             s_current == MODE_CHAT || s_current == MODE_QUIZ);
     apply_mode(s_current);
     return s_current;
 }
@@ -138,7 +144,7 @@ void study_mode_set(study_mode_t mode)
 {
     if (mode < 0 || mode >= MODE_COUNT) return;
     if (mode == MODE_WRONGBOOK || mode == MODE_COLLECTION ||
-        mode == MODE_CHAT) return;
+        mode == MODE_CHAT || mode == MODE_QUIZ) return;
     apply_mode(mode);   /* 同模式重入也归零游标，与 switch_next 语义一致 */
 }
 
@@ -256,8 +262,11 @@ void study_mode_handle_action(int action)
     case 3: { /* speak：播放当前词音频（P0C 命名解析）。w->audio 人工
                * 命名词库优先，否则按云端约定取 {cloud_id}.mp3；文件
                * 缺失（含无 SD）短震反馈，不再回退测试音（TEMP 已移除）。
-               * 异步入队即返，存在性在此先行检查 */
+               * 异步入队即返，存在性在此先行检查。
+               * v1.2 T2.5：发音关闭（set_audio=0）时整段跳过
+               * （不播不进跟读，提示音门控在 ui_sfx_play 入口） */
         if (s_current == MODE_READER) return;  /* 书页无词音频 */
+        if (!settings_audio_enabled()) break;
         const WordEntry *w = word_parser_get(seq_word_index(s_cursor));
         char path[128] = { 0 };
         if (w && w->audio[0])
@@ -380,6 +389,32 @@ void study_mode_exit_chat(void)
     LOG_I("left chat mode");
 }
 
+bool study_mode_enter_quiz(void)
+{
+    /* 前置：词库 ≥ 8（quiz_session 干扰项来源下限）；题池构造、
+     * 会话开启与首帧渲染由 main.cpp 适配层在 enter 成功后执行
+     * （QUIZ_DESIGN §7） */
+    if (word_parser_get_count() < 8) {
+        LOG_W("quiz enter rejected: only %d words",
+              word_parser_get_count());
+        return false;
+    }
+    s_current = MODE_QUIZ;
+    s_cursor = 0;
+    s_reveal = true;
+    LOG_I("entered quiz mode");
+    return true;
+}
+
+void study_mode_exit_quiz(void)
+{
+    /* 临时视图：不写 last_mode；作答评分即时生效，退出无补偿 */
+    s_current = MODE_FLASH;
+    s_cursor = 0;
+    s_reveal = true;
+    LOG_I("left quiz mode");
+}
+
 bool study_mode_after_uncollect(void)
 {
     if (s_current != MODE_COLLECTION) return false;
@@ -406,6 +441,20 @@ bool study_mode_after_quality(int quality)
         return true;
     }
     if (s_cursor >= learning_state_wrong_count()) s_cursor = 0;
+    return true;
+}
+
+/* 复习模式自评后：评分即置会话 done 位（该词移出到期序列），后词
+ * 前移、游标钳 n-1（与 after_uncollect 同策略：取消末词显前一词）；
+ * 序列清空钳 0（渲染层显「今日无到期词」空态页）。任一 quality
+ * 值都出队——本会话已过，避免原地循环。
+ * @return true 表示游标/序列变化，需重绘当前页。 */
+bool study_mode_after_due_review(void)
+{
+    if (s_current != MODE_REVIEW) return false;
+
+    int total = learning_state_due_count();
+    if (s_cursor >= total) s_cursor = total > 0 ? total - 1 : 0;
     return true;
 }
 

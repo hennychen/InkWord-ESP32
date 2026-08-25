@@ -21,10 +21,31 @@
 //
 // 用法：cd InkWord_Firmware && swift tools/gen_cjk_font.swift
 //       （改引文/字表后重新运行即可，勿手改生成文件）
+// 子集模式（v1.4 T4.5 字库子集下发）：
+//       swift tools/gen_cjk_font.swift --subset <charset.txt> <deck_id>
+//       读字符集文本（后端 /api/admin/decks/<code>/charset 导出），减去主集
+//       src/cjk_font_data.bin 已收录码点，差集空即退出；差集字符渲染三级
+//       位图 → ./deck_<id>.bin（CKF1 同格式，固件 cjk_font_sd 级联查找：
+//       主集 miss → 子集；拷入 SD /fonts/deck_<id>.bin 生效）。
 
 import Foundation
 import CoreText
 import CoreGraphics
+
+// ---------- 0. 模式解析（T4.5）：全量（缺省）/ --subset 子集 ----------
+let args = CommandLine.arguments
+var subsetMode = false
+var subsetDeckId = ""
+if args.contains("--subset") {
+    /* swift JIT：args[0]=脚本路径 → [1]="--subset" [2]=charset [3]=deck_id */
+    guard args.count == 4 else {
+        FileHandle.standardError.write(
+            "usage: swift tools/gen_cjk_font.swift --subset <charset.txt> <deck_id>\n"
+                .data(using: .utf8)!); exit(1)
+    }
+    subsetMode = true
+    subsetDeckId = args[3]
+}
 
 let LEVELS = [16, 20, 24]   // 像素格边长（level 0/1/2；阅读器三级字号）
 let FONT_SIZE_HINT: [Int: CGFloat] = [16: 15, 20: 19, 24: 22]
@@ -33,12 +54,13 @@ let FONT_SIZE_HINT: [Int: CGFloat] = [16: 15, 20: 19, 24: 22]
 let MAX_COLS = 8       // 引文区每行最多字符数
 let MAX_LINES = 5      // 引文区每条最多行数
 
-// ---------- 1. 解析引文 ----------
+// ---------- 1. 解析引文（全量模式） ----------
+var quotes: [[String]] = []
+if !subsetMode {
 let src = URL(fileURLWithPath: "tools/chuanxilu_quotes.txt")
 guard let raw = try? String(contentsOf: src, encoding: .utf8) else {
     FileHandle.standardError.write("cannot read tools/chuanxilu_quotes.txt\n".data(using: .utf8)!); exit(1)
 }
-var quotes: [[String]] = []
 var cur: [String] = []
 for line in raw.components(separatedBy: "\n") {
     if line.hasPrefix("#") { continue }
@@ -57,6 +79,7 @@ for (qi, q) in quotes.enumerated() {
         precondition(l.count <= MAX_COLS, "quote #\(qi) line \(li): '\(l)' \(l.count) chars > \(MAX_COLS)")
     }
 }
+}
 
 // ---------- 2. 收集字符集 ----------
 /* 出处串（右下角署名，与引文同字库渲染；字符集必须一并收录） */
@@ -72,16 +95,56 @@ let PUNCT = "，。、；：？！“”‘’（）《》〈〉【】「」『�
 let IPA = "ˈˌəɪɛæʊɑɔʌɡʃʤŋɜʧθðʒːɒ"
 
 var charset = Set<Character>()
+if subsetMode {
+    /* 子集模式：读字符集文本 − 主集已收录码点 = 差集（生僻字刚需，
+     * 后端 GET /api/admin/decks/<code>/charset 导出全文，此处吞
+     * 换行/空白后逐字符去重） */
+    guard let cs = try? String(contentsOf: URL(fileURLWithPath: args[2]),
+                                encoding: .utf8) else {
+        FileHandle.standardError.write(
+            "cannot read \(args[2])\n".data(using: .utf8)!); exit(1)
+    }
+    for ch in cs where !ch.isWhitespace {
+        charset.insert(ch)
+    }
+    guard let mainBin = try? Data(contentsOf: URL(fileURLWithPath:
+                                "src/cjk_font_data.bin")) else {
+        FileHandle.standardError.write(
+            "cannot read src/cjk_font_data.bin (run full mode first)\n"
+                .data(using: .utf8)!); exit(1)
+    }
+    func rd32(_ o: Int) -> Int {
+        Int(mainBin[o]) | Int(mainBin[o + 1]) << 8 |
+        Int(mainBin[o + 2]) << 16 | Int(mainBin[o + 3]) << 24
+    }
+    let n = rd32(8)
+    var mainCps = Set<UInt32>()
+    for i in 0..<n {
+        mainCps.insert(UInt32(mainBin[24 + 2 * i]) |
+                       UInt32(mainBin[25 + 2 * i]) << 8)
+    }
+    charset = Set(charset.filter {
+        !mainCps.contains($0.unicodeScalars.first!.value)
+    })
+    if charset.isEmpty {
+        FileHandle.standardError.write(
+            "subset empty: all chars covered by main font, no deck font needed\n"
+                .data(using: .utf8)!)
+        exit(0)
+    }
+} else {
 for q in quotes { for line in q { for ch in line { charset.insert(ch) } } }
 for ch in ATTRIB { charset.insert(ch) }
 for ch in PUNCT { charset.insert(ch) }
 for ch in IPA { charset.insert(ch) }
 for cp in 0x20...0x7E { charset.insert(Character(UnicodeScalar(cp)!)) }   // ASCII
+}
 
+var phonCps = Set<Character>()
+if !subsetMode {
 /* 词卡音标行全量字符收集（src/default_words.json phonetic 列）：诗词类
  * 词条该列填中文作者名（生成端语义，点阵一并渲染），人名生僻字
  * （翃燮夔等）不在 GB 一级库，不收录则真机画空心框 */
-var phonCps = Set<Character>()
 if let jsonData = try? Data(contentsOf: URL(fileURLWithPath: "src/default_words.json")),
    let obj = try? JSONSerialization.jsonObject(with: jsonData),
    let dict = obj as? [String: Any],
@@ -92,7 +155,10 @@ if let jsonData = try? Data(contentsOf: URL(fileURLWithPath: "src/default_words.
     }
 }
 for ch in phonCps { charset.insert(ch) }
+}
 
+var gbCount = 0   /* 报告代码（L~683）顶层引用：声明留在块外，子集模式恒 0 */
+if !subsetMode {
 /* GB2312 一级字库 3755 字（区位 16-55），GBK 双字节解码取 Unicode。
  * 注：GB_2312_80(0x0630) 在新 macOS 解码失效（逐字节返回 nil，实测
  * 2026-08-20），改用 GBK_95(0x0631，GBK 对 GB2312 超集，解码 3760 槽
@@ -100,7 +166,6 @@ for ch in phonCps { charset.insert(ch) }
 let gbEnc = String.Encoding(
     rawValue: CFStringConvertEncodingToNSStringEncoding(
         CFStringEncoding(0x0631)))
-var gbCount = 0
 for qu in 16...55 {
     for wei in 1...94 {
         let b0 = UInt8(0xA0 + qu), b1 = UInt8(0xA0 + wei)
@@ -112,6 +177,7 @@ for qu in 16...55 {
     }
 }
 precondition(gbCount >= 3700, "GB2312 level-1 decode suspiciously small: \(gbCount)")
+}
 
 let cps = charset.map { $0.unicodeScalars.first!.value }.sorted()
 for cp in cps {
@@ -476,6 +542,13 @@ for l in levelOuts { bin.append(contentsOf: le16(l.stride)) }
 for cp in cps { bin.append(contentsOf: le16(Int(cp))) }
 while bin.count % 4 != 0 { bin.append(0) }
 for l in levelOuts { for b in l.bits { bin.append(contentsOf: b) } }
+if subsetMode {
+    let outPath = "deck_\(subsetDeckId).bin"
+    try! bin.write(to: URL(fileURLWithPath: outPath))
+    say("// subset deck=\(subsetDeckId) glyphs=\(cps.count) bin=\(bin.count)B -> \(outPath)")
+    say("// copy to SD: /fonts/deck_\(subsetDeckId).bin (cjk_font_sd 级联加载)")
+    exit(0)   /* 子集不生成 c/h 与引文表（主集不变） */
+}
 try! bin.write(to: URL(fileURLWithPath: "src/cjk_font_data.bin"))
 
 // ---------- 5. 输出 C（lookup 实现 + 引文表，数据在 bin） ----------

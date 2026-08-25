@@ -10,7 +10,7 @@
  *     每 5 分钟轮换一条（24 条循环）
  *   - 出处：右下角右对齐 "——王阳明《传习录》"（同字库静态署名）
  *   - 时间无效时引文留白（仅出处）；天气不显示（拉取/NVS 缓存/
- *     校时兑底数据链路保留，随时可加回）
+ *     校时兜底数据链路保留，随时可加回）
  *
  * 并发模型（单一写者纪律，零新增 FreeRTOS 任务）：
  *   - 所有绘制仅发生在主循环任务（loop -> standby_tick / standby_render_full）；
@@ -97,7 +97,7 @@ void standby_time_checkpoint(void);
  *        （epoch = 入睡基准 + (time(NULL) - rtc0)，esp_timer 已归零
  *        以当前时刻重开计时）。仅限深睡唤醒后的启动路径调用
  *        （冷启动 RTC 清零差分无意义）；无 checkpoint 或未同步时 no-op。
- *        精度：RC 慢钟小时级误差分钟级，联网后 HTTP Date 校准兑底。
+ *        精度：RC 慢钟小时级误差分钟级，联网后 HTTP Date 校准兜底。
  */
 void standby_time_restore(void);
 
@@ -106,6 +106,12 @@ void standby_time_restore(void);
  *        （无效区间忽略；已同步且偏差 <60s 不重置）。
  */
 void standby_time_set(int64_t epoch);
+
+/**
+ * @brief 自治钟当前 Unix 秒（2026-08-24 今日统计结算用，跨模块导出）。
+ * @return epoch 秒；-1 = 未同步（调用方自行降级挂起日结判定）。
+ */
+int64_t standby_time_now(void);
 
 #ifdef __cplusplus
 }

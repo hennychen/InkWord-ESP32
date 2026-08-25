@@ -6,6 +6,8 @@
  * 复用 wifi_config_ui draw_list_page(partial)（2026-08 真机验证）；
  * CJK 标签 16px 点阵（FreeSans 无汉字），右侧徽标混排（ASCII 走
  * FreeSans 基线坐标 / 中文走点阵顶左坐标，两套语义经 draw_badge 统一）。
+ * 主列表分组化（2026-08-24，O4）：[学习]/[同步]/[系统] 三组标题行
+ * （同按键说明页组头样式，16px 小字不可选中，光标循环跳过）。
  *
  * 几何全运行期派生（MU_* 宏 + layout_profile 档位，零特判）：
  *   MID 416x240 项高 44 可见 4 / SMALL 264x176 项高 36 可见 3 /
@@ -34,6 +36,13 @@
 #include "lan_display_server.h"
 #include "audio_sync.h"     /* P0C：音频同步徽标/后台任务启动 */
 #include "learning_state.h"
+#include "daily_plan.h"  /* v1.2 T2.4：今日行 n/goal 配额显示 */
+#include "settings_ui.h" /* v1.2 T2.5：设置页覆盖层入口（二期位） */
+#include "max17048.h"  /* v1.2 T2.6：设备信息页电量行（I2C 复用） */
+#include "menu_icons.h" /* 1bit 剪影图标前缀（gen_menu_icons.py 生成） */
+#include "deck_manager.h" /* v1.3 T3.1：词书卡组（扫描/活跃徽标） */
+/* v1.3 T3.1：词书切换编排（main.cpp 导出，quiz_flow_start 同款先例） */
+extern bool deck_flow_switch(int idx);
 #include "study_mode_machine.h"
 #include "word_parser.h"
 
@@ -48,6 +57,7 @@ static const char *TAG = "MENU_UI";
 /* main.cpp 导出（study_mode_machine.c 引用 ui_render_word 同款先例） */
 extern void ui_render_current(void);
 extern const char *fw_version(void);
+extern void quiz_flow_start(void);  /* v1.2 T2.2：测验会话启动（题池+出题+首帧） */
 
 /* ---- 几何派生（MENU_DESIGN §4.2，全档运行期） ---- */
 #define MU_TINY     (layout_profile_get()->kind == LAYOUT_TINY)
@@ -67,26 +77,31 @@ extern const char *fw_version(void);
 #define MU_LABEL_W  88   /* INFO 页标签列宽（「收藏/错词」=72px 余量） */
 #define MU_KEYS_LBL_W 56 /* 按键说明页键名列宽（20px 档「上/下」=50px） */
 #define MU_INFO_LH  (MU_TINY ? 20 : 28)      /* INFO/按键说明行高（随字号） */
-#define MU_INFO_ROWS (MU_TINY ? 4 : 6)   /* TINY 裁长值项（IP/PSRAM） */
+#define MU_INFO_ROWS 5                     /* INFO 每页行数（v1.2 T2.6 设备页加电量行 4→5；TINY 超宽值自然截断，bring-up 再调） */
 
 /* 刷新策略 */
 #define MENU_UI_PARTIAL_MAX  10  /* 局刷阈值（对齐 WIFI_UI_PARTIAL_MAX） */
 
 /* ---- 模块状态（静态零初始化，无 init 无堆分配；~10B） ---- */
-typedef enum { MU_PAGE_MAIN = 0, MU_PAGE_MODE, MU_PAGE_INFO, MU_PAGE_KEYS } mu_page_t;
+typedef enum { MU_PAGE_MAIN = 0, MU_PAGE_MODE, MU_PAGE_DECK, MU_PAGE_INFO,
+               MU_PAGE_KEYS } mu_page_t;
 
 typedef struct {
-    const char *label;                    /* UTF-8 CJK 标签 */
+    const char *label;                    /* UTF-8 CJK 标签（组头=组名） */
+    bool is_header;                       /* 组头行：不可选中，光标跳过 */
+    const uint8_t *icon;                  /* 可选 NULL：20px 剪影前缀（TINY 档省略） */
     void (*badge)(char *buf, size_t n);   /* 可选 NULL：右侧徽标（ASCII 或 UTF-8） */
     void (*activate)(void);               /* 中键确认动作 */
 } mu_item_t;
 
 static bool      s_active = false;
 static mu_page_t s_page   = MU_PAGE_MAIN;
-static int       s_sel    = 0;   /* 主列表选中（0 基） */
+static int       s_sel    = 0;   /* 主列表选中（0 基；恒非组头） */
 static int       s_off    = 0;   /* 主列表滚动偏移 */
 static int       s_mode_sel = 0; /* 模式列表选中（进入时预定位当前模式） */
+static int       s_deck_sel = 0; /* 词书列表选中（进入时预定位活跃卡组） */
 static int       s_keys_page = 0; /* 按键说明页页码 */
+static int       s_info_page = 0; /* 设备信息页页码（学习概况/设备信息） */
 
 /* 可选模式中文名（二级列表与主菜单徽标共用） */
 static const char *s_mode_labels[4] = { "闪卡", "听写", "复习", "阅读" };
@@ -101,7 +116,8 @@ static const char *mu_mode_label(study_mode_t m)
 static void menu_ui_exit(void);
 static void draw_main(bool partial);
 static void draw_mode(bool partial);
-static void draw_info(void);
+static void draw_deck(bool partial);
+static void draw_info(bool partial);
 static void draw_keys(bool partial);
 
 /* ============================================================
@@ -122,6 +138,12 @@ static void badge_mode(char *buf, size_t n)
 static void badge_wifi(char *buf, size_t n)
 {
     snprintf(buf, n, "%s", wifi_is_connected() ? "已连接" : "未连接");
+}
+
+/* 词书徽标（v1.3 T3.1）：当前活跃卡组名（中文 wide，TINY 省略先例） */
+static void badge_deck(char *buf, size_t n)
+{
+    snprintf(buf, n, "%s", deck_manager_active_name());
 }
 
 /* 音频同步徽标：同步中「...」/未统计「?」/闲时「缺N/云总M」（纯 ASCII，
@@ -162,6 +184,17 @@ static void act_modesel(void)
     s_mode_sel = study_mode_current();   /* 光标预定位当前模式（=「当前」标记） */
     if (s_mode_sel > 3) s_mode_sel = 0;  /* 临时视图（WRONGBOOK/COLLECTION）回闪卡 */
     draw_mode(false);
+}
+
+/* 词书选择（v1.3 T3.1，MENU_DESIGN 二期位兑现）：进入即重扫
+ * （SD 可能插入新卡组/文件更新；重扫幂等，NVS 活跃记录不变），
+ * 光标预定位当前活跃卡组 */
+static void act_deck(void)
+{
+    deck_manager_scan();
+    s_page = MU_PAGE_DECK;
+    s_deck_sel = deck_manager_active_index();
+    draw_deck(false);
 }
 
 static void act_wifi(void)
@@ -224,10 +257,35 @@ static void act_audio_sync(void)
     draw_main(true);                 /* 徽标转「...」，任务后台跑 */
 }
 
+/* 快速测验（v1.2 T2.3，MENU_DESIGN 二期位）：前置词库 ≥8 在
+ * study_mode_enter_quiz 内，不满足长震回学习页；满足则题池构造、
+ * quiz_session_start 与首帧渲染由 main.cpp quiz_flow_start 编排
+ * （QUIZ_DESIGN §7 数据流：入口与数据流分层） */
+static void act_quiz(void)
+{
+    menu_ui_exit();
+    if (!study_mode_enter_quiz()) {
+        haptic_event(HAPTIC_ERROR);   /* 词库不足：边界反馈 */
+        ui_render_current();
+        return;
+    }
+    haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
+    quiz_flow_start();
+}
+
 static void act_info(void)
 {
     s_page = MU_PAGE_INFO;
-    draw_info();
+    s_info_page = 0;
+    draw_info(false);
+}
+
+/* 设置（v1.2 T2.5，MENU_DESIGN 二期位）：菜单自退后进设置覆盖层
+ * （同级语义，退出回学习页由 settings_ui 自理） */
+static void act_settings(void)
+{
+    menu_ui_exit();
+    settings_ui_enter();
 }
 
 static void act_keys(void)
@@ -237,17 +295,24 @@ static void act_keys(void)
     draw_keys(false);
 }
 
-/* 一期 9 项（二期设置/词书：数组追加即扩展点） */
+/* 分组化 12 行 = 3 组头 + 9 项（2026-08-24，O4；二期设置/词书：
+ * 数组追加即扩展点，组头行 label 与按键说明页组头同风格方括号） */
 static const mu_item_t s_items[] = {
-    { "收藏列表",   badge_collected,  act_collection },
-    { "模式选择",   badge_mode,       act_modesel },
-    { "AI 对话",    NULL,             act_chat },
-    { "音频同步",   badge_audio_sync, act_audio_sync },
-    { "Wi-Fi 配网", badge_wifi,       act_wifi },
-    { "AP 配网门户", NULL,            act_portal },
-    { "LAN 接收页", NULL,            act_lan },
-    { "设备信息",   NULL,          act_info },
-    { "按键说明",   NULL,          act_keys },
+    { "[ 学习 ]",  true,  NULL,               NULL,             NULL },
+    { "收藏列表",   false, menu_icon_collected, badge_collected,  act_collection },
+    { "模式选择",   false, menu_icon_modesel,  badge_mode,       act_modesel },
+    { "词书选择",   false, menu_icon_decks,    badge_deck,       act_deck },
+    { "AI 对话",    false, menu_icon_chat,     NULL,             act_chat },
+    { "快速测验",   false, menu_icon_quiz,     NULL,             act_quiz },
+    { "[ 同步 ]",  true,  NULL,               NULL,             NULL },
+    { "音频同步",   false, menu_icon_audio,    badge_audio_sync, act_audio_sync },
+    { "Wi-Fi 配网", false, menu_icon_wifi,     badge_wifi,       act_wifi },
+    { "AP 配网门户", false, menu_icon_ap,       NULL,            act_portal },
+    { "LAN 接收页", false, menu_icon_lan,      NULL,            act_lan },
+    { "[ 系统 ]",  true,  NULL,               NULL,             NULL },
+    { "设置",       false, menu_icon_settings, NULL,             act_settings },
+    { "设备信息",   false, menu_icon_info,     NULL,             act_info },
+    { "按键说明",   false, menu_icon_keys,     NULL,             act_keys },
 };
 #define MU_ITEM_COUNT ((int)(sizeof(s_items) / sizeof(s_items[0])))
 
@@ -274,17 +339,33 @@ static void draw_badge(int right_x, int item_y, const char *text, uint16_t color
     }
 }
 
-/* 单项绘制：反选高亮（黑底白字）+ 左 CJK 标签 + 右徽标 */
+/* 单项绘制：反选高亮（黑底白字）+ 左图标前缀 + CJK 标签 + 右徽标；
+ * 组头行 16px 小字（与提示栏同级，项字号低一档），永不反选；
+ * 图标 TINY 档省略（项高 28 与标签宽度紧张，同中文徽标先例） */
 static void draw_item(int idx, int row, const mu_item_t *item)
 {
     int y = MU_LIST_TOP + row * MU_ITEM_H;
     int w = MU_ITEM_W - MU_SB_W - 4;   /* 列表主体宽（右侧留滚动条） */
     bool sel = (idx == s_sel);
 
+    if (item->is_header) {
+        cjk_text_draw(MU_MARGIN_X + 4, y + (MU_ITEM_H - 16) / 2,
+                      0, item->label, EPD_GFX_BLACK);
+        return;
+    }
+
     if (sel)
         epd_gfx_fill_rect(MU_MARGIN_X, y, w, MU_ITEM_H - 4, EPD_GFX_BLACK);
 
-    cjk_text_draw(MU_MARGIN_X + 4, y + (MU_ITEM_H - MU_FONT_H) / 2,
+    int text_x = MU_MARGIN_X + 4;
+    if (item->icon && !MU_TINY) {
+        epd_gfx_draw_bitmap(text_x, y + (MU_ITEM_H - MENU_ICON_SZ) / 2,
+                            MENU_ICON_SZ, MENU_ICON_SZ, item->icon,
+                            sel ? EPD_GFX_WHITE : EPD_GFX_BLACK);
+        text_x += MENU_ICON_SZ + 4;   /* 图标右缘与标签间距 */
+    }
+
+    cjk_text_draw(text_x, y + (MU_ITEM_H - MU_FONT_H) / 2,
                   MU_FONT_LVL, item->label,
                   sel ? EPD_GFX_WHITE : EPD_GFX_BLACK);
 
@@ -396,33 +477,74 @@ static void draw_info_row(int row, const char *label, const char *value)
                   EPD_GFX_BLACK);
 }
 
-static void draw_info(void)
+/* ---- 设备信息页（分页只读，上/下翻页同按键说明页范式；
+ *      2026-08-24 分两页：学习概况（今日统计，百词斩「今日进度」
+ *      借鉴，learning_state NVS lr_stats）+ 设备信息，进入时一次性
+ *      取值全刷，翻页局刷） ---- */
+
+static int info_page_count(void)
 {
-    /* 数组顺序 = 显示顺序；TINY 只绘前 MU_INFO_ROWS 行（短值项），
-     * IP/PSRAM 长值 122px 宽放不下（bring-up 后再调） */
-    static const char *labels[6] = {
-        "固件版本", "词库", "收藏/错词", "运行时长", "IP 地址", "PSRAM"
+    return 2;
+}
+
+static void draw_info_body(void)
+{
+    static const char *labels[2][MU_INFO_ROWS] = {
+        { "词库", "收藏/错词", "今日进度", "连续学习", "考试倒计时" },
+        { "固件版本", "运行时长", "电量", "IP 地址", "PSRAM" },
     };
-    char v[6][40];
+    char v[MU_INFO_ROWS][40];
 
-    snprintf(v[0], sizeof(v[0]), "%s", fw_version());
-    snprintf(v[1], sizeof(v[1]), "%d 词", word_parser_get_count());
-    snprintf(v[2], sizeof(v[2]), "%d / %d",
-             learning_state_collected_count(), learning_state_wrong_count());
-    int64_t up = esp_timer_get_time() / 1000000LL;
-    snprintf(v[3], sizeof(v[3]), "%02lld:%02lld:%02lld",
-             (long long)(up / 3600), (long long)(up / 60 % 60),
-             (long long)(up % 60));
-    if (!wifi_get_sta_ip(v[4], sizeof(v[4])))
-        snprintf(v[4], sizeof(v[4]), "--");
-    snprintf(v[5], sizeof(v[5]), "%.1f/%.1f MB",
-             heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1048576.0,
-             heap_caps_get_total_size(MALLOC_CAP_SPIRAM) / 1048576.0);
+    if (s_info_page == 0) {
+        snprintf(v[0], sizeof(v[0]), "%d 词", word_parser_get_count());
+        snprintf(v[1], sizeof(v[1]), "%d / %d",
+                 learning_state_collected_count(),
+                 learning_state_wrong_count());
+        snprintf(v[2], sizeof(v[2]), "%d/%d 新 %d 复",
+                 learning_state_deck_today_new(deck_manager_active_id()),
+                 daily_plan_goal(),
+                 learning_state_today_reviews());
+        snprintf(v[3], sizeof(v[3]), "%d 天", learning_state_streak_days());
+        {   /* 考试倒计时（v1.5 T5.5）：未设/已过/未同步统一「--」 */
+            int d = exam_days_left();
+            if (d > 0) snprintf(v[4], sizeof(v[4]), "%d 天", d);
+            else       snprintf(v[4], sizeof(v[4]), "%s", "--");
+        }
+    } else {
+        snprintf(v[0], sizeof(v[0]), "%s", fw_version());
+        int64_t up = esp_timer_get_time() / 1000000LL;
+        snprintf(v[1], sizeof(v[1]), "%02lld:%02lld:%02lld",
+                 (long long)(up / 3600), (long long)(up / 60 % 60),
+                 (long long)(up % 60));
+        int mV = max17048_voltage_mv();        /* T2.6：不在位/读失败占位 */
+        int pct = max17048_percent();
+        if (pct >= 0 && mV > 0)
+            snprintf(v[2], sizeof(v[2]), "%d%% (%d.%02dV)", pct,
+                     mV / 1000, mV % 1000 / 10);
+        else
+            snprintf(v[2], sizeof(v[2]), "--");
+        if (!wifi_get_sta_ip(v[3], sizeof(v[3])))
+            snprintf(v[3], sizeof(v[3]), "--");
+        snprintf(v[4], sizeof(v[4]), "%.1f/%.1f MB",
+                 heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1048576.0,
+                 heap_caps_get_total_size(MALLOC_CAP_SPIRAM) / 1048576.0);
+    }
 
+    int rows = s_info_page == 0 ? 5 : MU_INFO_ROWS;   /* 概况页 5 行（T5.5 倒计时行） */
+    for (int i = 0; i < rows; i++)
+        draw_info_row(i, labels[s_info_page][i], v[i]);
+}
+
+static void draw_info(bool partial)
+{
+    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+        partial_refresh(draw_info_body);
+        return;
+    }
     epd_gfx_fill_screen(EPD_GFX_WHITE);
-    draw_title("设备信息", 0, 0);
-    for (int i = 0; i < MU_INFO_ROWS; i++)
-        draw_info_row(i, labels[i], v[i]);
+    draw_title(s_info_page == 0 ? "学习概况" : "设备信息",
+               s_info_page + 1, info_page_count());
+    draw_info_body();
     draw_hint();
     draw_flush();
 }
@@ -445,6 +567,11 @@ static const mu_keyrow_t s_keys[] = {
     { "SET",    "遮蔽 / 收藏切换" },
     { "RST",    "回本组首 / 错词本" },
     { "*",      "词卡已收藏标记" },
+    { NULL,     "[ 复习词表 ]" },
+    { "上/下",  "选择 · 详情翻义" },
+    { "中",     "进详情 · 发音" },
+    { "左/右",  "自评出队（详情态回列表）" },
+    { "RST",    "回首行" },
     { NULL,     "[ 收藏/错词视图 ]" },
     { "上/下",  "序列内翻词" },
     { "中",     "发音" },
@@ -452,6 +579,11 @@ static const mu_keyrow_t s_keys[] = {
     { "RST",    "回首词 / 退出视图" },
     { NULL,     "[ AI 对话 ]" },
     { "中",     "说话·发送·重说" },
+    { "RST",    "退出回闪卡" },
+    { NULL,     "[ 快速测验 ]" },
+    { "上/下",  "移动选项" },
+    { "中",     "作答" },
+    { "SET",    "跳过（不评分）" },
     { "RST",    "退出回闪卡" },
     { NULL,     "[ 待机页 ]" },
     { "中",     "拉天气 / 功能菜单" },
@@ -530,6 +662,54 @@ static void draw_mode(bool partial)
     draw_flush();
 }
 
+/* ---- 二级词书列表页（v1.3 T3.1）：镜像模式选择页范式；右侧词条数
+ *      徽标（manifest count，0=未标注不显示）；超过一屏时滑动窗口
+ *      跟随光标（不画滚动条，选择语义与主列表一致） ---- */
+static void draw_deck_body(void)
+{
+    int total = deck_manager_count();
+    int off = s_deck_sel - MU_VISIBLE + 1;   /* 窗口跟随光标（下界钳 0） */
+    if (off < 0) off = 0;
+    if (total > MU_VISIBLE && off > total - MU_VISIBLE)
+        off = total - MU_VISIBLE;
+
+    for (int i = 0; i < MU_VISIBLE; i++) {
+        int di = off + i;
+        const deck_info_t *d = deck_manager_at(di);
+        if (!d) break;
+        int y = MU_LIST_TOP + i * MU_ITEM_H;
+        bool sel = (di == s_deck_sel);
+        if (sel)
+            epd_gfx_fill_rect(MU_MARGIN_X, y, MU_ITEM_W, MU_ITEM_H - 4,
+                              EPD_GFX_BLACK);
+        cjk_text_draw(MU_MARGIN_X + 4, y + (MU_ITEM_H - MU_FONT_H) / 2,
+                      MU_FONT_LVL, d->name,
+                      sel ? EPD_GFX_WHITE : EPD_GFX_BLACK);
+        {   /* 跨科目角标（T5.5）：各组今日 n/goal（纯 ASCII，TINY 可显）；
+             * 词条数信息让位——切换前看「哪组没学完」价值更高 */
+            char cb[12];
+            snprintf(cb, sizeof(cb), "%d/%d",
+                     learning_state_deck_today_new(d->id),
+                     daily_plan_goal_deck(d->id));
+            draw_badge(MU_MARGIN_X + MU_ITEM_W - MU_SB_W - 10, y, cb,
+                       sel ? EPD_GFX_WHITE : EPD_GFX_BLACK);
+        }
+    }
+}
+
+static void draw_deck(bool partial)
+{
+    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+        partial_refresh(draw_deck_body);
+        return;
+    }
+    epd_gfx_fill_screen(EPD_GFX_WHITE);
+    draw_title("词书选择", s_deck_sel + 1, deck_manager_count());
+    draw_deck_body();
+    draw_hint();
+    draw_flush();
+}
+
 /* ============================================================
  * 按键处理（激活时独占；长按全部忽略防误触）
  * ============================================================ */
@@ -549,10 +729,13 @@ static void menu_ui_exit_restore(void)
     ui_render_current();
 }
 
-/* 光标移动（循环滚动）+ 滚动窗口跟随 + 局刷重绘 */
+/* 光标移动（循环滚动，组头行跳过不可停驻）+ 滚动窗口跟随 +
+ * 局刷重绘 */
 static void main_move(int dir)
 {
-    s_sel = (s_sel + dir + MU_ITEM_COUNT) % MU_ITEM_COUNT;
+    do {
+        s_sel = (s_sel + dir + MU_ITEM_COUNT) % MU_ITEM_COUNT;
+    } while (s_items[s_sel].is_header);   /* 表恒有非组头项，无死循环 */
     if (s_sel < s_off) s_off = s_sel;
     if (s_sel >= s_off + MU_VISIBLE) s_off = s_sel - MU_VISIBLE + 1;
     draw_main(true);
@@ -604,11 +787,55 @@ void menu_ui_on_button(nav_key_t id, button_event_t event)
         }
         break;
 
-    case MU_PAGE_INFO:
-        /* 静态只读页：SET/中返回主菜单，RST 退出菜单 */
+    case MU_PAGE_DECK:
+        /* 中=切换（重载编排 deck_flow_switch）；重复选当前=轻反馈 */
         switch (id) {
-        case NAV_SET:
+        case NAV_UP:
+            s_deck_sel = (s_deck_sel + deck_manager_count() - 1) %
+                         deck_manager_count();
+            draw_deck(true);
+            break;
+        case NAV_DOWN:
+            s_deck_sel = (s_deck_sel + 1) % deck_manager_count();
+            draw_deck(true);
+            break;
         case NAV_CENTER:
+            if (s_deck_sel == deck_manager_active_index()) {
+                haptic_event(HAPTIC_KEYPRESS);
+                break;
+            }
+            if (deck_flow_switch(s_deck_sel)) {
+                haptic_event(HAPTIC_MODE);
+                menu_ui_exit();
+                ui_render_current();
+            } else {
+                haptic_event(HAPTIC_ERROR);   /* 文件缺失/重载失败 */
+            }
+            break;
+        case NAV_SET:
+            s_page = MU_PAGE_MAIN;
+            draw_main(false);
+            break;
+        case NAV_RST:
+            menu_ui_exit_restore();
+            break;
+        default: break;
+        }
+        break;
+
+    case MU_PAGE_INFO:
+        /* 分页只读：上/下翻页（循环），中=下一页，SET 返回，RST 退出 */
+        switch (id) {
+        case NAV_UP:
+            s_info_page = (s_info_page + info_page_count() - 1) % info_page_count();
+            draw_info(true);
+            break;
+        case NAV_DOWN:
+        case NAV_CENTER:
+            s_info_page = (s_info_page + 1) % info_page_count();
+            draw_info(true);
+            break;
+        case NAV_SET:
             s_page = MU_PAGE_MAIN;
             draw_main(false);
             break;
@@ -656,7 +883,10 @@ void menu_ui_enter(void)
     if (s_active) return;   /* 幂等 */
     s_active = true;
     s_page   = MU_PAGE_MAIN;
-    s_sel = s_off = 0;
+    /* 首项为组头：定位首个可选项（表首组头后恒有实项） */
+    for (s_sel = 0; s_sel < MU_ITEM_COUNT - 1 && s_items[s_sel].is_header;
+         s_sel++) {}
+    s_off = 0;
     haptic_event(HAPTIC_MODE);   /* 进入菜单 50ms（对齐模式切换/错词本） */
     draw_main(false);
     LOG_I("menu entered");

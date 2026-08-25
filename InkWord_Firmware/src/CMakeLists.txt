@@ -21,6 +21,8 @@ idf_component_register(
         "audio_player.c"
         "audio_sync.c"       # P0C：词条发音音频同步（http/TLS 分流同 ota_fill_cfg）
         "es8311.c"           # ES8311 codec I2C 寄存器驱动（2026-08-24，取代 MAX98357A+INMP441）
+        "i2c_bus.c"           # v1.2 T2.6：公共 I2C 总线（共享 38/39 + 互斥锁）
+        "max17048.c"          # v1.2 T2.6：电量计驱动（代码就绪待硬件）
         "mic_recorder.c"      # P1：ES8311 ADC 跟读录音+multipart 上传（I2S 全双工，DOUT=GPIO11）
         "chat_mode.c"        # P2B：AI 对话五态状态机（录音 10s/上传/下载/播放，临时视图）
         # libhelix MP3 解码器（P0A 2026-08-24 源码内嵌，arduino 框架
@@ -43,15 +45,21 @@ idf_component_register(
         "mp3/trigtabs.c"
         "button_handler.c"
         "haptic.c"
+        "ui_sfx.c"         # v1.1 T1.6：UI 提示音（key/rate/mode/err 异步短样本）
         "storage_manager.c"
         "refresh_scheduler.c"
         "word_parser.c"
         "srs_engine.c"
         "learning_state.c"
+        "quiz_session.c"     # v1.2 T2.1：四选一出题核心（纯 C，native-test，泛化回调）
+        "daily_plan.c"       # v1.2 T2.4：每日目标量与今日任务判据（NVS set_daily）
+        "settings_ui.c"      # v1.2 T2.5：设置页覆盖层 + 发音/震动/字号门控（set_*）
+        "deck_manager.c"     # v1.3 T3.1：词书卡组（manifest 扫描/活跃切换，rd_* 隔离配套）
         "study_mode_machine.c"
         "layout_profile.c"   # P5+Phase5：L4 布局档位层（档位→字库级映射）
         "standby_page.c"
         "cjk_font.c"
+        "cjk_font_sd.c"   # v1.4 T4.5：SD 卡组子集字库级联（主集 miss → 子集）
         "cjk_text.c"
         "reader_engine.c"
         "wifi_manager.c"

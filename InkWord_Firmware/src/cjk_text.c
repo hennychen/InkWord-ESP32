@@ -9,6 +9,7 @@
  */
 #include "cjk_text.h"
 #include "cjk_font.h"
+#include "cjk_font_sd.h"   /* v1.4 T4.5：SD 卡组子集级联（主集 miss → 子集） */
 #include "epd_driver.h"
 
 #include <string.h>
@@ -82,6 +83,9 @@ static int adv_one(uint32_t cp, int level,
     int cell = cjk_glyph_cell_size(level);
     if (cp < 0x20 || cp == 0x7F) cp = ' ';   /* 控制字符 → 空格 */
     const uint8_t *bits = cjk_glyph_lookup_level(cp, level);
+    if (!bits)
+        bits = cjk_font_sd_lookup_level(cp, level);  /* T4.5：子集几何
+            与主集同构（装载时校验），ink_span/blit 参数直接沿用 */
     if (!bits) {                        /* 未收录：全宽占位（渲染画框） */
         *bits_out = NULL; *ink_l = 0; *ink_w = cell;
         return cell + CT_SPACING;

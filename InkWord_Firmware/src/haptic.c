@@ -8,6 +8,7 @@
  */
 #include "haptic.h"
 #include "gpio_config.h"
+#include "settings_ui.h"   /* v1.2 T2.5：震动开关门控（set_haptic） */
 #include "debug_log.h"
 
 #include "driver/gpio.h"
@@ -118,6 +119,11 @@ void haptic_off(void)
 
 void haptic_event(haptic_event_t ev)
 {
+    /* v1.2 T2.5 震动门控：入口统一拦截（覆盖 main/menu/模式机全部
+     * 调用点；haptic_pulse 直调路径不受影响——深睡 haptic_off 等
+     * 关断操作不归事件门控管） */
+    if (!settings_haptic_enabled()) return;
+
     /* 时长表 = PRD_V2.1 §5.4 触觉反馈列 */
     switch (ev) {
     case HAPTIC_KEYPRESS: haptic_pulse(20);  break;  /* 按键按下瞬间 */

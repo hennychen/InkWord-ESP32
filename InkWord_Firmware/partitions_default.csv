@@ -1,11 +1,16 @@
 # InkWord ESP32-S3 Partition Table
 # Supports OTA dual-app scheme + NVS + SPIFFS/fatfs for assets
+# v1.1 T1.5: nvs 24KB→192KB（全词库 LR 稀疏持久化，blob 最坏 84KB 双写余量足）；
+#   后续分区顺移 +0x2A000，factory 取 0x40000（app 分区 64KB 对齐，
+#   phy_init 后垫 24KB 空隙）；尾区空闲 ~5.7MB。
+#   铁律：分区表变更仅限 USB 烧录，不可经 OTA 下发（OTA 不触碰分区表）；
+#   烧录后 NVS 全失 = 重配网 + 设备按 MAC 幂等重注册取回 ApiKey + LR 作废。
 # Name,   Type, SubType,  Offset,   Size,    Flags
-nvs,      data, nvs,      0x9000,   0x6000,
-phy_init, data, phy,      0xF000,   0x1000,
-factory,  app,  factory,  0x10000,  0x300000,
-ota_0,    app,  ota_0,    ,         0x300000,
-ota_1,    app,  ota_1,    ,         0x300000,
-otadata,  data, ota,      ,         0x2000,
-nvs_keys, data, nvs_keys, ,         0x1000,
-spiffs,   data, spiffs,   ,         0x100000,
+nvs,      data, nvs,      0x9000,   0x30000,
+phy_init, data, phy,      0x39000,  0x1000,
+factory,  app,  factory,  0x40000,  0x300000,
+ota_0,    app,  ota_0,    0x340000, 0x300000,
+ota_1,    app,  ota_1,    0x640000, 0x300000,
+otadata,  data, ota,      0x940000, 0x2000,
+nvs_keys, data, nvs_keys, 0x942000, 0x1000,
+spiffs,   data, spiffs,   0x943000, 0x100000,

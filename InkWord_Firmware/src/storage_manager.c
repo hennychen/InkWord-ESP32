@@ -13,6 +13,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <dirent.h>
 
@@ -81,6 +82,50 @@ bool storage_file_exists(const char *path)
 {
     struct stat st;
     return (stat(path, &st) == 0);
+}
+
+int storage_write_text(const char *path, const char *buf, size_t len)
+{
+    if (!s_mounted || !path || !buf) return -1;
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        LOG_E("open for write failed: %s", path);
+        return -1;
+    }
+    size_t n = fwrite(buf, 1, len, f);
+    fclose(f);
+    if (n != len) {
+        LOG_E("write incomplete: %s (%u/%u)", path,
+              (unsigned)n, (unsigned)len);
+        return -1;
+    }
+    return 0;
+}
+
+int storage_mkdir_p(const char *path)
+{
+    if (!path || !path[0]) return -1;
+
+    char tmp[80];
+    strlcpy(tmp, path, sizeof(tmp));
+    size_t len = strlen(tmp);
+    if (tmp[len - 1] == '/') tmp[len - 1] = '\0';   /* 尾斜杠剥离 */
+
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        if (mkdir(tmp, 0775) != 0 && errno != EEXIST) {
+            LOG_E("mkdir %s failed", tmp);
+            return -1;
+        }
+        *p = '/';
+    }
+    if (mkdir(tmp, 0775) != 0 && errno != EEXIST) {
+        LOG_E("mkdir %s failed", tmp);
+        return -1;
+    }
+    return 0;
 }
 
 void storage_list_dir(const char *dir)

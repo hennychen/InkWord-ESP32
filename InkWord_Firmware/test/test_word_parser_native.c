@@ -201,5 +201,89 @@ void test_word_parser_load_mem(void)
     }
 }
 
+/* T4.1 协议 v2 兼容性固化（不用环境变量，永远执行）：v2 在旧 11 字段
+ * 之外新增 subject/deckId/payloadType/front/back/payloadJson 六键，
+ * 且可能携任意未来扩展（嵌套对象/数组/null 值）。word_parser 按名
+ * 取值（cJSON_GetObjectItem），未知键天然忽略、值 null 时 GetStringValue
+ * 返回 NULL → copy_str 空串兜底 —— 断言解析成功且既有字段不受污染。 */
+void test_word_parser_ignores_protocol_v2_fields(void)
+{
+    static WordEntry v2pool[4];
+    const char *json =
+        "{\"version\":2,\"v\":2,\"words\":[{"
+        "\"id\":1,\"cloudId\":\"00000000-0000-0000-0000-000000000001\","
+        "\"text\":\"spring\",\"phonetic\":\"/sprɪŋ/\",\"meaning\":\"春天\","
+        "\"example\":\"Spring is here.\",\"audio\":\"spring.mp3\","
+        "\"tag\":\"七年级\",\"difficulty\":2,"
+        "\"subject\":\"en\",\"deckId\":\"junior\","
+        "\"payloadType\":\"word-card\",\"front\":\"spring\",\"back\":\"春天\","
+        "\"payloadJson\":\"{\\\"lines\\\":[1,2]}\","
+        "\"futureNested\":{\"a\":[true,null]},"
+        "\"futureList\":[\"x\",\"y\"],"
+        "\"futureNull\":null"
+        "}]}";
+
+    int n = word_parser_load_mem(json, strlen(json), v2pool, 4);
+    TEST_ASSERT_EQUAL_INT(1, n);
+    TEST_ASSERT_EQUAL_UINT32(1, v2pool[0].id);
+    TEST_ASSERT_EQUAL_STRING("spring", v2pool[0].text);
+    TEST_ASSERT_EQUAL_STRING("春天", v2pool[0].meaning);
+    TEST_ASSERT_EQUAL_STRING("/sprɪŋ/", v2pool[0].phonetic);
+    TEST_ASSERT_EQUAL_STRING("00000000-0000-0000-0000-000000000001",
+                             v2pool[0].cloud_id);
+    TEST_ASSERT_EQUAL_UINT8(2, v2pool[0].difficulty);
+}
+
+/* T4.4 默写数据通路固化（设备端契约，永远执行）：poem-card 导出
+ * 形态 = 平铺字段（text=下句答案 / root=上句题面 / phonetic=下句
+ * 拼音 / meaning=译文，PoemSeeder 映射）+ payloadJson 结构化键
+ * （{"prev":上句}，云端/App 消费，设备零解析）。断言四要素原样
+ * 入 WordEntry，缺键空串兜底，payloadJson 字符串不污染既有字段。 */
+void test_word_parser_poem_dictation_fields(void)
+{
+    static WordEntry pool[2];
+    const char *json =
+        "{\"version\":17,\"words\":[{"
+        "\"id\":1,\"cloudId\":\"00000000-0000-0000-0000-0000000000e1\","
+        "\"text\":\"疑是地上霜\","
+        "\"phonetic\":\"yí shì dì shàng shuāng\","
+        "\"meaning\":\"明月洒满窗前，恍如地上泛起一层秋霜\","
+        "\"tag\":\"静夜思·李白\",\"difficulty\":1,"
+        "\"root\":\"床前明月光\","
+        "\"source\":\"部编版一年级上\",\"grade\":\"一年级\","
+        "\"subject\":\"zh\",\"deckId\":\"poems\",\"payloadType\":\"poem-card\","
+        "\"front\":\"疑是地上霜\",\"back\":\"明月洒满窗前，恍如地上泛起一层秋霜\","
+        "\"payloadJson\":\"{\\\"prev\\\":\\\"床前明月光\\\"}\""
+        "},{"
+        "\"id\":2,\"text\":\"疑是银河落九天\","
+        "\"phonetic\":\"yí shì yín hé luò jiǔ tiān\","
+        "\"meaning\":\"瀑布飞泻仿佛是银河从九天之上倾落下来\","
+        "\"root\":\"飞流直下三千尺\","
+        "\"subject\":\"zh\",\"deckId\":\"poems\",\"payloadType\":\"poem-card\","
+        "\"payloadJson\":\"{\\\"prev\\\":\\\"飞流直下三千尺\\\"}\""
+        "}]}";
+
+    int n = word_parser_load_mem(json, strlen(json), pool, 2);
+    TEST_ASSERT_EQUAL_INT(2, n);
+
+    TEST_ASSERT_EQUAL_STRING("疑是地上霜", pool[0].text);
+    TEST_ASSERT_EQUAL_STRING("床前明月光", pool[0].root);
+    TEST_ASSERT_EQUAL_STRING("yí shì dì shàng shuāng", pool[0].phonetic);
+    TEST_ASSERT_EQUAL_STRING("明月洒满窗前，恍如地上泛起一层秋霜",
+                             pool[0].meaning);
+    TEST_ASSERT_EQUAL_STRING("静夜思·李白", pool[0].tag);
+    TEST_ASSERT_EQUAL_STRING("部编版一年级上", pool[0].source);
+    TEST_ASSERT_EQUAL_STRING("一年级", pool[0].grade);
+    TEST_ASSERT_EQUAL_UINT8(1, pool[0].difficulty);
+
+    TEST_ASSERT_EQUAL_STRING("疑是银河落九天", pool[1].text);
+    TEST_ASSERT_EQUAL_STRING("飞流直下三千尺", pool[1].root);
+    TEST_ASSERT_EQUAL_STRING("", pool[1].tag);   /* 缺键空串兜底 */
+
+    /* payloadJson 字符串不解析不污染（v2 忽略语义同前用例） */
+    TEST_ASSERT_EQUAL_UINT32(1, pool[0].id);
+    TEST_ASSERT_EQUAL_UINT32(2, pool[1].id);
+}
+
 /* native 平台单 program 单 main：runner 统一在 test_srs_engine.c，
- * 本文件只提供 test_parse_cloud_export_words_json。 */
+ * 本文件只提供测试函数（新用例需在 runner 补 extern + RUN_TEST）。 */

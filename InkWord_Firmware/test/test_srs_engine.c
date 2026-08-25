@@ -103,6 +103,48 @@ void test_fsrs_anchors(void)
  * 缺省 IGNORE。native 平台单 program 单 main，统一挂在本 runner。 */
 extern void test_parse_cloud_export_words_json(void);
 extern void test_word_parser_load_mem(void);
+extern void test_word_parser_ignores_protocol_v2_fields(void);
+
+/* quiz_session 出题核心（v1.2 T2.1，2026-08-24；v1.5 T5.1 P2 用例）：
+ * 同 runner 挂载 */
+extern void test_quiz_start_bounds(void);
+extern void test_quiz_sampling_no_repeat(void);
+extern void test_quiz_answer_mapping(void);
+extern void test_quiz_all_same_text_fallback(void);
+extern void test_quiz_rng_reproducible(void);
+extern void test_quiz_type_rotation(void);
+extern void test_quiz_same_prefix_distractors(void);
+extern void test_quiz_true_false(void);
+
+/* card_layout 版式分派（v1.4 T4.3）：同 runner 挂载 */
+extern void test_card_layout_known_types(void);
+extern void test_card_layout_fallbacks(void);
+
+/* poem 默写数据通路（v1.4 T4.4）：同 runner 挂载 */
+extern void test_word_parser_poem_dictation_fields(void);
+
+/* SD 卡组子集字库级联（v1.4 T4.5）：同 runner 挂载 */
+extern void test_cjk_font_sd_load_and_lookup(void);
+extern void test_cjk_font_sd_rejects_bad_bin(void);
+extern void test_cjk_font_sd_missing_file_semantics(void);
+extern void test_cjk_font_sd_swift_artifact(void);
+
+/* daily_plan 按组配额 + 考试倒计时（v1.5 T5.5）：同 runner 挂载
+ * （nvs/时钟/组 id 桩与 mock 实现在 test_daily_plan.c） */
+extern void test_dp_goal_default_when_no_key(void);
+extern void test_dp_goal_deck_key_dispatch(void);
+extern void test_dp_goal_invalid_value_falls_back(void);
+extern void test_dp_set_goal_clamps_and_steps(void);
+extern void test_dp_set_goal_writes_active_deck_key(void);
+extern void test_dp_done_uses_deck_numerator(void);
+extern void test_exam_unset_returns_zero(void);
+extern void test_exam_set_and_countdown(void);
+extern void test_exam_urgent_boundary(void);
+extern void test_exam_expires_to_zero(void);
+extern void test_exam_clear(void);
+extern void test_exam_refused_when_clock_unsynced(void);
+extern void test_exam_month_rollover_math(void);
+extern void test_exam_leap_year_math(void);
 
 int main(void)
 {
@@ -111,5 +153,35 @@ int main(void)
     RUN_TEST(test_fsrs_anchors);
     RUN_TEST(test_parse_cloud_export_words_json);
     RUN_TEST(test_word_parser_load_mem);
+    RUN_TEST(test_word_parser_ignores_protocol_v2_fields);
+    RUN_TEST(test_quiz_start_bounds);
+    RUN_TEST(test_quiz_sampling_no_repeat);
+    RUN_TEST(test_quiz_answer_mapping);
+    RUN_TEST(test_quiz_all_same_text_fallback);
+    RUN_TEST(test_quiz_rng_reproducible);
+    RUN_TEST(test_quiz_type_rotation);
+    RUN_TEST(test_quiz_same_prefix_distractors);
+    RUN_TEST(test_quiz_true_false);
+    RUN_TEST(test_card_layout_known_types);
+    RUN_TEST(test_card_layout_fallbacks);
+    RUN_TEST(test_word_parser_poem_dictation_fields);
+    RUN_TEST(test_cjk_font_sd_load_and_lookup);
+    RUN_TEST(test_cjk_font_sd_rejects_bad_bin);
+    RUN_TEST(test_cjk_font_sd_missing_file_semantics);
+    RUN_TEST(test_cjk_font_sd_swift_artifact);
+    RUN_TEST(test_dp_goal_default_when_no_key);
+    RUN_TEST(test_dp_goal_deck_key_dispatch);
+    RUN_TEST(test_dp_goal_invalid_value_falls_back);
+    RUN_TEST(test_dp_set_goal_clamps_and_steps);
+    RUN_TEST(test_dp_set_goal_writes_active_deck_key);
+    RUN_TEST(test_dp_done_uses_deck_numerator);
+    RUN_TEST(test_exam_unset_returns_zero);
+    RUN_TEST(test_exam_set_and_countdown);
+    RUN_TEST(test_exam_urgent_boundary);
+    RUN_TEST(test_exam_expires_to_zero);
+    RUN_TEST(test_exam_clear);
+    RUN_TEST(test_exam_refused_when_clock_unsynced);
+    RUN_TEST(test_exam_month_rollover_math);
+    RUN_TEST(test_exam_leap_year_math);
     return UNITY_END();
 }

@@ -33,6 +33,11 @@ typedef enum {
     MODE_CHAT,           /**< AI 对话：语音对话临时视图（P2B，快捷菜单进入，
                               同临时视图纪律：不入循环/不 NVS 恢复/不走
                               apply_mode；生命周期由 chat_mode 任务自理） */
+    MODE_QUIZ,           /**< 快速测验：四选一临时视图（v1.2 T2.2，快捷菜单
+                              进入；同临时视图纪律第四先例：不入循环/不 NVS
+                              恢复/不走 apply_mode；出题核心 quiz_session
+                              纯 C（T2.1），题池构造/渲染/作答编排留
+                              main.cpp 适配层，QUIZ_DESIGN §6/§7） */
     MODE_COUNT
 } study_mode_t;
 
@@ -121,6 +126,25 @@ bool study_mode_enter_chat(void);
  */
 void study_mode_exit_chat(void);
 
+/* ---- 快速测验临时视图（v1.2 T2.2，quiz_session 出题核心） ---- */
+
+/**
+ * @brief 进入快速测验（快捷菜单「快速测验」项；临时视图，不持久化）。
+ *        前置：词库 ≥ 8 词（quiz_session 干扰项来源下限，QUIZ_DESIGN
+ *        开放问题 3）；不满足返回 false 由调用方给边界反馈。
+ *        题池构造、quiz_session_start 与首帧渲染由调用方在 enter
+ *        成功后执行（QUIZ_DESIGN §7 数据流）。
+ * @return true 成功；false 词库不足（未进入，无副作用）。
+ */
+bool study_mode_enter_quiz(void);
+
+/**
+ * @brief 退出快速测验回闪卡模式（模式内 RST / 小结页任意键）。
+ *        不写 last_mode（临时视图纪律）；已答题评分即时生效，
+ *        退出无补偿动作。
+ */
+void study_mode_exit_quiz(void);
+
 /**
  * @brief 取消收藏（SET 长按 toggle）之后的序列收缩钳位：当前词移出收藏
  *        序列，后词前移；序列清空自动退回闪卡；游标越界钳到 n-1
@@ -158,6 +182,13 @@ void study_mode_reader_font_step(int dir);
  * @return true 表示游标/模式变化，需重绘当前页。
  */
 bool study_mode_after_quality(int quality);
+
+/**
+ * @brief 复习模式自评后的到期序列收缩（评分即置会话 done 位，后词前移、
+ *        游标钳 n-1；序列清空钳 0 由渲染层显空态页）。任一 quality 出队。
+ * @return true 表示序列变化，需重绘当前页（仅 MODE_REVIEW 有副作用）。
+ */
+bool study_mode_after_due_review(void);
 
 /* ---- 跟读评测编排（P1，AI_SPEECH_ASSESSMENT §3.3）---- */
 

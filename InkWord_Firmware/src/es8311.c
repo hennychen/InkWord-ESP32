@@ -12,6 +12,7 @@
  */
 #include "es8311.h"
 #include "gpio_config.h"
+#include "i2c_bus.h"    /* v1.2 T2.6：I2C 收口（与 MAX17048 共享 38/39） */
 #include "debug_log.h"
 
 #include "driver/i2c.h"
@@ -107,39 +108,18 @@ static const struct _coeff_div coeff_div[] = {
 static int s_addr = -1;          /* 探测到的 7bit 地址（-1=未探测/不在位） */
 static bool s_inited = false;
 
-/* ---- I2C 底层 ---- */
+/* ---- I2C 底层（v1.2 T2.6 收口 i2c_bus：互斥锁/装载归公共层，
+ * 本层只保留 7bit 地址状态与读-改-写语义） ---- */
 static int i2c_write(uint8_t reg, uint8_t val)
 {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (uint8_t)(s_addr << 1), 1);
-    i2c_master_write_byte(cmd, reg, 1);
-    i2c_master_write_byte(cmd, val, 1);
-    i2c_master_stop(cmd);
-    esp_err_t r = i2c_master_cmd_begin(ES8311_I2C_NUM, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
-    return (r == ESP_OK) ? 0 : -1;
+    if (s_addr < 0) return -1;
+    return i2c_bus_write_reg((uint8_t)s_addr, reg, val);
 }
 
 static int i2c_read(uint8_t reg, uint8_t *out)
 {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (uint8_t)(s_addr << 1), 1);
-    i2c_master_write_byte(cmd, reg, 1);
-    i2c_master_stop(cmd);
-    esp_err_t r = i2c_master_cmd_begin(ES8311_I2C_NUM, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
-    if (r != ESP_OK) return -1;
-
-    cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (uint8_t)((s_addr << 1) | 1), 1);
-    i2c_master_read_byte(cmd, out, 0x01 /*NACK*/);
-    i2c_master_stop(cmd);
-    r = i2c_master_cmd_begin(ES8311_I2C_NUM, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
-    return (r == ESP_OK) ? 0 : -1;
+    if (s_addr < 0) return -1;
+    return i2c_bus_read_reg((uint8_t)s_addr, reg, out);
 }
 
 /* 读-改-写（只改 mask 覆盖位，其余保留） */
@@ -184,26 +164,15 @@ int es8311_init(void)
 {
     if (s_inited) return 0;
 
-    /* 1. 装载 I2C 总线 */
-    i2c_config_t cfg = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = ES8311_I2C_SDA_PIN,
-        .scl_io_num = ES8311_I2C_SCL_PIN,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = ES8311_I2C_FREQ_HZ,
-    };
-    if (i2c_param_config(ES8311_I2C_NUM, &cfg) != ESP_OK ||
-        i2c_driver_install(ES8311_I2C_NUM, I2C_MODE_MASTER, 0, 0, 0) != ESP_OK) {
-        LOG_E("i2c init failed (sda=%d scl=%d)",
-              ES8311_I2C_SDA_PIN, ES8311_I2C_SCL_PIN);
+    /* 1. 装载 I2C 总线（v1.2 T2.6：收口 i2c_bus，与 MAX17048 共享
+     * 互斥锁；参数宏仍由本模块引脚宏承载，驱动仅首个调用者装载） */
+    if (i2c_bus_init() != 0)
         return -1;
-    }
 
-    /* 2. 探测 codec */
+    /* 2. 探测 codec（失败保留总线装载——共享总线下设备在位性独立，
+     * 心跳电量读数仍可用） */
     if (es8311_probe() < 0) {
         LOG_E("codec not found on I2C (check module wiring)");
-        i2c_driver_delete(ES8311_I2C_NUM);
         return -2;
     }
 

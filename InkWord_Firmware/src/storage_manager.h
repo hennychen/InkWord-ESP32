@@ -36,6 +36,22 @@ int storage_read_text(const char *path, char *out_buf, size_t buf_size);
 bool storage_file_exists(const char *path);
 
 /**
+ * @brief 写入文本文件（整体覆盖；v1.3 T3.4 词书 LAN 推送链路）。
+ * @param path 文件绝对路径（父目录需已存在，或改用 storage_mkdir_p 预建）。
+ * @param buf 数据缓冲。
+ * @param len 写入字节数。
+ * @return 0 成功，-1 失败（未挂载/打开/写入失败）。
+ */
+int storage_write_text(const char *path, const char *buf, size_t len);
+
+/**
+ * @brief 递归创建多级目录（已存在视为成功；v1.3 T3.4
+ *        /sdcard/decks/<id>/ 预建）。
+ * @return 0 成功，-1 失败。
+ */
+int storage_mkdir_p(const char *path);
+
+/**
  * @brief 列出目录下的文件名（简单版，打印到日志）。
  * @param dir 目录绝对路径，如 "/sdcard"。
  */
