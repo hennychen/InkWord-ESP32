@@ -11,8 +11,13 @@ tools/default_vocab/
 ├── .raw/                    # 原始数据（不入 git；download.py 重新下载）
 │   └── download.py          # 数据源批量下载（走本机 7897 代理）
 ├── gen_default_vocab.py     # 转换脚本：原始数据 → 系统 CSV
+├── fetch_audio.py           # 读音整理：真人音下载/转码/回填 audio 列（见下节）
 └── out/
     ├── default_words.csv    # 默认组合 2407 条（后端 SeedData 的正本来源）
+    ├── default_words.json   # 固件内嵌兜底词库（与 CSV 同源）
+    ├── audio/               # 最终读音 32k mono MP3（不入 git，拷 SD 卡用）
+    ├── audio_raw/           # API 原始下载留档（不入 git）
+    ├── audio_api_report.json# 每词音源清单（api/youdao/none）
     └── subdicts/            # 教材分册词库 25 册（按需经管理端导入）
 ```
 
@@ -59,6 +64,35 @@ tools/default_vocab/
 
 语文（诗词）：`title→Text`，`author→Phonetic`（单词卡音标栏显示作者），
 `content→Meaning`（超限截断），`首句→Example`。
+
+## 读音文件整理（2026-08-27，英文 2140 条）
+
+真人读音批量下载/统一规格/回填 audio 列，产物 `out/audio/{slug}.mp3`
+（32k mono，与后端 TtsService ffmpeg 参数同规格）：
+
+- **音源分层**：dictionaryapi.dev 词条 JSON 里 gstatic 域名真人音优先
+  （api.dictionaryapi.dev/media 对本机网络挂起，已跳过）→ 有道 dictvoice
+  美音兜底（几乎全覆盖含短语）；实测 2134/2134 唯一 slug 全量命中，
+  Piper 兜底未启用。Google 系域名自动走 7897 代理（不可用回退直连）。
+- **命名 slug**：小写 `[a-z0-9_-]`，空格→`_`，撇号/点删除（o'clock→oclock、
+  p.m.→pm）；china/China、miss/Miss 等 6 组同音词对共用同一文件。
+- **接入方式**：固件 `study_mode_machine` 人工命名字段优先（`/sdcard/audio/`
+  下放同名文件即生效）；audio 列已回填 CSV+JSON 并同步双端副本
+  （后端 SeedData/固件 src），中文古诗文 267 条留空待后续。
+
+```bash
+# 1. 下载（6 线程并发，全量约 8 分钟；幂等可断点续跑）
+python3 fetch_audio.py api
+# 2. 统一转 32k mono（需 brew install ffmpeg）
+python3 fetch_audio.py norm
+# 3. 回填 audio 列 + 同步后端 SeedData/固件 src（自动 .bakN 备份）
+python3 fetch_audio.py fill
+# 4. 拷贝到 SD 卡
+ cp out/audio/*.mp3 /Volumes/SDCARD/audio/
+```
+
+> 重跑 gen_default_vocab.py 会重写 CSV/JSON 丢失 audio 列，需再跑
+> `fetch_audio.py fill` 重建（音频文件本身不受影响）。
 
 ## 使用方法
 

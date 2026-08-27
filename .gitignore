@@ -49,3 +49,8 @@ Info/
 # 默认词库原始数据（tools/default_vocab/.raw/，含第三方完整数据文件，
 # 不入库；由 download.py 重新下载，生成产物 out/ 与 SeedData/ 才入库）
 tools/default_vocab/.raw/
+
+# 默认词库读音文件（第三方真人音下载产物，fetch_audio.py 可重新生成；
+# CSV/JSON 的 audio 引用随之重建，不入库）
+tools/default_vocab/out/audio_raw/
+tools/default_vocab/out/audio/
