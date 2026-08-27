@@ -282,7 +282,8 @@ public class DeviceController : ControllerBase
     }
 
     // ---- helpers ----
-    private static string GenerateApiKey()
+    /// <summary>ApiKey 生成（public：MyDeviceController 绑定换发同源 + 测试直测，HashPassword 先例）</summary>
+    public static string GenerateApiKey()
     {
         var bytes = RandomNumberGenerator.GetBytes(24);
         return Convert.ToHexString(bytes).ToLowerInvariant();  // 48 位十六进制

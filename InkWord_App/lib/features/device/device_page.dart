@@ -1,10 +1,13 @@
 /// 设备页：连接状态 + 发现入口（BLE 优先 / mDNS / 手动 IP / 热点兜底）
+/// + 我的设备（v2.0 完整账户：LAN 发现一键绑定 / 已绑清单 / 解绑）
 library;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../services/cloud_client.dart';
 import '../../services/mdns_finder.dart';
+import '../../state/account_controller.dart';
 import '../../state/device_controller.dart';
 import '../compose/compose_page.dart';
 import 'portal_fallback_page.dart';
@@ -22,6 +25,8 @@ class DevicePage extends StatelessWidget {
         padding: const EdgeInsets.all(12),
         children: [
           _StatusCard(dev: dev),
+          const SizedBox(height: 12),
+          const _MyDevicesCard(),
           const SizedBox(height: 12),
           _ActionButton(
             icon: Icons.bluetooth,
@@ -188,6 +193,218 @@ class _StatusCard extends StatelessWidget {
                 dev.lastError!,
                 style: const TextStyle(fontSize: 12, color: Colors.red),
               ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 我的设备（v2.0 完整账户，ADR-001 §五）：登录后可把 LAN 发现的设备
+/// 绑定到账户（云端换发 ApiKey，设备 401 自愈取回）；已绑清单支持解绑。
+/// 离线优先：未登录/云端不可达不影响设备直连功能。
+class _MyDevicesCard extends StatefulWidget {
+  const _MyDevicesCard();
+
+  @override
+  State<_MyDevicesCard> createState() => _MyDevicesCardState();
+}
+
+class _MyDevicesCardState extends State<_MyDevicesCard> {
+  List<CloudDevice>? _devices;
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 首帧后读取（依赖 Provider；restore 完成后也会重拉）
+    WidgetsBinding.instance.addPostFrameCallback((_) => _reload());
+  }
+
+  Future<void> _reload() async {
+    final account = context.read<AccountController>();
+    final client = account.client;
+    if (!account.loggedIn || client == null) return;
+    setState(() => _busy = true);
+    try {
+      final list = await client.myDevices();
+      if (!mounted) return;
+      setState(() {
+        _devices = list;
+        _error = null;
+        _busy = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _busy = false;
+      });
+    }
+  }
+
+  Future<void> _bindCurrent() async {
+    final account = context.read<AccountController>();
+    final dev = context.read<DeviceController>();
+    final messenger = ScaffoldMessenger.of(context);
+    final dclient = dev.client;
+    final cclient = account.client;
+    if (dclient == null || cclient == null) return;
+
+    setState(() => _busy = true);
+    try {
+      final stats = await dclient.fetchStats();
+      if (stats.mac.isEmpty) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('当前固件未提供 mac（需 v2.0 固件），请先升级设备')),
+        );
+        setState(() => _busy = false);
+        return;
+      }
+      await cclient.bindDevice(stats.mac);
+      await _reload();
+      messenger.showSnackBar(
+        const SnackBar(content: Text('已绑定；设备将在下个同步周期自动换用新密钥')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      messenger.showSnackBar(SnackBar(content: Text('绑定失败：$e')));
+    }
+  }
+
+  Future<void> _unbind(CloudDevice d) async {
+    final account = context.read<AccountController>();
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('解绑「${d.name}」？'),
+        content: const Text('解绑后云端不再聚合该设备的学习记录（设备本地学习不受影响，设备无感知）。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('解绑'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await account.client!.unbindDevice(d.id);
+      await _reload();
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('解绑失败：$e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final account = context.watch<AccountController>();
+    final dev = context.watch<DeviceController>();
+
+    if (!account.loggedIn) {
+      return Card(
+        child: ListTile(
+          leading: const Icon(Icons.cloud_outlined),
+          title: const Text('我的设备（账户）'),
+          subtitle: const Text(
+            '登录后可绑定设备：云端聚合多设备学习视图（词书页 → 卡组编辑器内登录）',
+            style: TextStyle(fontSize: 12),
+          ),
+        ),
+      );
+    }
+
+    final list = _devices;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.devices),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    '我的设备',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ),
+                if (_busy)
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else
+                  IconButton(
+                    icon: const Icon(Icons.refresh, size: 20),
+                    tooltip: '刷新',
+                    onPressed: _reload,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              dev.connected
+                  ? '已连接本地设备，可一键绑定到「${account.username}」'
+                  : '未连接本地设备（先经上方入口连接后再绑定）',
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: dev.connected && !_busy ? _bindCurrent : null,
+                icon: const Icon(Icons.add_link),
+                label: const Text('绑定当前设备'),
+              ),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                _error!,
+                style: const TextStyle(fontSize: 12, color: Colors.red),
+              ),
+            ],
+            if (list != null) ...[
+              for (final d in list)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: Icon(
+                    d.online
+                        ? Icons.phone_android
+                        : Icons.phone_android_outlined,
+                    color: d.online ? Colors.green : Colors.grey,
+                  ),
+                  title: Text(d.name),
+                  subtitle: Text(
+                    '··${d.mac.length >= 4 ? d.mac.substring(d.mac.length - 4) : d.mac}'
+                    ' · 电量 ${d.batteryLevel}% · ${d.recordCount} 条记录'
+                    '${d.online ? " · 在线" : ""}',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.link_off, size: 20),
+                    tooltip: '解绑',
+                    onPressed: () => _unbind(d),
+                  ),
+                ),
+              if (list.isEmpty)
+                const Text(
+                  '尚无绑定设备',
+                  style: TextStyle(fontSize: 12, color: Colors.black38),
+                ),
             ],
           ],
         ),

@@ -4,6 +4,8 @@
 /// （Deck.OwnerId 归属）；未登录可建本地草稿（离线优先红线——
 /// LAN 推送不依赖账户）。新建 = 科目下拉 + 版式模板三选
 /// （word/qa/poem，T4.3 card_layout 分派契约）+ 名称。
+/// UGC 分享（v2.0 #3）：我的卡组可公开到发现页；「发现卡组」
+/// 页可导入他人/官方卡组为独立副本（fork 深拷贝）。
 library;
 
 import 'dart:math';
@@ -14,6 +16,7 @@ import 'package:provider/provider.dart';
 import '../../services/cloud_client.dart';
 import '../../state/account_controller.dart';
 import 'deck_detail_page.dart';
+import 'deck_discover_page.dart';
 
 class DeckEditorPage extends StatefulWidget {
   const DeckEditorPage({super.key});
@@ -210,6 +213,51 @@ class _DeckEditorPageState extends State<DeckEditorPage> {
     ).then((_) => setState(() {}));
   }
 
+  /// 分享开关确认（UGC 分享，v2.0 #3）：开启前明确公开范围；
+  /// 关闭不影响他人已导入副本
+  Future<void> _toggleShare(CloudDeck d) async {
+    final open = !d.isShared;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(open ? '公开分享卡组？' : '停止分享？'),
+        content: Text(
+          open
+              ? '「${d.name}」将出现在其他用户的「发现卡组」页，可被导入为独立副本（后续你修改不影响已导入副本）。'
+              : '停止分享后新用户不再能发现该卡组；已导入的副本不受影响。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(open ? '公开' : '停止'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final c = _cloud;
+    if (c == null) return;
+    try {
+      await c.setDeckShared(d.id, open);
+      await _reload();
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(open ? '已公开到发现页' : '已停止分享')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('操作失败：$e')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final account = context.watch<AccountController>();
@@ -283,15 +331,46 @@ class _DeckEditorPageState extends State<DeckEditorPage> {
                         subtitle: Text(
                           '${payloadTypeLabel(d.payloadType)} · ${d.itemCount} 条',
                         ),
-                        trailing: Text(
-                          d.code,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.black45,
-                          ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              d.code,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black45,
+                              ),
+                            ),
+                            // UGC 分享开关（v2.0 #3）：公开到发现页
+                            IconButton(
+                              icon: Icon(
+                                d.isShared ? Icons.share : Icons.share_outlined,
+                                size: 20,
+                                color: d.isShared
+                                    ? Theme.of(context).colorScheme.primary
+                                    : Colors.black38,
+                              ),
+                              tooltip: d.isShared ? '已分享（点击关闭）' : '分享给其他用户',
+                              onPressed: () => _toggleShare(d),
+                            ),
+                          ],
                         ),
                         onTap: () => _openDetail(d),
                       ),
+                  // 发现卡组入口（UGC 分享，v2.0 #3）
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: OutlinedButton.icon(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const DeckDiscoverPage(),
+                        ),
+                      ),
+                      icon: const Icon(Icons.explore_outlined, size: 18),
+                      label: const Text('发现卡组（导入他人分享）'),
+                    ),
+                  ),
                 ],
               ],
             ),

@@ -86,7 +86,9 @@ class DeckInfo {
 }
 
 /// 设备学习统计（v1.3 T3.4：GET /api/stats，lr_stats 口径）
+/// mac（v2.0 账户绑定凭据）：旧固件无此字段回退 ''
 class DeviceStats {
+  final String mac;
   final String activeDeck;
   final int totalWords;
   final int todayNew;
@@ -96,6 +98,7 @@ class DeviceStats {
   final int dueCount;
   final int collectedCount;
   const DeviceStats({
+    required this.mac,
     required this.activeDeck,
     required this.totalWords,
     required this.todayNew,
@@ -107,6 +110,7 @@ class DeviceStats {
   });
 
   factory DeviceStats.fromJson(Map<String, dynamic> j) => DeviceStats(
+    mac: j['mac'] as String? ?? '',
     activeDeck: j['activeDeck'] as String? ?? '',
     totalWords: (j['totalWords'] as num?)?.toInt() ?? 0,
     todayNew: (j['todayNew'] as num?)?.toInt() ?? 0,

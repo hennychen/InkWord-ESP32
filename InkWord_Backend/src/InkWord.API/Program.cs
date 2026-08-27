@@ -277,6 +277,37 @@ if (app.Environment.IsDevelopment())
     foreach (var sql in t53Sql)
         db.Database.ExecuteSqlRaw(sql);
 
+    // v2.0 T6.2 完整账户（ACCOUNT_MODEL_DECISION §五）：Device.UserId 兑现
+    // （纯 Id 关联指向 Accounts，不建 FK）。存量库可能被 Device.User 旧导航
+    // 的 EF 惯例生成 Devices→Users FK，动态拆除防写入 Account.Id 违约；
+    // UserId 索引服务绑定设备清单/LWS 聚合查询。全程幂等，新库空转。
+    var t20Sql = new[]
+    {
+        "ALTER TABLE \"Devices\" ADD COLUMN IF NOT EXISTS \"UserId\" uuid",
+        @"DO $$ DECLARE r record; BEGIN
+            FOR r IN SELECT conname FROM pg_constraint c
+                     JOIN pg_class d ON d.oid = c.conrelid
+                     JOIN pg_class u ON u.oid = c.confrelid
+                     WHERE c.contype = 'f' AND d.relname = 'Devices' AND u.relname = 'Users'
+            LOOP EXECUTE 'ALTER TABLE ""Devices"" DROP CONSTRAINT ' || quote_ident(r.conname);
+            END LOOP; END $$;",
+        "CREATE INDEX IF NOT EXISTS \"IX_Devices_UserId\" ON \"Devices\" (\"UserId\")",
+    };
+    foreach (var sql in t20Sql)
+        db.Database.ExecuteSqlRaw(sql);
+
+    // v2.0 #3 卡组生态首增量（UGC 分享）：Decks 分享开关两列 +
+    // 部分索引（仅已分享行，发现页 IsShared 查询低开销）。
+    // 全程幂等，新库 EnsureCreated 已含，此段空转。
+var t21Sql = new[]
+    {
+        "ALTER TABLE \"Decks\" ADD COLUMN IF NOT EXISTS \"IsShared\" boolean NOT NULL DEFAULT false",
+        "ALTER TABLE \"Decks\" ADD COLUMN IF NOT EXISTS \"SharedAt\" timestamp with time zone",
+        "CREATE INDEX IF NOT EXISTS \"IX_Decks_IsShared\" ON \"Decks\" (\"IsShared\") WHERE \"IsShared\"",
+    };
+foreach (var sql in t21Sql)
+        db.Database.ExecuteSqlRaw(sql);
+
     // 管理端无注册入口（AuthController 仅登录）：首次启动种子默认账号
     // admin/admin123（仅 Development；生产应手动 SQL 重置或接环境变量）
     if (!db.Users.Any())

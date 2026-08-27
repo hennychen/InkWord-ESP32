@@ -17,6 +17,11 @@ namespace InkWord.API.Controllers;
 /// 覆盖 SD decks/&lt;id&gt;/words.json，设备零感知归属）。
 /// 删除语义：Archived=true + Version++（GetIncrementalAsync 排除归档，
 /// 设备侧不再拉到；已落 SD 的 LAN 拷贝独立，由 App 重推覆盖）。
+///
+/// UGC 分享（v2.0 #3 生态首增量）：share 开关 → decks/shared 发现页
+/// → fork 深拷贝导入。导入是独立副本（新版式 Code + 条目全量拷贝），
+/// 后续与源互不影响；关闭分享不回收已导入副本。设备零改动——fork
+/// 后走既有 LAN 推送 / 增量同步通道（ACCOUNT_MODEL_DECISION §五生态）。
 /// </summary>
 [ApiController]
 [Route("api/me")]
@@ -40,7 +45,15 @@ public class MyDeckController : ControllerBase
 
     public record DeckDto(
         Guid Id, string Code, string Name, string PayloadType, string Description,
-        string SubjectCode, int ItemCount, DateTime UpdatedAt);
+        string SubjectCode, int ItemCount, DateTime UpdatedAt, bool IsShared = false);
+
+    /// <summary>发现页条目（他人已分享卡组，含分享者展示名）</summary>
+    public record SharedDeckDto(
+        Guid Id, string Name, string PayloadType, string Description,
+        string SubjectCode, int ItemCount, string OwnerName, DateTime? SharedAt);
+
+    public record ShareReq(bool Shared);
+    public record ForkReq(string? Name);
     public record ItemDto(Guid Id, int Order, string Front, string Back, string Phonetic, string Example);
     public record SubjectDto(string Code, string Name, int SortOrder);
 
@@ -67,7 +80,7 @@ public class MyDeckController : ControllerBase
             d.Id, d.Code, d.Name, d.PayloadType, d.Description,
             subjects.GetValueOrDefault(d.SubjectId, "en"),
             counts.GetValueOrDefault(d.Id, 0),
-            d.UpdatedAt ?? d.CreatedAt)).ToList();
+            d.UpdatedAt ?? d.CreatedAt, d.IsShared)).ToList();
         return Ok(ApiResponse<List<DeckDto>>.Ok(dto));
     }
 
@@ -138,7 +151,7 @@ public class MyDeckController : ControllerBase
 
         return Ok(ApiResponse<DeckDto>.Ok(new DeckDto(
             deck.Id, deck.Code, deck.Name, deck.PayloadType, deck.Description,
-            subject.Code, req.Items?.Count ?? 0, deck.CreatedAt)));
+            subject.Code, req.Items?.Count ?? 0, deck.CreatedAt, deck.IsShared)));
     }
 
     /// <summary>改名/描述</summary>
@@ -179,6 +192,159 @@ public class MyDeckController : ControllerBase
         deck.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { deck.Id }));
+    }
+
+    // ---- UGC 分享（v2.0 #3 生态首增量） ----
+
+    /// <summary>分享开关（仅归属人）。开启置 SharedAt（发现页排序），
+    /// 关闭置 null；已导入副本不受影响。</summary>
+    [HttpPost("decks/{id}/share")]
+    public async Task<IActionResult> Share(Guid id, [FromBody] ShareReq req, CancellationToken ct)
+    {
+        var deck = await FindOwned(id, ct);
+        if (deck == null) return NotFound(ApiResponse.Fail(404, "卡组不存在"));
+
+        deck.IsShared = req.Shared;
+        deck.SharedAt = req.Shared ? DateTime.UtcNow : null;
+        await _db.SaveChangesAsync(ct);
+        return Ok(ApiResponse<object>.Ok(new { deck.Id, deck.IsShared }));
+    }
+
+    /// <summary>发现页：他人已分享卡组（SharedAt 倒序）。q=名称包含
+    /// （不分大小写）、subject=科目 Code 过滤、page/pageSize 分页。</summary>
+    [HttpGet("decks/shared")]
+    public async Task<IActionResult> Shared(
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 20,
+        [FromQuery] string? q = null, [FromQuery] string? subject = null,
+        CancellationToken ct = default)
+    {
+        if (page < 1) page = 1;
+        if (pageSize is < 1 or > 50) pageSize = 20;
+
+        var query = _db.Decks.AsNoTracking()
+            .Where(d => d.IsShared && d.OwnerId != OwnerId);
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            var kw = q.Trim().ToLowerInvariant();
+            query = query.Where(d => d.Name.ToLower().Contains(kw));
+        }
+        if (!string.IsNullOrWhiteSpace(subject))
+        {
+            var subjectId = await _db.Subjects.AsNoTracking()
+                .Where(s => s.Code == subject)
+                .Select(s => (Guid?)s.Id)
+                .FirstOrDefaultAsync(ct);
+            if (subjectId == null)
+                return Ok(ApiResponse<List<SharedDeckDto>>.Ok([]));
+            query = query.Where(d => d.SubjectId == subjectId.Value);
+        }
+
+        var page_ = await query
+            .OrderByDescending(d => d.SharedAt)
+            .Skip((page - 1) * pageSize).Take(pageSize + 1) // +1 探测下一页
+            .ToListAsync(ct);
+        var hasMore = page_.Count > pageSize;
+        if (hasMore) page_.RemoveAt(page_.Count - 1);
+
+        var subjects = await _db.Subjects.AsNoTracking()
+            .ToDictionaryAsync(s => s.Id, s => s.Code, ct);
+        var ownerIds = page_.Select(d => d.OwnerId!.Value).Distinct().ToList();
+        var owners = await _db.Accounts.AsNoTracking()
+            .Where(a => ownerIds.Contains(a.Id))
+            .ToDictionaryAsync(a => a.Id, a => a.DisplayName, ct);
+        var deckIds = page_.Select(d => d.Id).ToList();
+        var counts = await _db.Words.AsNoTracking()
+            .Where(w => w.DeckId != null && !w.Archived && deckIds.Contains(w.DeckId.Value))
+            .GroupBy(w => w.DeckId!.Value)
+            .ToDictionaryAsync(g => g.Key, g => g.Count(), ct);
+
+        var dto = page_.Select(d => new SharedDeckDto(
+            d.Id, d.Name, d.PayloadType, d.Description,
+            subjects.GetValueOrDefault(d.SubjectId, "en"),
+            counts.GetValueOrDefault(d.Id, 0),
+            owners.GetValueOrDefault(d.OwnerId!.Value, ""), d.SharedAt)).ToList();
+        return Ok(ApiResponse<object>.Ok(new { items = dto, hasMore }));
+    }
+
+    /// <summary>导入（fork 深拷贝）：官方卡组或他人已分享卡组 → 独立
+    /// 副本（新 Code + 条目全量拷贝，Version 接全局 max 递增——增量
+    /// 同步通道语义同 AddItems）。自己已拥有的不可导入；他人未分享的
+    /// 不存在（404 防存在性探测）。</summary>
+    [HttpPost("decks/{id}/fork")]
+    public async Task<IActionResult> Fork(Guid id, [FromBody] ForkReq? req, CancellationToken ct)
+    {
+        var deck = await _db.Decks.AsNoTracking()
+            .FirstOrDefaultAsync(d => d.Id == id, ct);
+        if (deck == null || (deck.OwnerId != null && !deck.IsShared))
+            return NotFound(ApiResponse.Fail(404, "卡组不存在或未分享"));
+        if (deck.OwnerId == OwnerId)
+            return BadRequest(ApiResponse.Fail(400, "自己的卡组无需导入"));
+
+        var name = string.IsNullOrWhiteSpace(req?.Name)
+            ? deck.Name : req!.Name!.Trim();
+        if (name.Length is < 1 or > 128)
+            return BadRequest(ApiResponse.Fail(400, "卡组名 1~128 字符"));
+
+        var copy = new InkWord.Core.Entities.Deck
+        {
+            SubjectId = deck.SubjectId,
+            Code = await NextCodeAsync(deck.SubjectId, ct),
+            Name = name,
+            PayloadType = deck.PayloadType,
+            Description = deck.Description,
+            OwnerId = OwnerId,
+        };
+        _db.Decks.Add(copy);
+
+        var items = await _db.Words.AsNoTracking()
+            .Where(w => w.DeckId == id && !w.Archived)
+            .OrderBy(w => w.Version)
+            .ToListAsync(ct);
+        int v = await _db.Words.AsNoTracking()
+            .MaxAsync(w => (int?)w.Version, ct) ?? 0;
+        foreach (var w in items)
+            _db.Words.Add(CopyWord(w, copy, ++v));
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(ApiResponse<DeckDto>.Ok(new DeckDto(
+            copy.Id, copy.Code, copy.Name, copy.PayloadType, copy.Description,
+            _db.Subjects.AsNoTracking()
+                .Where(s => s.Id == copy.SubjectId)
+                .Select(s => s.Code)
+                .First(),
+            items.Count, copy.CreatedAt, copy.IsShared)));
+    }
+
+    /// <summary>fork 深拷贝映射（public static 供测试直测）：内容字段
+    /// 全量拷贝（PayloadJson/Audio 等同源可用），归属重定向（Tag=新
+    /// Code、SubjectId/DeckId=新卡组）；AiStatus/AiSuggestion 不拷——
+    /// 源卡组私有审校状态对新副本无意义；ChangeType 归 0（新增语义）。</summary>
+    public static InkWord.Core.Entities.Word CopyWord(
+        InkWord.Core.Entities.Word src,
+        InkWord.Core.Entities.Deck deck, int version)
+    {
+        var w = new InkWord.Core.Entities.Word
+        {
+            Text = src.Text,
+            Phonetic = src.Phonetic,
+            Meaning = src.Meaning,
+            Example = src.Example,
+            Audio = src.Audio,
+            Tag = deck.Code,
+            Root = src.Root,
+            Inflections = src.Inflections,
+            Source = src.Source,
+            Grade = src.Grade,
+            Difficulty = src.Difficulty,
+            Version = version,
+            ChangeType = 0,
+            SubjectId = deck.SubjectId,
+            DeckId = deck.Id,
+            Front = src.Front,
+            Back = src.Back,
+            PayloadJson = src.PayloadJson,
+        };
+        return w;
     }
 
     // ---- 条目级 ----

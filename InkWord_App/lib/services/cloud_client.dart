@@ -37,6 +37,8 @@ class CloudDeck {
     this.description = '',
     this.subjectCode = 'en',
     this.itemCount = 0,
+    this.isShared = false,
+    this.ownerName,
   });
 
   final String id;
@@ -46,6 +48,61 @@ class CloudDeck {
   final String description;
   final String subjectCode;
   final int itemCount;
+
+  /// v2.0 #3 UGC 分享：已公开到发现页（仅自己的卡组回填）
+  final bool isShared;
+
+  /// 分享者展示名（仅发现页条目回填；自己的卡组为 null）
+  final String? ownerName;
+}
+
+/// 发现页一页结果（`GET /api/me/decks/shared`，v2.0 #3 UGC 分享）
+class SharedDeckPage {
+  const SharedDeckPage({required this.items, required this.hasMore});
+  final List<CloudDeck> items;
+  final bool hasMore; // 服务端 pageSize+1 探测
+}
+
+/// 账户绑定的设备（v2.0 完整账户，GET /api/me/devices）
+class CloudDevice {
+  const CloudDevice({
+    required this.id,
+    required this.name,
+    required this.mac,
+    this.firmwareVersion = '',
+    this.batteryLevel = 100,
+    this.online = false,
+    this.lastHeartbeat,
+    this.recordCount = 0,
+  });
+
+  final String id;
+  final String name;
+  final String mac; // 12 位大写 hex（与设备注册同源）
+  final String firmwareVersion;
+  final int batteryLevel;
+  final bool online;
+  final DateTime? lastHeartbeat;
+  final int recordCount;
+}
+
+/// 跨设备 LWS 聚合行（GET /api/me/progress/aggregate，只读视图）
+class CloudAggregate {
+  const CloudAggregate({
+    required this.wordId,
+    required this.deviceId,
+    required this.stability,
+    required this.difficulty,
+    this.isCollected = false,
+    this.lastStudiedAt,
+  });
+
+  final String wordId;
+  final String deviceId; // 胜出设备（LastStudiedAt 新者胜）
+  final double stability;
+  final double difficulty;
+  final bool isCollected;
+  final DateTime? lastStudiedAt;
 }
 
 class CloudClient {
@@ -154,8 +211,74 @@ class CloudClient {
           description: e['description'] as String? ?? '',
           subjectCode: e['subjectCode'] as String? ?? 'en',
           itemCount: e['itemCount'] as int? ?? 0,
+          isShared: e['isShared'] as bool? ?? false,
         ),
     ];
+  }
+
+  /// 发现页：他人已分享卡组（q 名称过滤 / subject 科目 Code / 分页）
+  Future<SharedDeckPage> sharedDecks({
+    int page = 1,
+    int pageSize = 20,
+    String? q,
+    String? subject,
+  }) async {
+    final data = await _send(
+      http.Request(
+        'GET',
+        _u(
+          '/api/me/decks/shared'
+          '?page=$page&pageSize=$pageSize'
+          '${q == null || q.isEmpty ? "" : "&q=${Uri.encodeQueryComponent(q)}"}'
+          '${subject == null || subject.isEmpty ? "" : "&subject=${Uri.encodeQueryComponent(subject)}"}',
+        ),
+      )..headers.addAll(_headers),
+    );
+    final m = (data as Map).cast<String, dynamic>();
+    return SharedDeckPage(
+      items: [
+        for (final e in (m['items'] as List? ?? []))
+          CloudDeck(
+            id: e['id'] as String,
+            code: '', // 发现页不回传 code（fork 后由副本携带）
+            name: e['name'] as String? ?? '',
+            payloadType: e['payloadType'] as String? ?? 'word-card',
+            description: e['description'] as String? ?? '',
+            subjectCode: e['subjectCode'] as String? ?? 'en',
+            itemCount: e['itemCount'] as int? ?? 0,
+            ownerName: e['ownerName'] as String? ?? '',
+          ),
+      ],
+      hasMore: m['hasMore'] as bool? ?? false,
+    );
+  }
+
+  /// 分享开关（仅自己的卡组；关闭不影响他人已导入副本）
+  Future<void> setDeckShared(String deckId, bool shared) => _send(
+    http.Request('POST', _u('/api/me/decks/$deckId/share'))
+      ..headers.addAll(_headers)
+      ..body = jsonEncode({'shared': shared}),
+  );
+
+  /// 导入（fork 深拷贝）：官方或他人已分享卡组 → 独立副本归自己。
+  /// 走 `_send` 直发：响应含 int/bool 字段（itemCount/isShared），
+  /// `_post` 内部 `cast<String,String>` 会炸（bindDevice 同陷阱先例）。
+  Future<CloudDeck> forkDeck(String deckId, {String? name}) async {
+    final data = await _send(
+      http.Request('POST', _u('/api/me/decks/$deckId/fork'))
+        ..headers.addAll(_headers)
+        ..body = jsonEncode({'name': name}),
+    );
+    final m = (data as Map).cast<String, dynamic>();
+    return CloudDeck(
+      id: m['id'] as String,
+      code: m['code'] as String? ?? '',
+      name: m['name'] as String? ?? '',
+      payloadType: m['payloadType'] as String? ?? 'word-card',
+      description: m['description'] as String? ?? '',
+      subjectCode: m['subjectCode'] as String? ?? 'en',
+      itemCount: m['itemCount'] as int? ?? 0,
+    );
   }
 
   Future<List<CloudSubject>> subjects() async {
@@ -265,4 +388,69 @@ class CloudClient {
     http.Request('DELETE', _u('/api/me/decks/$deckId/items/$itemId'))
       ..headers.addAll(_headers),
   );
+
+  // ---- 我的设备（v2.0 完整账户：绑定/解绑/LWS 聚合） ----
+
+  Future<List<CloudDevice>> myDevices() async {
+    final data = await _send(
+      http.Request('GET', _u('/api/me/devices'))..headers.addAll(_headers),
+    );
+    return [
+      for (final e in (data as List? ?? []))
+        CloudDevice(
+          id: e['id'] as String,
+          name: e['name'] as String? ?? '',
+          mac: e['mac'] as String? ?? '',
+          firmwareVersion: e['firmwareVersion'] as String? ?? '',
+          batteryLevel: (e['batteryLevel'] as num?)?.toInt() ?? 0,
+          online: e['online'] as bool? ?? false,
+          lastHeartbeat: e['lastHeartbeat'] == null
+              ? null
+              : DateTime.tryParse(e['lastHeartbeat'] as String),
+          recordCount: (e['recordCount'] as num?)?.toInt() ?? 0,
+        ),
+    ];
+  }
+
+  /// 绑定设备（凭 LAN /api/stats 的 mac）。成功后云端换发 ApiKey，
+  /// 设备下个同步周期 401 自愈重注册取回新钥——无需 App 回送。
+  /// 不走 _post：响应含 int/bool 字段，`_post` 的 `cast<String,String>` 会炸。
+  Future<CloudDevice> bindDevice(String mac) async {
+    final data = await _send(
+      http.Request('POST', _u('/api/me/devices/bind'))
+        ..headers.addAll(_headers)
+        ..body = jsonEncode({'mac': mac}),
+    );
+    final m = (data as Map).cast<String, dynamic>();
+    return CloudDevice(
+      id: m['id'] as String,
+      name: m['name'] as String? ?? '',
+      mac: m['mac'] as String? ?? mac,
+    );
+  }
+
+  Future<void> unbindDevice(String deviceId) => _send(
+    http.Request('POST', _u('/api/me/devices/$deviceId/unbind'))
+      ..headers.addAll(_headers),
+  );
+
+  Future<List<CloudAggregate>> aggregateProgress({int take = 500}) async {
+    final data = await _send(
+      http.Request('GET', _u('/api/me/progress/aggregate?take=$take'))
+        ..headers.addAll(_headers),
+    );
+    return [
+      for (final e in (data as List? ?? []))
+        CloudAggregate(
+          wordId: e['wordId'] as String,
+          deviceId: e['deviceId'] as String,
+          stability: (e['stability'] as num?)?.toDouble() ?? 0,
+          difficulty: (e['difficulty'] as num?)?.toDouble() ?? 0,
+          isCollected: e['isCollected'] as bool? ?? false,
+          lastStudiedAt: e['lastStudiedAt'] == null
+              ? null
+              : DateTime.tryParse(e['lastStudiedAt'] as String),
+        ),
+    ];
+  }
 }

@@ -28,6 +28,14 @@ public class Deck : BaseEntity
     /// <summary>简介（App 词书页副标题）</summary>
     public string Description { get; set; } = string.Empty;
 
+    /// <summary>是否公开分享（v2.0 #3 UGC 生态首增量）：true 时其他
+    /// 学习者可在「发现」页浏览并 fork 导入。分享只读不投流——他人
+    /// 导入是深拷贝副本，后续互不影响；关闭分享不回收已导入副本。</summary>
+    public bool IsShared { get; set; }
+
+    /// <summary>最近一次开启分享时间（发现页排序；关闭置 null）</summary>
+    public DateTime? SharedAt { get; set; }
+
     // 导航：仅 Deck→Subject 单向（Word 侧纯 Id 关联 —— 三表 Item
     // 混合模型不建 Words 集合，关联查询显式 join，见 T4.1）
 }
