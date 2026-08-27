@@ -38,6 +38,7 @@
 #include "gpio_config.h"
 #include "epd_driver.h"
 #include "audio_player.h"
+#include "es8311.h"        /* 2026-08-27 音量恢复：启动后 NVS 镜像同步进 codec 驱动状态 */
 #include "button_handler.h"
 #include "haptic.h"
 #include "ui_sfx.h"     /* T1.6 提示音：按键确认/自评/模式/边界 */
@@ -337,13 +338,18 @@ static void quiz_replay(void)
 }
 
 /* 2×2 方向直选判定（T5.1）：T3 恒直选（四向四选项天然配套，中键留给
- * 重播——纵列 T3 无重播键位）；T1/T2 由「测验快答」设置控制（默认
- * 关=纵列基线，真机对比后定夺，QUIZ_DESIGN §5 P2 变体）；T5.2 判断
- * 题恒纵列（两选项不适合 2×2，左右键已直答） */
+ * 重播——纵列 T3 重播改长按中，仅 TINY 档）；T1/T2 由「测验快答」设置
+ * 控制（默认关=纵列基线，真机对比后定夺，QUIZ_DESIGN §5 P2 变体）；
+ * T5.2 判断题恒纵列（两选项不适合 2×2，左右键已直答） */
 static bool quiz_grid_active(void)
 {
     quiz_question_t q;
     if (!quiz_session_at(s_quiz_i, &q)) return false;
+    /* TINY 恒纵列（2026-08-25）：与 SMALL 互为镜像——SMALL 高度枯竭
+     * 恒网格，TINY 宽度枯竭恒纵列（格宽 (W-2×8-4)/2 ≈ 51px，格内
+     * 释义 16px 仅 2 字/行×2 行不可读；竖屏 4×28 行距余量足）；
+     * T3 让出中键作答后重播迁长按中（quiz_on_button） */
+    if (UI_TINY) return false;
     if (q.type == QUIZ_T3) return true;
     if (q.type == QUIZ_TF) return false;
     /* SMALL 264x176 纵列四行数学上放不下（可用 70px < 4×16px 释义行），
@@ -523,7 +529,9 @@ static void ui_draw_quiz(void)
         int w1 = cjk_text_width(1, t1);
         cjk_text_draw((epd_gfx_width() - w1) / 2, UI_STATUS_H + sh / 2 - 22,
                       1, t1, EPD_GFX_BLACK);
-        const char *t2 = "中键重播 · 方向选义";
+        /* 2026-08-25：TINY 纵列版提示改「长按中 重播」（5+2 字 88px
+         * 可容纳；grid 版全宽文案 176px 超 106/112px 正文宽） */
+        const char *t2 = grid ? "中键重播 · 方向选义" : "长按中 重播";
         int w2 = cjk_text_width(0, t2);
         cjk_text_draw((epd_gfx_width() - w2) / 2, UI_STATUS_H + sh / 2 + 6,
                       0, t2, EPD_GFX_BLACK);
@@ -687,6 +695,16 @@ static void quiz_on_button(nav_key_t id, button_event_t event)
         if (id == NAV_RST) {           /* RST 长/短按均退出（临时视图语义） */
             study_mode_exit_quiz();
             ui_render_current();
+            return;
+        }
+        /* TINY 档 T3 纵列重播（2026-08-25）：TINY 恒纵列后中键短按=作答，
+         * grid 版「中键即重播」的等价键位迁长按；反馈/小结态不响防止
+         * 打断节奏（s_quiz_fb<0 且非小结才生效） */
+        if (id == NAV_CENTER && s_quiz_fb < 0) {
+            quiz_question_t q3;
+            if (quiz_session_at(s_quiz_i, &q3) && q3.type == QUIZ_T3 &&
+                !quiz_grid_active())
+                quiz_replay();
         }
         return;
     }
@@ -1182,13 +1200,48 @@ static void ui_draw_poem_head(const WordEntry *w)
                            0, 16, 1, w->phonetic, EPD_GFX_BLACK);
 }
 
+/* poem 默写态 TINY 版（2026-08-25）：原框径随诗行字号（20px 框
+ * pitch26，×5=130px）五言句仅容 3~4 框，字数线索断裂；改 16px
+ * 小框 pitch20 单行 5 框（122/128px 正文宽均容）、七言分两行
+ * （5+2）；上句降 16px 双行包裹（20px 下七言 140px 截尾丢题面）；
+ * 揭示提示随框区下移动态定位 */
+static void ui_draw_poem_dictation_tiny(const WordEntry *w)
+{
+    if (w->root[0])
+        cjk_text_draw_wrap(UI_MARGIN_X, UI_POEM_TOP, UI_BODY_MAX_W,
+                           0, 20, 2, w->root, EPD_GFX_BLACK);
+
+    int slot = 16, pitch = 20;
+    int per_row = (UI_BODY_MAX_W - 4) / pitch;   /* 122/128px 均 5 */
+    if (per_row < 1) per_row = 1;
+
+    int n = 0;
+    for (const char *p = w->text; *p; ) {
+        if ((*p & 0x80) == 0) p++;                        /* ASCII 罕见直跳 */
+        else { n++; p += (*p & 0xE0) == 0xE0 ? 3 : 2; }   /* 全角占位 */
+    }
+    if (n > per_row * 3) n = per_row * 3;   /* 防御：题面契约 ≤7 字/句 */
+
+    int y0 = UI_POEM_TOP + 2 * 20 + 4;      /* 上句双行占位后（保守固定） */
+    for (int i = 0; i < n; i++)
+        epd_gfx_draw_rect(UI_MARGIN_X + (i % per_row) * pitch,
+                          y0 + (i / per_row) * (slot + 6),
+                          slot, slot, EPD_GFX_BLACK);
+
+    int y_hint = y0 + ((n + per_row - 1) / per_row) * (slot + 6) + 8;
+    cjk_text_draw(UI_MARGIN_X, y_hint, 0, "[SET] 揭晓答案",
+                  EPD_GFX_BLACK);
+}
+
 /* poem 默写态（T4.4，MODE_DICTATION + poem-card）：root=上句题面
  * 常驻首诗行位（数据契约：上句为单句），text=下句遮蔽画全角空框
  * （逐全角字符一方框，字数线索——百词斩拼写填空同构；框径=诗行
- * 字高，超宽截位同 spelling_slots 策略）；拼音行同遮（听写藏音标
- * 先例，防拼音泄底），揭晓后走正常 poem 版式（上下句均在屏） */
+ * 字高，超宽截位同 spelling_slots 策略；TINY 档独立布局见上 _tiny
+ * 版）；拼音行同遮（听写藏音标先例，防拼音泄底），揭晓后走正常
+ * poem 版式（上下句均在屏） */
 static void ui_draw_poem_dictation(const WordEntry *w)
 {
+    if (UI_TINY) { ui_draw_poem_dictation_tiny(w); return; }
     if (w->root[0])
         cjk_text_draw_wrap(UI_MARGIN_X, UI_POEM_TOP, UI_BODY_MAX_W,
                            UI_POEM_LEVEL, UI_POEM_LH, 1, w->root, EPD_GFX_BLACK);
@@ -1350,9 +1403,9 @@ static void ui_draw_review_list(void)
                           (total - RV_VISIBLE), RV_SB_W, thumb_h, EPD_GFX_BLACK);
     }
 
-    /* 底部提示行（同学习页 foot 位） */
+    /* 底部提示行（同学习页 foot 位；RST 直达设置 2026-08-27） */
     cjk_text_draw(UI_MARGIN_X, UI_FOOT_TOP, 0,
-                  "中 详情 · 左/右 自评出队 · RST 回首行", EPD_GFX_BLACK);
+                  "中 详情 · 左/右 自评出队 · RST 设置", EPD_GFX_BLACK);
 }
 
 /* LAN 直传外部内容整帧直刷后调用：GFX previous 缓冲已失配，
@@ -1369,6 +1422,40 @@ extern "C" void ui_force_font_refresh(void)
     s_last_mode = MODE_COUNT;
     s_mean_page = 0;
     s_mean_word = -1;
+}
+
+/* 旋转意图 → 绝对旋转映射（2026-08-26 屏幕方向设置）：意图相对面板
+ * 默认方向表达（settings_rotation_mode：0=跟随面板/1=竖屏/2=横屏），
+ * ^1 翻转奇偶且保持 180° 相位与面板默认一致；不存绝对值——同一 NVS
+ * 键跨面板（重编译换屏）语义不漂移 */
+static uint8_t rotation_for_intent(int intent)
+{
+    uint8_t def = epd_panel_default_rotation();
+    if (intent == 1) return (def & 1) ? (uint8_t)(def ^ 1) : def;  /* 竖屏 */
+    if (intent == 2) return (def & 1) ? def : (uint8_t)(def ^ 1);  /* 横屏 */
+    return def;
+}
+
+/* 屏幕方向生效链（settings_ui case 6 即改即调；setup 启动恢复亦调，
+ * 幂等——映射值与当前一致时零动作）：
+ *   1. epd_set_rotation 重建双层画布（帧缓冲面板物理帧与旋转无关）；
+ *   2. ui_force_font_refresh 同款布局失效（强制全刷 + 释义分页归零）；
+ *   3. 待机页差分影子/引文态失效（下一次渲染走全刷）；
+ *   4. READER 页表按当前页 anchor 重建（字号步进 0 = 仅重建页表，
+ *      R_MAX_W/H 随新几何；设置页激活时内部 ui_render_word 被拦截，
+ *      游标已更新、退出设置页后全刷恢复）。
+ * 本函数不绘制——调用方负责（设置页自身 draw_page(true) 全刷重排 /
+ * 首帧流程自然渲染；layout_profile 短边分档，横竖切换短边不变档位
+ * 稳定，无需失效） */
+extern "C" void ui_apply_rotation(void)
+{
+    uint8_t rot = rotation_for_intent(settings_rotation_mode());
+    if (epd_get_rotation() == rot) return;
+    if (epd_set_rotation(rot) != 0) return;
+    ui_force_font_refresh();
+    standby_invalidate_layout();
+    if (study_mode_current() == MODE_READER)
+        study_mode_reader_font_step(0);
 }
 
 /* 单词卡片渲染入口：状态机每次画面变化时调用 */
@@ -1819,8 +1906,8 @@ static void on_button(nav_key_t id, button_event_t event)
 
     /* 复习模式短按路由（2026-08-24，O3）：列表态=到期词紧凑词表，
      * 上/下=移动选择、中=进词卡详情、左/右=自评出队（游标钳位，
-     * 对应底部提示行「中 详情 · 左/右 自评出队 · RST 回首行」）、
-     * RST=回首行、SET 无遮蔽语义忽略；空序列全忽略（空态页无交互
+     * 对应底部提示行「中 详情 · 左/右 自评出队 · RST 设置」）、
+     * RST=直达设置页（2026-08-27）、SET 无遮蔽语义忽略；空序列全忽略（空态页无交互
      * 对象，评分目标词索引无效）；详情态上/下/中/SET/RST 走下方
      * 通用词卡路由（上/下翻释义页/跨词翻卡），左/右自评改为
      * after_due_review 出队并回列表——序列清空由列表态空态页承载，
@@ -1889,7 +1976,10 @@ static void on_button(nav_key_t id, button_event_t event)
         study_mode_handle_action(2);   /* confirm：遮蔽/揭晓释义 */
         return;
     case NAV_RST:
-        study_mode_reset_cursor();     /* 回到当前模式第一条 */
+        /* RST 短按直达设置页（2026-08-27 用户需求：音量等高频项快速
+         * 触达；原「回当前模式首条」退役——低频功能，可由多次上键
+         * 等价达成；quiz/AI 对话等临时视图的 RST 语义在前置分支不受影响） */
+        settings_ui_enter();
         return;
     case NAV_LEFT:
         learning_state_apply_quality(study_mode_current_word_index(), 1);
@@ -1967,6 +2057,24 @@ static void sync_try_register(void)
     }
 }
 
+/* v2.0 绑定换发自愈（ADR-001 §五）：App 绑定设备后云端换发 ApiKey，
+ * 旧钥即刻 401。清内存/NVS 钥 → sync_try_register 按 MAC 幂等重注册
+ * 取回新钥（后端 register 返回既有记录的钥，即换发后的新钥）。网络
+ * 未连/后端不可达时注册失败，key 保持空下周期再试（离线优先红线：
+ * 本地学习全链路不依赖钥）。 */
+static void sync_recover_auth(void)
+{
+    LOG_W("device key rejected (401), re-register by MAC");
+    sync_set_device_key("");
+    nvs_handle_t h;
+    if (nvs_open("inkword", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, "dev_key");
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    sync_try_register();
+}
+
 /* 上报队列 flush：逐条发送（人手按键频次下 HTTP 开销可忽略；攒批优化
  * 待设备规模上来后）。无 cloudId 的词（本地导入）直接丢弃；任一条
  * 失败即停，队列保留待下周期重试（timestamp=0 由服务器落地时间代替） */
@@ -1988,9 +2096,13 @@ static void sync_flush_pending(void)
             it.quality = (uint8_t)ev.quality;
             it.timestamp = 0;
             strncpy(it.word_id, w->cloud_id, sizeof(it.word_id) - 1);
-            if (sync_push_progress(&it, 1) != 0) return;
+            int rc = sync_push_progress(&it, 1);
+            if (rc == SYNC_ERR_AUTH) { sync_recover_auth(); return; }
+            if (rc != 0) return;
         } else {
-            if (sync_push_collect(w->cloud_id, ev.collected) != 0) return;
+            int rc = sync_push_collect(w->cloud_id, ev.collected);
+            if (rc == SYNC_ERR_AUTH) { sync_recover_auth(); return; }
+            if (rc != 0) return;
         }
         learning_state_event_drop(1);
     }
@@ -2048,7 +2160,8 @@ static void silent_heartbeat_session(void)
     sync_flush_pending();
     int bat = max17048_percent();   /* T2.6：实数（模块不在位回退占位） */
     if (bat < 0) bat = 100;
-    sync_heartbeat(bat, FW_VERSION);
+    if (sync_heartbeat(bat, FW_VERSION) == SYNC_ERR_AUTH)
+        sync_recover_auth();   /* 换钥后回睡，下个心跳周期新钥生效 */
 
     /* OTA 检查：升级成功即重启进新固件（走正常启动路径 ota_mark_valid） */
     char url[256], md5[64];
@@ -2083,7 +2196,8 @@ static void background_task(void *arg)
 
             int bat = max17048_percent();   /* T2.6：实数（不在位回退占位） */
             if (bat < 0) bat = 100;
-            sync_heartbeat(bat, FW_VERSION);
+            if (sync_heartbeat(bat, FW_VERSION) == SYNC_ERR_AUTH)
+                sync_recover_auth();   /* 新钥本周期即取回，下周期正常 */
 
             /* 待机页天气：每 3 个周期（约 30 分钟）拉取一次，失败下周期重试；
              * 仅待机页激活时拉取（学习页不耗流量） */
@@ -2158,11 +2272,17 @@ void setup()
     boot_stamp("sd");
 
     epd_driver_init();
+    ui_apply_rotation();                /* NVS 屏幕方向恢复（幂等，首帧前；
+                                           默认意图 = 面板默认零动作） */
     epd_clear_screen();                 /* 显示启动白屏 */
     power_mark_periph_online();         /* P5：本会话外设在线（入睡时收口外设） */
     boot_stamp("epd");
 
-    audio_init();
+    audio_init();    /* ES8311+NS4150B 链路 2026-08-27 验收通过（REG00 正常态
+                     + MCLK 实线拓扑）；自检人声改由按键/维护路径触发 */
+    /* 音量恢复（2026-08-27）：NVS 镜像同步进 es8311 驱动状态（默认 75=
+     * 0xBF 历史听感；此后 dac_start 起播回写，设置页/菜单即时调节） */
+    es8311_set_volume(settings_volume());
     ui_sfx_init();                   /* T1.6 提示音样本探测（缺样本静默降级） */
     haptic_init();                   /* 触觉反馈（P2 震动）：先于按键扫描任务 */
     max17048_init();                 /* T2.6 电量计（共享 I2C，不在位静默降级） */
@@ -2172,10 +2292,13 @@ void setup()
     button_register_callback(on_button);
     boot_stamp("keys");
 
-    /* 3. 刷新调度器：学习/阅读页局刷阈值=8（2026-08-20 无窗口方案定稿：
-     * 双 RAM 差分局刷自身无残影，全刷降为低频深度保养，N=8 平衡闪烁
-     * 频率；待机页走独立 _n 阈值 12，见 standby_page.c） */
-    refresh_scheduler_init(8);
+    /* 3. 刷新调度器：阈值取面板 desc.partial_count_full_refresh
+     * （2026-08-26 wft0290 调优改：原硬编码 8 与 desc 脱钩；
+     * 残影为单相快刷固有特性，wft0290 取 4 加频清除，全刷 3.4s
+     * 洗净实测；待机页走独立 _n 阈值 12，见 standby_page.c） */
+    const epd_panel_desc_t *pd = epd_panel_desc();
+    refresh_scheduler_init(pd && pd->partial_count_full_refresh > 0
+                               ? pd->partial_count_full_refresh : 8);
 
     /* 4. WiFi 联网（失败不阻塞主流程）；同步凭据（base URL / 设备 key）
      *    从 NVS 恢复到 sync_client，首次注册留待联网后 background_task */

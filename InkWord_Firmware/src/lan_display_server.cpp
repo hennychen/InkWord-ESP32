@@ -26,6 +26,7 @@
  *   POST /api/deck/active  切换词书（body {"id":""}；复用菜单切书编排
  *                        deck_flow_switch：NVS+重载+状态作废+进度隔离）
  *   GET  /api/stats     今日统计/连续天数（lr_stats 口径 + 错词/到期/收藏数）
+ *                        + mac 字段（v2.0 App 绑定凭据，与注册 MAC 同源）
  *   GET  其他任意 URI   302 重定向（captive portal 探测域名 → 弹出配网页）
  *
  * 两种工作模式：
@@ -41,6 +42,8 @@
 #include "lan_display_server.h"
 #include "debug_log.h"
 #include "epd_driver.h"
+#include "esp_mac.h"          /* v2.0：stats 端点 mac 字段（App 绑定凭据） */
+#include "layout_profile.h"   /* 2026-08-25：TINY 档紧凑版式分派 */
 #include "refresh_scheduler.h"
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
@@ -778,11 +781,17 @@ static esp_err_t deck_list_get_handler(httpd_req_t *req)
 
 static esp_err_t stats_get_handler(httpd_req_t *req)
 {
-    char body[256];
+    /* mac（v2.0 账户绑定凭据，ADR-001 §五）：与 sync_register 同源
+     * STA MAC 大写 12 hex，App LAN 发现后携此调 POST /api/me/devices/bind */
+    uint8_t mac[6] = { 0 };
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char body[288];
     snprintf(body, sizeof(body),
-             "{\"activeDeck\":\"%s\",\"totalWords\":%d,"
+             "{\"mac\":\"%02X%02X%02X%02X%02X%02X\","
+             "\"activeDeck\":\"%s\",\"totalWords\":%d,"
              "\"todayNew\":%d,\"todayReviews\":%d,\"streakDays\":%d,"
              "\"wrongCount\":%d,\"dueCount\":%d,\"collectedCount\":%d}",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
              deck_manager_active_name(), word_parser_get_count(),
              learning_state_today_new(), learning_state_today_reviews(),
              learning_state_streak_days(), learning_state_wrong_count(),
@@ -1054,6 +1063,33 @@ static bool get_sta_ip(char *buf, size_t len)
     return wifi_get_sta_ip(buf, len);
 }
 
+/* TINY 档 ASCII 按宽折行（2026-08-25）：URL/IP 无空格不做词边界
+ * 启发，从整串起逐字符回退找可容纳前缀断行；*y 逐行前进（行距
+ * 12px）。供配网页长串（LAN 地址/门户提示）在 106/112px 正文宽
+ * 可读（size1 仍超宽时兜底拆两行，单字符不拆防死循环） */
+static void tiny_draw_wrap_ascii(const char *s, int x, int *y, int max_w,
+                                 uint16_t color)
+{
+    char line[40];
+    while (s[0]) {
+        int n = (int)strlen(s);
+        if (n > (int)sizeof(line) - 1) n = (int)sizeof(line) - 1;
+        int tw, th;
+        while (n > 1) {
+            memcpy(line, s, (size_t)n);
+            line[n] = '\0';
+            epd_gfx_text_bounds(line, 1, &tw, &th);
+            if (tw <= max_w) break;
+            n--;
+        }
+        memcpy(line, s, (size_t)n);
+        line[n] = '\0';
+        epd_gfx_draw_text(x, *y, line, color, 1);
+        *y += 12;
+        s += n;
+    }
+}
+
 void lan_server_enter_receive_page(void)
 {
     /* portal 模式下重绘配网提示页（AP 服务后台保持） */
@@ -1065,6 +1101,38 @@ void lan_server_enter_receive_page(void)
     lan_server_start(); /* 幂等；未联网时仅提示 */
 
     s_active = true;
+
+    /* TINY 竖屏紧凑版式（2026-08-25）：原版式为 416px 宽设计值（URL
+     * size3 ≈324px 超 122/128px 屏宽 2.5 倍），改标题栏 24 / size1
+     * 短句 / URL 逐行折行（tiny_draw_wrap_ascii）；未联网分支不再提
+     * 示键盘路径（wifi_config_ui 不适配 TINY，配网唯一通道=AP 门户） */
+    if (layout_profile_get()->kind == LAYOUT_TINY) {
+        int w = epd_gfx_width();
+        epd_gfx_fill_screen(EPD_GFX_WHITE);
+        epd_gfx_fill_rect(0, 0, w, 24, EPD_GFX_BLACK);
+        epd_gfx_draw_text(8, 18, "LAN RX", EPD_GFX_WHITE, 1);
+
+        char ip[20];
+        bool has_ip = get_sta_ip(ip, sizeof(ip));
+        if (lan_server_is_running() && has_ip) {
+            char url[40];
+            snprintf(url, sizeof(url), "http://%s", ip);
+            epd_gfx_draw_text(8, 44, "Open browser:", EPD_GFX_BLACK, 1);
+            int y = 64;
+            tiny_draw_wrap_ascii(url, 8, &y, w - 16, EPD_GFX_BLACK);
+            epd_gfx_draw_text(8, y + 8, "inkword.local", EPD_GFX_BLACK, 1);
+        } else {
+            epd_gfx_draw_text(8, 44, "WiFi off.", EPD_GFX_BLACK, 1);
+            epd_gfx_draw_text(8, 68, "Long-press LEFT", EPD_GFX_BLACK, 1);
+            epd_gfx_draw_text(8, 84, "for WiFi portal", EPD_GFX_BLACK, 1);
+        }
+        epd_gfx_draw_text(8, epd_gfx_height() - 24, "any key exit",
+                          EPD_GFX_BLACK, 1);
+        epd_gfx_flush();
+        LOG_I("LAN receive page shown (tiny, server=%s ip=%s)",
+              lan_server_is_running() ? "on" : "off", has_ip ? ip : "none");
+        return;
+    }
 
     /* GFX 显示层（epd_gfx_width() x height()，面板无关），ASCII
      * （FreeSans 无 CJK 字形） */
@@ -1260,6 +1328,35 @@ void lan_portal_enter(void)
     }
 
     s_active = true;
+
+    /* TINY 竖屏紧凑版式（2026-08-25）：SSID/步骤文案 size3/size1 均按
+     * 416px 宽设计超算；SSID 反白强调（配网唯一关键串），URL 定宽拆
+     * 「http://」+ 网关地址两行（AP 网关为编译期常量，折行器兜底） */
+    if (layout_profile_get()->kind == LAYOUT_TINY) {
+        int w = epd_gfx_width();
+        epd_gfx_fill_screen(EPD_GFX_WHITE);
+        epd_gfx_fill_rect(0, 0, w, 24, EPD_GFX_BLACK);
+        epd_gfx_draw_text(8, 18,
+                          s_portal_provision ? "WiFi Setup" : "AP Direct",
+                          EPD_GFX_WHITE, 1);
+
+        epd_gfx_draw_text(8, 44, "1. Connect:", EPD_GFX_BLACK, 1);
+        epd_gfx_fill_rect(4, 58, w - 8, 22, EPD_GFX_BLACK);
+        epd_gfx_draw_text(8, 74, PORTAL_SSID, EPD_GFX_WHITE, 1);
+
+        epd_gfx_draw_text(8, 100, "2. Open:", EPD_GFX_BLACK, 1);
+        epd_gfx_draw_text(8, 120, "http://", EPD_GFX_BLACK, 1);
+        int y = 136;
+        tiny_draw_wrap_ascii(AP_IFACE_IP "/", 8, &y, w - 16,
+                             EPD_GFX_BLACK);
+
+        epd_gfx_draw_text(8, epd_gfx_height() - 24, "Any key exit",
+                          EPD_GFX_BLACK, 1);
+        epd_gfx_flush();
+        LOG_I("AP portal active (tiny %s): SSID=" PORTAL_SSID,
+              s_portal_provision ? "provision" : "direct");
+        return;
+    }
 
     /* 屏幕提示页（ASCII） */
     epd_gfx_fill_screen(EPD_GFX_WHITE);

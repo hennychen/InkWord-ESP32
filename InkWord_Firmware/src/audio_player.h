@@ -51,6 +51,13 @@ int audio_play_file(const char *path);
 int audio_play_file_sync(const char *path);
 
 /**
+ * @brief 代码生成测试旋律（「小星星」前两句，~8s，同步阻塞）：
+ *        不依赖 SD/文件，验证 DAC→NS4150B→喇叭整条硬件链路。
+ *        听得出旋律 = 时钟/数据/音高全对；变调/噪声 = 链路异常。
+ */
+int audio_play_test_tone(void);
+
+/**
  * @brief 停止当前播放并清空待播队列（供按键打断/深睡收口）。
  */
 void audio_stop(void);

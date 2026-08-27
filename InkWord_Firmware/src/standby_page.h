@@ -84,6 +84,14 @@ void standby_weather_update(const weather_info_t *w);
  */
 void standby_render_full(void);
 
+/**
+ * @brief 布局缓存失效（2026-08-26 屏幕方向设置）：旋转切换重建画布后
+ *        由 main ui_apply_rotation 调用——差分影子不可信 + 引文态置
+ *        初值（下一次渲染强制全刷）+ 三色自然窗冻结复位。不绘制，
+ *        待机页激活时随后 standby_render_full / tick 自然全刷重绘。
+ */
+void standby_invalidate_layout(void);
+
 /* ---- P5 深睡时钟交接（power_manager 调用） ---- */
 
 /**

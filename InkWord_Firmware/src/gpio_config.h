@@ -54,11 +54,10 @@ extern "C" {
  * 悬空（无 GPIO 分配，固件不定义） */
 #define EPD_BS_PIN          (-1)
 #else
-/* EVK011 省线方案（BS，唯一可去线）：本项目只用 4 线 SPI，BS 永远为 L。
- * 在转接板侧把 J2-10 短接 GND（就近接 J2-1）即可去掉这根线，
- * 并把此处改为 -1（epd_driver_init 已做条件编译保护）；
- * 释放出的 GPIO11 可改作他用（如麦克风 DOUT，见 WIRING §7） */
-#define EPD_BS_PIN          (11)    /**< Boot Select：11=J2-10 接 GPIO11，固件驱动 LOW 选 4 线 SPI；-1=已去线（板侧短接 GND / v1.4 板上硬接） */
+/* BS 省线方案已实施（2026-08-26，ES8311 DOUT 接管 GPIO11）：
+ * 转接板侧 J2-10 已短接 GND（就近接 J2-1），本项目只用 4 线 SPI；
+ * 释放出的 GPIO11 已定档 ES8311 DOUT（录音数据输入，见录音段） */
+#define EPD_BS_PIN          (-1)    /**< Boot Select：11=J2-10 接 GPIO11，固件驱动 LOW 选 4 线 SPI；-1=已去线（板侧短接 GND / v1.4 板上硬接） */
 #endif /* INKWORD_BOARD_V14 */
 #define EPD_SCK_PIN         (7)     /**< SPI 时钟 SCK (J2 pin3) */
 #define EPD_MOSI_PIN        (8)     /**< SPI 数据 SDO/MOSI (J2 pin5) */
@@ -85,16 +84,19 @@ extern "C" {
  * 5V 供电；无 5V 可接 3V3 功率稍小）。38/39 自「I2C 预留」正式定档。
  * I2C 地址：7bit 0x18（CE 脚低电平接法，原理图默认；若实测 NACK
  * 可能焊选 0x19——es8311_probe 双地址自适应）。
- * MCLK 省线方案：默认不接 MCLK（-1），ES8311 REG01 选 SCLK 作主
- * 时钟源（esp-adf LyraT-Mini 同款）；若实测时钟不稳，接任意空
- *  GPIO 并改此宏 >0（i2s_pin_config_t.mck_io_num 输出 256×fs）。
+ * MCLK 主流拓扑（2026-08-27 定档）：xiaozhi-esp32 57 块 ES8311
+ * 量产板 56 块用 MCLK 实线（256×fs）；GPIO45 尝试全静音系当时
+ * 接线未知错误环境下测的无效样本。legacy 驱动 mck_io_num=0
+ * 时 GPIO0 始终在输出 256×fs MCLK——ES8311_MCLK_PIN=0 后
+ * codec 切 MCLK 脚源（REG01 bit7=0），系数表直接命中。
+ * GPIO0 为 BOOT strapping 脚：运行期作 MCLK 输出安全，勿按 BOOT 键。
  * ============================================================ */
 #define ES8311_I2C_NUM      (0)     /**< I2C 控制器（本项目唯一 I2C 主设备） */
 #define ES8311_I2C_SDA_PIN  (38)    /**< → 模块 SDA（板载 2.2k 上拉） */
 #define ES8311_I2C_SCL_PIN  (39)    /**< → 模块 SCL */
 #define ES8311_I2C_FREQ_HZ  (100000)
 #define ES8311_I2C_ADDR     (0x18)  /**< 7bit（CE=GND）；探测自适应 0x19 */
-#define ES8311_MCLK_PIN     (-1)    /**< -1=SCLK 作 mclk 源（省线）；>0=独立 MCLK 脚 */
+#define ES8311_MCLK_PIN     (0)     /**< 0=GPIO0 输出 256×fs（主流拓扑）；-1=SCLK 派生（实测嘶嘶不可用） */
 
 /* ============================================================
  * 录音数据线（ES8311 ADC → MCU；原 INMP441 方案 2026-08-24 废弃）

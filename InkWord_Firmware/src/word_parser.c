@@ -20,6 +20,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 
 static const char *TAG = "PARSER";
 
@@ -53,13 +54,29 @@ int word_parser_load(const char *path, WordEntry *out_array, int max_count)
     if (!path || !out_array || max_count <= 0) return -1;
 
     /* 1. 读取文件到内存（PSRAM，见 JSON_MAX_BYTES 注释），
-     * 解析委托 word_parser_load_mem（文件/内存两路径同源） */
-    char *raw = heap_caps_malloc(JSON_MAX_BYTES, MALLOC_CAP_SPIRAM);
-    if (!raw) {
-        LOG_E("alloc json buffer failed");
+     * 解析委托 word_parser_load_mem（文件/内存两路径同源）。
+     * raw 按文件实际大小分配（2026-08-27 SD 卡真机实证）：此前按
+     * JSON_MAX_BYTES(2MB) 全量分配，SD 词库路径峰值 = 词池 4.28MB
+     * + raw 2MB + DOM ~2.4MB > 8MB PSRAM，cJSON 中途 malloc 失败
+     * 报 parse error 后静默回退内嵌库（发音 audio 引用丢失）；
+     * 内嵌路径无 raw 拷贝（直吃 rodata）故从未暴露。按需分配后
+     * 616KB 级文件峰值回到 ~7.3MB。 */
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size <= 0) {
+        LOG_E("stat %s failed", path);
         return -1;
     }
-    int n = storage_read_text(path, raw, JSON_MAX_BYTES);
+    if ((size_t)st.st_size > JSON_MAX_BYTES) {
+        LOG_E("%s too large (%ld > %d)", path, (long)st.st_size,
+              (int)JSON_MAX_BYTES);
+        return -1;
+    }
+    char *raw = heap_caps_malloc((size_t)st.st_size + 1, MALLOC_CAP_SPIRAM);
+    if (!raw) {
+        LOG_E("alloc json buffer failed (%ld bytes)", (long)st.st_size);
+        return -1;
+    }
+    int n = storage_read_text(path, raw, (size_t)st.st_size + 1);
     if (n <= 0) {
         LOG_E("read %s failed", path);
         heap_caps_free(raw);

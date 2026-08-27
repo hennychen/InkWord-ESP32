@@ -185,6 +185,9 @@ int sync_pull_words(int local_version, char *out_buf, int buf_size)
         }
         if (ret < 0) ret = ctx.offset > 0 ? local_version + 1 : local_version;
         LOG_I("pulled %d bytes, new version=%d", ctx.offset, ret);
+    } else if (err == ESP_OK && status == 401) {
+        ret = SYNC_ERR_AUTH;   /* 钥被换发：上层清钥重注册 */
+        LOG_W("pull words: key rejected (401), re-register pending");
     } else {
         LOG_E("pull words failed: err=%s status=%d", esp_err_to_name(err), status);
     }
@@ -231,6 +234,10 @@ int sync_push_progress(const ProgressItem *items, int count)
         LOG_I("pushed %d progress records", count);
         return 0;
     }
+    if (err == ESP_OK && status == 401) {
+        LOG_W("push progress: key rejected (401)");
+        return SYNC_ERR_AUTH;
+    }
     LOG_E("push progress failed: %s status=%d", esp_err_to_name(err), status);
     return -1;
 }
@@ -266,6 +273,10 @@ int sync_push_collect(const char *word_id, bool collected)
         LOG_I("collect '%s' -> %d", word_id, collected);
         return 0;
     }
+    if (err == ESP_OK && status == 401) {
+        LOG_W("push collect: key rejected (401)");
+        return SYNC_ERR_AUTH;
+    }
     LOG_E("push collect failed: %s status=%d", esp_err_to_name(err), status);
     return -1;
 }
@@ -294,6 +305,7 @@ int sync_heartbeat(int battery, const char *fw_ver)
     esp_http_client_cleanup(client);
     free(body);
 
+    if (err == ESP_OK && status == 401) return SYNC_ERR_AUTH;
     return (err == ESP_OK && status == 200) ? 0 : -1;
 }
 

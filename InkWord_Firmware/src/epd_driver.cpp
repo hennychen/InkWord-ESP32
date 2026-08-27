@@ -56,6 +56,12 @@
  * 本层只经 s_panel->ops 调用，不触碰 GxEPD2 面板类（铁律 3） */
 static const epd_panel_desc_t *s_panel = NULL;
 
+/* 生效旋转（2026-08-26 屏幕方向设置）：desc.gfx_rotation 为面板出厂
+ * 默认 UI 方向（const 注册表不变），本变量为运行期生效值——init 取
+ * desc 默认，epd_set_rotation 运行期覆盖。转置/窗口映射/画布几何
+ * 三处消费；帧缓冲按面板物理几何分配，与旋转无关不重分配 */
+static uint8_t s_rot = 0;
+
 /* UI 绘图画布（双层，§9.4）：B/W 层 bit=1 白，堆分配，getBuffer() 公开可读；
  * s_canvas_ac 强调色层 bit=1 红，仅 plane_count>1 面板分配（BW 面板
  * NULL，绘图路由自动退化为单层，行为与既有单画布时代完全一致） */
@@ -142,7 +148,7 @@ static void transpose_to_plane(const GFXcanvas1 *cv, uint8_t *plane)
     const int gw = cv->width(), gh = cv->height();
     const int stride = (gw + 7) / 8;          /* 画布行宽字节 */
     const int pstride = s_panel->panel_w / 8; /* 面板竖屏行宽字节 */
-    const int rot = s_panel->gfx_rotation;
+    const int rot = s_rot;
     for (int cy = 0; cy < gh; cy++) {
         const uint8_t *row = src + cy * stride;
         for (int cx = 0; cx < gw; cx++) {
@@ -185,7 +191,7 @@ static void gfx_rect_to_panel(int x, int y, int w, int h,
     if (w <= 0 || h <= 0) { *pw = 0; *ph = 0; return; }
 
     uint16_t rx, ry, rw, rh;
-    switch (s_panel->gfx_rotation) {
+    switch (s_rot) {
     case 0:  rx = (uint16_t)x;              ry = (uint16_t)y;              rw = (uint16_t)w; rh = (uint16_t)h; break;
     case 1:  rx = (uint16_t)(gh - y - h);   ry = (uint16_t)x;              rw = (uint16_t)h; rh = (uint16_t)w; break; /* 现役 */
     case 2:  rx = (uint16_t)(gw - x - w);   ry = (uint16_t)(gh - y - h);   rw = (uint16_t)w; rh = (uint16_t)h; break;
@@ -368,9 +374,11 @@ int epd_driver_init(void)
         LOG_E("frame buffer alloc failed (%u B x2)", (unsigned)plane_bytes);
         return -1;
     }
-    /* gfx 尺寸按 gfx_rotation 从 desc 派生（奇数=交换，§6.3） */
-    const int gw = (s_panel->gfx_rotation & 1) ? s_panel->panel_h : s_panel->panel_w;
-    const int gh = (s_panel->gfx_rotation & 1) ? s_panel->panel_w : s_panel->panel_h;
+    /* gfx 尺寸按生效旋转派生（奇数=交换，§6.3）：init 取面板默认
+     * （后续 epd_set_rotation 运行期覆盖，屏幕方向设置） */
+    s_rot = s_panel->gfx_rotation;
+    const int gw = (s_rot & 1) ? s_panel->panel_h : s_panel->panel_w;
+    const int gh = (s_rot & 1) ? s_panel->panel_w : s_panel->panel_h;
     /* 注：epd_driver.h 的 DEPG0370 镜像宏（EPD_GFX_WIDTH 系列 /
      * EPD_FB_SIZE）已删除 —— LAN 接收页同步动态化后全域零引用 */
 
@@ -399,7 +407,7 @@ int epd_driver_init(void)
     s_inited = true;
     LOG_I("EPD driver initialized: panel '%s' %dx%d rot=%d %s, canvas+demo-partial arch (HW SPI %d/%d)",
           s_panel->name, s_panel->panel_w, s_panel->panel_h,
-          s_panel->gfx_rotation,
+          s_rot,
           s_panel->plane_count > 1 ? "dual-plane color" : "BW",
           EPD_SCK_PIN, EPD_MOSI_PIN);
     LOG_I("FB: %u B x2 (%s) + canvas %dx%d %u B x%d",
@@ -491,6 +499,66 @@ uint16_t epd_get_manufacturer(char *manufacturer, size_t len)
         if (us) *us = '\0';
     }
     return (uint16_t)s_panel->controller;
+}
+
+int epd_set_rotation(uint8_t rot)
+{
+    if (!s_inited) {
+        LOG_E("set_rotation before driver init");
+        return -1;
+    }
+    if (rot > 3) {
+        LOG_W("set_rotation: invalid rot %u (expect 0..3)", rot);
+        return -1;
+    }
+    if (rot == s_rot) return 0;   /* 幂等：含「意图映射回面板默认」路径 */
+
+    const int gw = (rot & 1) ? s_panel->panel_h : s_panel->panel_w;
+    const int gh = (rot & 1) ? s_panel->panel_w : s_panel->panel_h;
+
+    /* 先建后换（失败路径原画布完好，渲染无损）：初始化与
+     * epd_driver_init 同参——白底/黑字/14pt/不折行，AC 层全 0 无红 */
+    GFXcanvas1 *cv = new GFXcanvas1(gw, gh);
+    if (!cv || !cv->getBuffer()) {
+        delete cv;
+        LOG_E("rotation canvas alloc failed (%dx%d)", gw, gh);
+        return -1;
+    }
+    GFXcanvas1 *cv_ac = NULL;
+    if (s_panel->plane_count > 1) {
+        cv_ac = new GFXcanvas1(gw, gh);
+        if (!cv_ac || !cv_ac->getBuffer()) {
+            delete cv;
+            delete cv_ac;   /* delete NULL 安全 */
+            LOG_E("rotation accent canvas alloc failed (%dx%d)", gw, gh);
+            return -1;
+        }
+    }
+    delete s_canvas;
+    delete s_canvas_ac;       /* BW 面板常态 NULL，delete NULL 安全 */
+    s_canvas    = cv;
+    s_canvas_ac = cv_ac;
+    s_canvas->fillScreen(CANVAS_WHITE);
+    s_canvas->setTextColor(CANVAS_BLACK);
+    s_canvas->setFont(s_fonts[1]);
+    s_canvas->setTextWrap(false);
+    if (s_canvas_ac) s_canvas_ac->fillScreen(CANVAS_BLACK);
+    s_rot = rot;
+
+    /* s_port_prev 面板物理帧快照保持有效（旋转不改屏幕物理内容）；
+     * 新画布白底与屏幕旧内容不一致属正常初态，调用方首次全刷覆盖 */
+    LOG_I("rotation -> %d, canvas rebuilt %dx%d", rot, gw, gh);
+    return 0;
+}
+
+uint8_t epd_get_rotation(void)
+{
+    return s_inited ? s_rot : 0;
+}
+
+uint8_t epd_panel_default_rotation(void)
+{
+    return s_panel ? s_panel->gfx_rotation : 0;
 }
 
 } /* extern "C" */
@@ -661,6 +729,14 @@ bool epd_gfx_partial_supported(void)
     return s_panel ? s_panel->partial_enabled : false;
 }
 
+const epd_panel_desc_t *epd_panel_desc(void)
+{
+    /* 当前 desc 只读透传：上层读刷新策略字段（保养阈值/passes 等）
+     * 统一走 desc，消除硬编码与面板配置脱钩（wft0290 调优实锄：
+     * flush_window 硬编码 2 + scheduler 硬编码 8 双坑） */
+    return s_panel;
+}
+
 size_t epd_fb_size(void)
 {
     /* 单平面帧字节（LAN 协议帧大小）；未初始化返回 0 */
@@ -686,8 +762,13 @@ int epd_panel_height(void)
 
 void epd_gfx_flush_window(int x, int y, int w, int h)
 {
-    /* 默认双刷：通用调用方（学习页翻词）对速度不敏感，取浅影最小的默认 */
-    epd_gfx_flush_window_passes(x, y, w, h, 2);
+    /* 默认遍数取面板 desc.passes（此前硬编码 2 使字段形同虚设）：
+     * DEPG0370=2 双刷保净先例；wft0290=1 对照实验定位「翻页回退」
+     * （单相 REG LUT 第二遍同向过驱动疑似伪影源，详见该面板 desc）。
+     * 显式 _passes 版本（菜单/WiFi/待机页）不受影响 */
+    epd_gfx_flush_window_passes(x, y, w, h,
+                                s_panel && s_panel->passes > 0
+                                    ? s_panel->passes : 1);
 }
 
 } /* extern "C" for GFX wrappers */

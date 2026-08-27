@@ -84,7 +84,7 @@ extern void quiz_flow_start(void);  /* v1.2 T2.2：测验会话启动（题池+�
 
 /* ---- 模块状态（静态零初始化，无 init 无堆分配；~10B） ---- */
 typedef enum { MU_PAGE_MAIN = 0, MU_PAGE_MODE, MU_PAGE_DECK, MU_PAGE_INFO,
-               MU_PAGE_KEYS } mu_page_t;
+               MU_PAGE_KEYS, MU_PAGE_VOL } mu_page_t;
 
 typedef struct {
     const char *label;                    /* UTF-8 CJK 标签（组头=组名） */
@@ -119,6 +119,7 @@ static void draw_mode(bool partial);
 static void draw_deck(bool partial);
 static void draw_info(bool partial);
 static void draw_keys(bool partial);
+static void draw_vol(bool partial);
 
 /* ============================================================
  * 徽标填充（每次重绘现取：均为廉价查询，无缓存失效问题）
@@ -161,6 +162,12 @@ static void badge_audio_sync(char *buf, size_t n)
         snprintf(buf, n, "%d/%d", miss, audio_sync_cloud_total());
 }
 
+/* 音量徽标（2026-08-27）：当前档位纯 ASCII（TINY 档可显） */
+static void badge_volume(char *buf, size_t n)
+{
+    snprintf(buf, n, "%d", settings_volume());
+}
+
 /* ============================================================
  * activate 动作（「先 exit 后 enter」纪律：启动子功能前菜单自我
  * 退出（不恢复渲染——子功能自我管理屏幕，避免学习页闪现浪费一次
@@ -197,8 +204,18 @@ static void act_deck(void)
     draw_deck(false);
 }
 
+/* 前置声明：act_wifi TINY 档重定向引用（定义于下方） */
+static void act_portal(void);
+
 static void act_wifi(void)
 {
+    /* TINY 档重定向 AP 门户（2026-08-25）：屏上全键盘 36px 键宽×9 列
+     * =324px 不可行（wifi_config_ui.c 头注「该档均不进入」兑现），
+     * 该档配网唯一通道=手机连热点浏览器直传 */
+    if (layout_profile_get()->kind == LAYOUT_TINY) {
+        act_portal();
+        return;
+    }
     menu_ui_exit();
     wifi_config_ui_enter();   /* 异步入队自我管理屏幕 */
 }
@@ -280,6 +297,15 @@ static void act_info(void)
     draw_info(false);
 }
 
+/* 音量调节页（2026-08-27）：菜单内即调即听（上/下 ±10 即时生效，
+ * 中键试听当前词），不 exit 菜单；状态与设置页音量行共用
+ * （settings_volume_set 单一入口：NVS + es8311） */
+static void act_volume(void)
+{
+    s_page = MU_PAGE_VOL;
+    draw_vol(false);
+}
+
 /* 设置（v1.2 T2.5，MENU_DESIGN 二期位）：菜单自退后进设置覆盖层
  * （同级语义，退出回学习页由 settings_ui 自理） */
 static void act_settings(void)
@@ -295,8 +321,9 @@ static void act_keys(void)
     draw_keys(false);
 }
 
-/* 分组化 12 行 = 3 组头 + 9 项（2026-08-24，O4；二期设置/词书：
- * 数组追加即扩展点，组头行 label 与按键说明页组头同风格方括号） */
+/* 分组化 13 行 = 3 组头 + 10 项（2026-08-24，O4；二期设置/词书：
+ * 数组追加即扩展点，组头行 label 与按键说明页组头同风格方括号；
+ * 2026-08-27 [系统] 组增「音量」置「设置」前：高频直达项前置） */
 static const mu_item_t s_items[] = {
     { "[ 学习 ]",  true,  NULL,               NULL,             NULL },
     { "收藏列表",   false, menu_icon_collected, badge_collected,  act_collection },
@@ -310,6 +337,7 @@ static const mu_item_t s_items[] = {
     { "AP 配网门户", false, menu_icon_ap,       NULL,            act_portal },
     { "LAN 接收页", false, menu_icon_lan,      NULL,            act_lan },
     { "[ 系统 ]",  true,  NULL,               NULL,             NULL },
+    { "音量",       false, NULL,               badge_volume,     act_volume },
     { "设置",       false, menu_icon_settings, NULL,             act_settings },
     { "设备信息",   false, menu_icon_info,     NULL,             act_info },
     { "按键说明",   false, menu_icon_keys,     NULL,             act_keys },
@@ -565,18 +593,18 @@ static const mu_keyrow_t s_keys[] = {
     { "右",     "自评简单 / LAN 页" },
     { "中",     "发音 / 功能菜单" },
     { "SET",    "遮蔽 / 收藏切换" },
-    { "RST",    "回本组首 / 错词本" },
+    { "RST",    "进设置 / 错词本" },
     { "*",      "词卡已收藏标记" },
     { NULL,     "[ 复习词表 ]" },
     { "上/下",  "选择 · 详情翻义" },
     { "中",     "进详情 · 发音" },
     { "左/右",  "自评出队（详情态回列表）" },
-    { "RST",    "回首行" },
+    { "RST",    "进设置" },
     { NULL,     "[ 收藏/错词视图 ]" },
     { "上/下",  "序列内翻词" },
     { "中",     "发音" },
     { "SET",    "遮蔽 / 取消收藏" },
-    { "RST",    "回首词 / 退出视图" },
+    { "RST",    "进设置 / 退出视图" },
     { NULL,     "[ AI 对话 ]" },
     { "中",     "说话·发送·重说" },
     { "RST",    "退出回闪卡" },
@@ -631,6 +659,52 @@ static void draw_keys(bool partial)
     draw_title("按键说明", s_keys_page + 1, keys_page_count());
     draw_keys_body();
     draw_hint();
+    draw_flush();
+}
+
+/* ---- 音量调节页（2026-08-27）：中央大字档位 + 比例条，上/下 ±10
+ *      即时生效（settings_volume_set：NVS+es8311 单一入口） ---- */
+
+static void draw_vol_body(void)
+{
+    int w = epd_gfx_width();
+    int area_y = MU_TITLE_H;
+    int area_h = epd_gfx_height() - MU_TITLE_H - MU_HINT_H;
+
+    /* 档位大字（FreeSans 倍号：TINY 3 / 其余 4；基线在内容区 40% 处） */
+    char vtxt[8];
+    snprintf(vtxt, sizeof(vtxt), "%d", settings_volume());
+    int size = MU_TINY ? 3 : 4;
+    int tw, th;
+    epd_gfx_text_bounds(vtxt, size, &tw, &th);
+    epd_gfx_draw_text((w - tw) / 2, area_y + area_h * 2 / 5,
+                      vtxt, EPD_GFX_BLACK, size);
+
+    /* 比例条：外框 + 内填充（0=空框即静音；宽≤60% 屏宽，TINY 也容纳） */
+    int bar_w = w * 3 / 5;
+    int bar_h = 10;
+    int bar_x = (w - bar_w) / 2;
+    int bar_y = area_y + area_h * 2 / 5 + 12;
+    epd_gfx_draw_rect(bar_x, bar_y, bar_w, bar_h, EPD_GFX_BLACK);
+    epd_gfx_fill_rect(bar_x + 2, bar_y + 2,
+                      (bar_w - 4) * settings_volume() / 100, bar_h - 4,
+                      EPD_GFX_BLACK);
+}
+
+static void draw_vol(bool partial)
+{
+    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+        partial_refresh(draw_vol_body);
+        return;
+    }
+    epd_gfx_fill_screen(EPD_GFX_WHITE);
+    draw_title("音量", 0, 0);
+    draw_vol_body();
+    /* 专用提示（通用 draw_hint 文案不贴切；TINY 同款 MU_HINT_H=0 省略） */
+    if (MU_HINT_H > 0)
+        cjk_text_draw(MU_MARGIN_X,
+                      epd_gfx_height() - MU_HINT_H + (MU_HINT_H - 16) / 2,
+                      0, "上/下 调节  中 试听  SET 返回", EPD_GFX_BLACK);
     draw_flush();
 }
 
@@ -857,6 +931,33 @@ void menu_ui_on_button(nav_key_t id, button_event_t event)
         case NAV_CENTER:
             s_keys_page = (s_keys_page + 1) % keys_page_count();
             draw_keys(true);
+            break;
+        case NAV_SET:
+            s_page = MU_PAGE_MAIN;
+            draw_main(false);
+            break;
+        case NAV_RST:
+            menu_ui_exit_restore();
+            break;
+        default: break;
+        }
+        break;
+
+case MU_PAGE_VOL:
+        /* 音量调节（2026-08-27）：上/下 ±10 即时生效重绘，中=试听
+         * 当前词（study_mode speak 语义动作复用，纯拼路径+异步入队
+         * 不动菜单/学习页状态），SET 返回主列表，RST 退出菜单 */
+        switch (id) {
+        case NAV_UP:
+            settings_volume_set(settings_volume() + 10);
+            draw_vol(true);
+            break;
+        case NAV_DOWN:
+            settings_volume_set(settings_volume() - 10);
+            draw_vol(true);
+            break;
+        case NAV_CENTER:
+            study_mode_handle_action(3);
             break;
         case NAV_SET:
             s_page = MU_PAGE_MAIN;

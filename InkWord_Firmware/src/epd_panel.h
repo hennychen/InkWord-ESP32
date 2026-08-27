@@ -37,7 +37,8 @@ extern "C" {
 typedef enum {
     EPD_CTRL_UC8253, EPD_CTRL_SSD1680, EPD_CTRL_SSD1681,
     EPD_CTRL_IL0398, EPD_CTRL_IL91874, EPD_CTRL_UC8179,
-    EPD_CTRL_JD79686, EPD_CTRL_SSD1619, EPD_CTRL_UNKNOWN,
+    EPD_CTRL_JD79686, EPD_CTRL_SSD1619, EPD_CTRL_UC8151,
+    EPD_CTRL_UNKNOWN,
 } epd_controller_t;   /* 色彩面板控制器在选型时按 SOP（§十六）核对 */
 
 typedef enum { EPD_COLOR_BW, EPD_COLOR_3C, EPD_COLOR_4C, EPD_COLOR_6C }
@@ -52,8 +53,10 @@ typedef struct epd_panel_desc {
 
     /* —— 几何 —— */
     uint16_t            panel_w, panel_h;   /* 物理竖屏分辨率 */
-    uint8_t             gfx_rotation;       /* UI 横屏旋转 {0,1,2,3}：
-                                             * 奇数=(panel_h,panel_w)，偶数直通 */
+    uint8_t             gfx_rotation;       /* 面板默认 UI 旋转 {0,1,2,3}：
+                                             * 奇数=(panel_h,panel_w)，偶数直通；
+                                             * 运行期可经 epd_set_rotation 覆盖
+                                             * （屏幕方向设置），desc 本身 const */
 
     /* —— 色彩 —— */
     epd_color_mode_t    color_mode;

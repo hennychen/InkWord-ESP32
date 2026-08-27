@@ -12,9 +12,11 @@
  *       v1.4 板载自主），MCU 唯一电源职责是供 VCI 3.3V，无 GDR/RESE 信号
  *
  * 几何/帧长（Phase 2 起全部运行期取自 L2 desc）：面板物理 PW x PH，
- *       GFX 显示层按 desc.gfx_rotation 派生（奇数旋转交换宽高）；
- *       帧缓冲单平面 PW/8 x PH 字节（1bpp，bit=1 白），多平面色彩
- *       面板 x plane_count 连续布局（§9.3）
+ *       GFX 显示层按生效旋转派生（奇数旋转交换宽高）——面板默认
+ *       desc.gfx_rotation，可经 epd_set_rotation 运行期覆盖（屏幕
+ *       方向设置，设置页即改即生效）；帧缓冲单平面 PW/8 x PH 字节
+ *       （1bpp，bit=1 白），多平面色彩面板 x plane_count 连续布局
+ *       （§9.3）
  */
 #ifndef INKWORD_EPD_DRIVER_H
 #define INKWORD_EPD_DRIVER_H
@@ -31,7 +33,8 @@ extern "C" {
 
 /* 双坐标体系：
  *   - 面板物理/底层直通：PW x PH（epd_full_refresh / epd_clear_screen）
- *   - GFX 显示层：desc.gfx_rotation 派生（epd_gfx_* 系列，UI 主路径）
+ *   - GFX 显示层：生效旋转派生（epd_gfx_* 系列，UI 主路径）——
+ *     desc.gfx_rotation 面板默认，epd_set_rotation 运行期覆盖
  * Phase 2 起 epd_driver 内部几何/帧长全部运行期取自 L2 desc（epd_panel.h）。
  * DEPG0370 兼容镜像宏 EPD_WIDTH/EPD_GFX_WIDTH 系列已于 Phase 6 删除：
  * 最后调用方 lan_display_server 同步动态化后全域零引用（铁律 2，
@@ -80,6 +83,26 @@ void epd_deep_sleep(void);
  */
 uint16_t epd_get_manufacturer(char *manufacturer, size_t len);
 
+/**
+ * @brief 运行期覆盖 GFX 旋转（屏幕方向设置，2026-08-26）。
+ * @param rot {0,1,2,3}：奇数交换宽高（对应 GxEPD2 setRotation 语义，
+ *        转置方向见 transpose_to_plane 四方向表）。
+ * @return 0 成功（含与当前一致的幂等空操作）；-1 未初始化/参数非法/
+ *         新画布分配失败（失败时原画布完好，渲染不受损）。
+ *
+ * 重建双层画布（GFXcanvas1 尺寸构造期固定）；帧缓冲按面板物理几何
+ * 分配与旋转无关不重分配，s_port_prev 物理帧快照保持有效（屏幕物理
+ * 内容未变）——新几何首次绘制由调用方全刷（main ui_apply_rotation
+ * 统一失效布局缓存后重绘）。
+ */
+int epd_set_rotation(uint8_t rot);
+
+/** @brief 当前生效旋转（未初始化返回 0）。 */
+uint8_t epd_get_rotation(void);
+
+/** @brief 面板默认旋转（desc.gfx_rotation 透传，未初始化返回 0）。 */
+uint8_t epd_panel_default_rotation(void);
+
 #ifdef __cplusplus
 }
 #endif
@@ -119,17 +142,23 @@ void epd_gfx_draw_bitmap(int x, int y, int w, int h, const uint8_t *bits, uint16
 void epd_gfx_read_window(int x, int y, int w, int h, uint8_t *out);
 /** @brief 将帧缓冲推送到屏幕（全刷） */
 void epd_gfx_flush(void);
-/** @brief 将指定区域推送到屏幕（局刷，默认双刷 2x0x12 减浅影） */
+/** @brief 将指定区域推送到屏幕（局刷，默认遍数取面板 desc.passes：
+ *         DEPG0370=2 双刷保净 / wft0290=1 单刷——双刷在单相 LUT 面板
+ *         上实测产生过驱动伪影，见 panel_wft0290.cpp 调优史） */
 void epd_gfx_flush_window(int x, int y, int w, int h);
-/** @brief 同上，可指定同会话 0x12 次数（passes=1 单刷最快，2 双刷减浅影）。
- *         无窗口双 RAM 波形强，两段式刷新两个方向均单刷（passes=1）
- *         即可洗净（2026-08-20 真机验证）；双刷留作浅影回退手段 */
+/** @brief 同上，可指定同会话 0x12 次数（passes=1 单刷最快；多相波形
+ *         面板单刷即净，双刷仅作浅影回退手段——注意单相 LUT 面板
+ *         双刷会产生同向过驱动伪影，慎用） */
 void epd_gfx_flush_window_passes(int x, int y, int w, int h, int passes);
 
 /** @brief 局刷支持查询（desc.partial_enabled 透传）：三色面板等无
  *         快速局刷的面板返回 false，上层据此做 UX 降级（如待机页
  *         三色屏自动轮换停用，§13.2） */
 bool epd_gfx_partial_supported(void);
+/** @brief 当前面板 desc 指针（未初始化 NULL）：上层读取刷新策略
+ *         字段（如 partial_count_full_refresh 保养阈值，避免再
+ *         硬编码与 desc 脱钩） */
+const epd_panel_desc_t *epd_panel_desc(void);
 /** @brief 单平面帧字节数（panel_w/8 x panel_h；LAN 上传协议帧大小） */
 size_t epd_fb_size(void);
 /** @brief 全平面整帧字节数（epd_fb_size() x plane_count；外部直刷

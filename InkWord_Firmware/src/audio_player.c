@@ -20,6 +20,8 @@
 
 #include "driver/i2s.h"
 #include "driver/gpio.h"
+#include "soc/gpio_sig_map.h"   /* I2S0_MCLK_OUT_IDX（S3 sig 23） */
+#include "rom/gpio.h"            /* gpio_matrix_out：MCLK 显式路由 */
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -27,6 +29,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <math.h>     /* 测试音 sinf（硬件链路验证） */
 
 /* 轻量 MP3 解码（src/mp3/ 内嵌 libhelix，platformio.ini 全 env 定义宏；
  * 相对路径包含：arduino 递归编译不为兄弟目录加 -I */
@@ -125,19 +128,59 @@ static int i2s_configure_std(uint32_t sample_rate, uint16_t bits, uint16_t chann
     s_i2s_installed = true;
 
     i2s_pin_config_t pin_cfg = {
+        /* mck_io_num 说明（2026-08-27 修正）：曾以 PCNT 三线 0Hz 推断
+         * “NO_CHANGE 致不路由”，实为测量盲区——legacy 驱动对纯输出
+         * 脚不开 input buffer，PCNT 读引脚输入侧恒为常值；i2s_write
+         * 按音频实时阻塞（4s 探针 = 3+1s 音频时长）证明外设在发送。
+         * 取 0 与零初始化等价：MCLK 输出到 GPIO0，未接线悬空无害。 */
+#if defined(ES8311_MCLK_PIN) && ES8311_MCLK_PIN > 0
+        .mck_io_num   = ES8311_MCLK_PIN,
+#else
+        .mck_io_num   = 0,           /* 仅驱动 MCLK 输出；无外部接线 */
+#endif
         .bck_io_num   = I2S_BCK_PIN,
         .ws_io_num    = I2S_WS_PIN,
         .data_out_num = I2S_DATA_OUT_PIN,
         .data_in_num  = I2S_PIN_NO_CHANGE,
     };
     ret = i2s_set_pin(I2S_PORT_NUM, &pin_cfg);
-    return (ret == ESP_OK) ? 0 : -1;
+    if (ret != ESP_OK) return -1;
+
+    /* MCLK 显式 GPIO matrix 路由（双保险）：legacy 驱动对 mck_io_num=0
+     * 的路由行为无源码可证，直接绑定 I2S0 MCLK 输出信号（幂等） */
+#if defined(ES8311_MCLK_PIN) && ES8311_MCLK_PIN >= 0
+    gpio_matrix_out(ES8311_MCLK_PIN, I2S0_MCLK_OUT_IDX, false, false);
+#endif
+    return 0;
 }
 
 static void i2s_write_mono(const uint8_t *data, size_t len)
 {
-    size_t written = 0;
-    i2s_write(I2S_PORT_NUM, data, len, &written, portMAX_DELAY);
+    /* legacy I2S 驱动 mono(ONLY_LEFT) 时只发单槽 BCLK=16×fs，ES8311
+     * SCLK 作 mclk 源最大 ×8 只到 128×fs < 256×fs → DAC 失锁无声
+     * （2026-08-26 实测：×1 出杂音 ×8 无声，根因即此）。改为
+     * stereo(RIGHT_LEFT) 双槽 BCLK=32×fs，mono 样本复制到 L/R 两槽
+     * （MAX98357A 时代同款手法，听感等价）
+     *
+     * 必须分块循环写（2026-08-27 SD 卡读音实测）：曾截断到
+     * I2S_READ_LEN/2=512 样本/次，而 mono 48k MP3 帧输出 1152 样本
+     * → 每帧丢 55% 样本 = 播放过快 + 帧尾跳变杂音 */
+    static int16_t s_stereo[I2S_READ_LEN];   /* 单写者：播放代际/停播门卫互斥 */
+    const int16_t *src = (const int16_t *)data;
+    size_t total = len / sizeof(int16_t);
+    size_t pos = 0;
+    while (pos < total) {
+        size_t n = total - pos;
+        if (n > I2S_READ_LEN / 2) n = I2S_READ_LEN / 2;
+        for (size_t i = 0; i < n; i++) {
+            s_stereo[i * 2]     = src[pos + i];            /* L */
+            s_stereo[i * 2 + 1] = src[pos + i];           /* R */
+        }
+        size_t written = 0;
+        i2s_write(I2S_PORT_NUM, s_stereo, n * 2 * sizeof(int16_t),
+                  &written, portMAX_DELAY);
+        pos += n;
+    }
 }
 
 /* ---- WAV(PCM) 播放 ---- */
@@ -268,6 +311,7 @@ static bool ends_with(const char *s, const char *suf)
 /* 按扩展名分发（返回播放结果码） */
 static int play_by_ext(const char *path, uint32_t gen)
 {
+    es8311_dac_start();     /* 起播前上电解静音（idle 收口后恢复） */
     if (ends_with(path, ".wav")) return play_wav(path, gen);
     if (ends_with(path, ".mp3")) return play_mp3(path, gen);
     LOG_E("unsupported format: %s", path);
@@ -287,6 +331,7 @@ static void audio_task(void *arg)
         s_playing = true;
         play_by_ext(msg.path, msg.gen);
         s_playing = false;
+        es8311_dac_stop();   /* 曲目间隙收口：DAC 模拟下电，消空闲底噪 */
     }
     s_playing = false;
     s_task_alive = false;
@@ -299,8 +344,9 @@ int audio_init(void)
         return 0;
     }
 
-    /* 1. 装载 I2S 总线 */
-    if (i2s_configure_std(I2S_SAMPLE_RATE, I2S_SAMPLE_BITS, 1) != 0) {
+    /* 1. 装载 I2S 总线（stereo 双槽：BCLK=32×fs 供 ES8311 凑 256×fs
+     * 内部时钟，见 i2s_write_mono 注释） */
+    if (i2s_configure_std(I2S_SAMPLE_RATE, I2S_SAMPLE_BITS, 2) != 0) {
         LOG_E("i2s config failed");
         return -1;
     }
@@ -335,7 +381,7 @@ int audio_init(void)
     s_task_alive = true;
 
     s_inited = true;
-    LOG_I("I2S audio initialized @ %dHz/%dbit mono -> ES8311+NS4150B (async)",
+    LOG_I("I2S audio initialized @ %dHz/%dbit stereo(L=R) -> ES8311+NS4150B (async)",
           I2S_SAMPLE_RATE, I2S_SAMPLE_BITS);
     return 0;
 }
@@ -383,7 +429,11 @@ void audio_deinit(void)
 int audio_set_sample_rate(uint32_t sample_rate)
 {
     if (!s_inited && !s_suspended) return -1;
-    int r = i2s_configure_std(sample_rate, I2S_SAMPLE_BITS, 1);
+    /* channels 必须 2（stereo L=R，与 init/resume 一致）：曾传 1 重装成
+     * ONLY_LEFT 单槽帧，i2s_write_mono 仍按 stereo 复制 L/R 交错写入，
+     * 帧解释错位 → 真机 MP3 播放杂音+慢放（2026-08-27 SD 卡读音实测；
+     * 嵌入人声 WAV 不走此路径故未暴露）。mono 单槽坑见 2026-08-26 注释 */
+    int r = i2s_configure_std(sample_rate, I2S_SAMPLE_BITS, 2);
     /* 同步 codec 时钟系数（256×fs；SCLK 作 mclk 源） */
     es8311_set_sample_rate(sample_rate);
     LOG_I("sample rate -> %lu", (unsigned long)sample_rate);
@@ -426,6 +476,82 @@ int audio_play_file_sync(const char *path)
     return ret;
 }
 
+/* ---- 嵌入人声 WAV（bring-up 正常音频判据，2026-08-27） ----
+ * 生成链（macOS）：say -v Tingting -o aiff "音频链路测试。你好，墨词。"
+ *   → afconvert -f WAVE -d LEI16@44100 -c 1（44.1k/16bit/mono，
+ *   与固件 I2S 配置逐项匹配）；platformio.ini embed_files 嵌入。
+ * 判据（人耳对语音敏感度远超蜂音）：能听清字句 = 链路通；
+ * 机器人声/变调 = 时钟错档；含糊噪声 = 数据错位。 */
+extern const uint8_t _binary_src_test_voice_wav_start[];
+extern const uint8_t _binary_src_test_voice_wav_end[];
+
+int audio_play_test_tone(void)
+{
+    if (s_suspended) return -1;             /* 录音让渡期不可测 */
+    if (!s_inited && audio_init() != 0) return -1;
+
+    audio_stop();                           /* 打断在播曲目（双写互斥） */
+    wait_play_idle();
+
+    /* 解析嵌入 WAV：RIFF 头 + 扫描 data chunk（fmt_size 可变，
+     * 不假设 44 字节固定头） */
+    const uint8_t *wav = _binary_src_test_voice_wav_start;
+    size_t len = (size_t)(_binary_src_test_voice_wav_end -
+                          _binary_src_test_voice_wav_start);
+    if (len < sizeof(wav_header_t) + 8) {
+        LOG_E("embedded voice too small (%u)", (unsigned)len);
+        return -1;
+    }
+    const wav_header_t *h = (const wav_header_t *)wav;
+    if (memcmp(h->riff, "RIFF", 4) != 0 || memcmp(h->wave, "WAVE", 4) != 0) {
+        LOG_E("embedded voice: not RIFF/WAVE");
+        return -1;
+    }
+    size_t off = 20 + h->fmt_size;          /* 跳过 fmt chunk */
+    uint32_t pcm_len = 0;
+    while (off + 8 <= len) {                /* 扫 data chunk */
+        const uint8_t *id = wav + off;
+        uint32_t sz;
+        memcpy(&sz, wav + off + 4, 4);
+        if (memcmp(id, "data", 4) == 0) {
+            pcm_len = sz;
+            off += 8;
+            break;
+        }
+        off += 8 + sz + (sz & 1);           /* 奇数长 chunk 1 字节对齐 */
+    }
+    if (pcm_len == 0 || off + pcm_len > len) {
+        LOG_E("embedded voice: data chunk not found");
+        return -1;
+    }
+    LOG_I("embedded voice: %luHz %ubit %uch %.1fs",
+          (unsigned long)h->sample_rate, h->bits_per_sample,
+          h->num_channels,
+          (double)pcm_len / h->byte_rate);
+
+    uint32_t gen = ++s_req_gen;
+    s_stop_req = false;
+    es8311_set_sample_rate(h->sample_rate); /* 与 WAV 采样率同步 */
+    es8311_dac_start();
+
+    /* 单次播报（bring-up 已验收，循环版 2026-08-27 收尾移除） */
+    s_playing = true;
+    for (size_t done = 0;
+         done < pcm_len && play_keep_going(gen); ) {
+        size_t n = pcm_len - done;
+        if (n > I2S_READ_LEN) n = I2S_READ_LEN;
+        i2s_write_mono(wav + off + done, n);
+        done += n;
+    }
+    s_playing = false;
+    es8311_dac_stop();   /* 播毕模拟下电：消空闲嘶声 */
+    LOG_I("voice self-test done");
+    return 0;
+}
+
+/* ---- 小星星旋律循环已删（bring-up 2026-08-27 验收通过，
+ * REG00=0x80 正常态 + MCLK 实线拓扑定型，诊断使命完成） ---- */
+
 void audio_stop(void)
 {
     s_stop_req = true;
@@ -459,7 +585,7 @@ int audio_bus_reconfigure(void)
         i2s_driver_uninstall(I2S_PORT_NUM);
         s_i2s_installed = false;
     }
-    int r = i2s_configure_std(I2S_SAMPLE_RATE, I2S_SAMPLE_BITS, 1);
+    int r = i2s_configure_std(I2S_SAMPLE_RATE, I2S_SAMPLE_BITS, 2);
     /* 同步 codec 时钟系数（256×fs；SCLK 作 mclk 源） */
     es8311_set_sample_rate(I2S_SAMPLE_RATE);
     es8311_dac_start();             /* 录音后恢复 codec DAC 通路 */

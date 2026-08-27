@@ -511,6 +511,18 @@ void standby_on_button(nav_key_t id, button_event_t event)
     }
 }
 
+void standby_invalidate_layout(void)
+{
+    /* 几何失效（2026-08-26 屏幕方向设置，旋转切换后 ui_apply_rotation
+     * 调用）：差分影子与新画布失配不可信、引文态置 -2 强制下一次渲染
+     * 走全刷；三色屏自然窗冻结一并复位（窗口几何已变）。SB_* 几何宏
+     * 动态取 epd_gfx_*，s_quote_level/s_tight 源自 layout_profile 短边
+     * 分档（横竖切换短边不变）无需重算 */
+    s_shadow_valid = false;
+    s_last_quote = -2;
+    s_quote_hold_win = -1;
+}
+
 void standby_render_full(void)
 {
     if (!standby_is_active()) return;
