@@ -87,12 +87,35 @@ python3 fetch_audio.py api
 python3 fetch_audio.py norm
 # 3. 回填 audio 列 + 同步后端 SeedData/固件 src（自动 .bakN 备份）
 python3 fetch_audio.py fill
-# 4. 拷贝到 SD 卡
- cp out/audio/*.mp3 /Volumes/SDCARD/audio/
+# 4. 拷贝到 SD 卡（自动探测 TF 卷；勿用裸 cp，会残留 ._ AppleDouble 垃圾）
+python3 sync_tf_audio.py --sync
 ```
 
 > 重跑 gen_default_vocab.py 会重写 CSV/JSON 丢失 audio 列，需再跑
 > `fetch_audio.py fill` 重建（音频文件本身不受影响）。
+
+## TF 卡校验与同步（2026-08-28）
+
+`sync_tf_audio.py`：TF 卡（读卡器挂载 /Volumes/…）与本地部署源
+对齐。词表基准 = out/default_words.csv audio 列；音频源 =
+out/audio/。
+
+- 默认只读校验：自动探测 TF 卷（优先含 audio/ 或 decks/ 的 FAT 卷），
+  报告缺失/0 字节损坏/多余三维（同音共用组按词维度展开）；
+- `--sync`：从 out/audio/ 补齐缺失（0 字节重拷；tmp+rename 防半文件）；
+- `--sync --prune-extra`：同时清理词表已无对应词条的多余文件。
+
+**同卡同源注意**：TF 卡根 words.json 必须与固件内嵌同版本同步
+（固件装载三级递降：活跃卡组 → SD words.json → 内嵌兜底，SD 旧词库
+会遮蔽内嵌新版，见设计文档 CATALOG_BROWSE_VOICE_SEARCH §10.5）：
+
+```bash
+# 词表变更后同步 TF 卡词库（勿用 Finder/cp，避免 ._ 垃圾；拷后可 find 清理）
+cp ../../InkWord_Firmware/src/default_words.json /Volumes/TF卡/words.json
+find /Volumes/TF卡 -name "._*" -delete   # 清 AppleDouble 残留
+python3 sync_tf_audio.py                # 音频复核
+diskutil eject /Volumes/TF卡            # 安全弹出
+```
 
 ## 使用方法
 
@@ -111,6 +134,10 @@ cp out/default_words.csv ../../InkWord_Backend/src/InkWord.API/SeedData/
 #     后端 export；无 cloudId = 本地词条，评分/收藏不上报）
 cp out/default_words.json ../../InkWord_Firmware/src/
 
+# 3c. 同步 TF 卡（插读卡器；words.json 遮蔽内嵌，见「TF 卡校验与同步」节；
+#     音频用 sync_tf_audio.py --sync 补齐，勿裸 cp 以免 ._ 垃圾）
+cp out/default_words.json /Volumes/TF卡/words.json && python3 sync_tf_audio.py --sync
+
 # 4. 分册按需导入：管理端「词库管理 → 导入 CSV」上传 out/subdicts/*.csv
 #    （导入前核算全库总量 ≤ 4000，见上节硬约束）
 
@@ -122,3 +149,9 @@ cp out/default_words.json ../../InkWord_Firmware/src/
 #    （缺 WORDS_JSON 时该用例 IGNORE；注意 PATH 里的 ~/Library/Python/3.9/bin/pio
 #     是旧版，须用 penv 的 /opt/homebrew/bin/pio）
 ```
+
+> **重跑警示**：`gen_default_vocab.py` 从 .raw 重生成时，单元细分
+> （source/grade 列回平铺「中考考纲核心词汇/初中」）与 audio 列均会
+> 丢失；需重跑归类管线 `InkWord_Firmware/tools/textbook_units.py`（v3，
+> 需 QW_KEY/DS_KEY 环境变量）+ `textbook_units_apply.py` 落地，再
+> `fetch_audio.py fill` 回填 audio（见设计文档 §10 数据链）。

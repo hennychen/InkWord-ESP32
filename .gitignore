@@ -54,3 +54,4 @@ tools/default_vocab/.raw/
 # CSV/JSON 的 audio 引用随之重建，不入库）
 tools/default_vocab/out/audio_raw/
 tools/default_vocab/out/audio/
+tools/default_vocab/out/tf_backup_*/   # TF 卡旧词库快照（临时回滚档）
