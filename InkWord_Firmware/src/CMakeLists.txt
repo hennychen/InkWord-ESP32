@@ -55,6 +55,9 @@ idf_component_register(
         "daily_plan.c"       # v1.2 T2.4：每日目标量与今日任务判据（NVS set_daily）
         "settings_ui.c"      # v1.2 T2.5：设置页覆盖层 + 发音/震动/字号门控（set_*）
         "deck_manager.c"     # v1.3 T3.1：词书卡组（manifest 扫描/活跃切换，rd_* 隔离配套）
+        "catalog_index.c"    # 教材目录索引（年级/unit 分桶，browse_mode 数据源，native-test 纯 C）
+        "browse_mode.c"      # 教材目录三级视图（MODE_BROWSE 临时视图：年级→单元→词表）
+        "voice_search.c"     # AI 语音查词四态状态机（MODE_VOICE 临时视图：录音→上传→候选）
         "study_mode_machine.c"
         "layout_profile.c"   # P5+Phase5：L4 布局档位层（档位→字库级映射）
         "standby_page.c"

@@ -58,6 +58,9 @@
 #include "card_layout.h" /* v1.4 T4.3：卡组版式分派（qa/poem） */
 #include "study_mode_machine.h"
 #include "chat_mode.h"    /* P2B：AI 对话模式（MODE_CHAT 按键转发/屏显） */
+#include "catalog_index.h" /* 教材目录索引（browse 数据源，词库装载尾部构建） */
+#include "browse_mode.h"   /* 教材目录浏览（MODE_BROWSE 三级目录临时视图） */
+#include "voice_search.h"  /* AI 语音查词（MODE_VOICE 四态临时视图） */
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
 #include "menu_ui.h"      /* 快捷菜单（功能菜单，长按中进入） */
@@ -851,6 +854,15 @@ static int load_active_words(void)
         s_word_pool, s_word_cap);
 }
 
+/* 词库装载 + 目录索引（设计 §A1）：装载链路统一挂载点，setup 与
+ * deck_flow_switch 共用（词库切换时 catalog_build 内部 free 重建） */
+static int load_words_with_catalog(void)
+{
+    int n = load_active_words();
+    catalog_build();
+    return n;
+}
+
 /* ---- 词书切换编排（v1.3 T3.1，MENU_DESIGN [学习] 组「词书选择」）：
  * 菜单词书页中键经 menu_ui 调入。顺序：NVS 记录 → 词库重载（预检
  * 失败回退默认）→ LR 按组隔离切换（旧组保存 + 新组恢复，切书不丢
@@ -869,9 +881,9 @@ extern "C" bool deck_flow_switch(int idx)
     }
     if (deck_manager_switch(idx) != 0) return false;
 
-    if (load_active_words() <= 0) {     /* 重载失败回退默认链路重装 */
+    if (load_words_with_catalog() <= 0) {  /* 重载失败回退默认链路重装 */
         deck_manager_switch(0);
-        load_active_words();
+        load_words_with_catalog();
         return false;                   /* 调用方长震反馈 */
     }
 
@@ -1625,6 +1637,12 @@ extern "C" void ui_render_current(void)
         ui_render_chat(chat_mode_state(), chat_mode_reply());
         epd_gfx_flush();
     }
+    else if (m == MODE_BROWSE)
+        /* 目录三级视图自绘整屏（标题+列表+提示，刷新策略模块内） */
+        browse_mode_render();
+    else if (m == MODE_VOICE)
+        /* 语音查词四态自绘整屏（三色屏零渲染直接 return） */
+        voice_search_render();
     else if (word_parser_get_count() > 0)
         ui_render_word(m, 0);
     else
@@ -1805,6 +1823,25 @@ static void on_button(nav_key_t id, button_event_t event)
      * RST 退出；作答反馈与首帧渲染由 quiz_on_button 内部编排） */
     if (study_mode_current() == MODE_QUIZ) {
         quiz_on_button(id, event);
+        return;
+    }
+
+    /* 教材目录浏览（设计 §A2）：按键全转发（上下移动/中进入/RST 逐级
+     * 返回，长按直退；模块内自管渲染，选词 confirm 经 seek 终结视图） */
+    if (study_mode_current() == MODE_BROWSE) {
+        browse_mode_on_button(id, event);
+        return;
+    }
+
+    /* AI 语音查词（设计 §B2）：按键全转发（中=录音/提前停/确认，上下=
+     * 候选移动，RST=重说）；退出请求由编排层执行——chat 同款编排 */
+    if (study_mode_current() == MODE_VOICE) {
+        if (!voice_search_on_button(id, event)) {
+            haptic_event(HAPTIC_MODE);
+            voice_search_request_exit();
+            study_mode_exit_voice_search();
+            ui_render_current();
+        }
         return;
     }
 
@@ -2363,7 +2400,7 @@ void setup()
      * 不变）；装载走 load_active_words 三级递降链路（与切书共用） */
     deck_manager_scan();
     if (s_word_pool) {
-        int n = load_active_words();
+        int n = load_words_with_catalog();
         LOG_I("word DB ready: %d entries", n);
     } else {
         LOG_W("word pool alloc failed, no word DB");
@@ -2372,6 +2409,7 @@ void setup()
     /* 测试构建：内嵌词库也被排除时（如裁剪验证）的最后一道演示词 */
     if (s_word_pool && word_parser_get_count() == 0) {
         word_parser_load_demo(s_word_pool, s_word_cap);
+        catalog_build();    /* 演示词路径同建索引（装载尾部口径统一） */
     }
 #endif
 

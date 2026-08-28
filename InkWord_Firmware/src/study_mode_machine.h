@@ -38,6 +38,13 @@ typedef enum {
                               恢复/不走 apply_mode；出题核心 quiz_session
                               纯 C（T2.1），题池构造/渲染/作答编排留
                               main.cpp 适配层，QUIZ_DESIGN §6/§7） */
+    MODE_BROWSE,         /**< 教材目录浏览：年级→单元→词表三级临时视图
+                              （2026-08-28 目录浏览+语音查词设计；第五临时
+                              视图先例：不入循环/不 NVS 恢复/不走 apply_mode；
+                              枚举值固定 8；选词经 study_mode_seek 定位） */
+    MODE_VOICE,          /**< 语音查词：录音→ASR→候选跳词临时视图（同设计；
+                              枚举值固定 9，同第五先例；状态机 voice_search.c
+                              按键驱动无任务，main.cpp 分发） */
     MODE_COUNT
 } study_mode_t;
 
@@ -144,6 +151,47 @@ bool study_mode_enter_quiz(void);
  *        退出无补偿动作。
  */
 void study_mode_exit_quiz(void);
+
+/* ---- 教材目录浏览临时视图（2026-08-28 设计，第五先例） ---- */
+
+/**
+ * @brief 进入教材目录浏览（快捷菜单「教材目录」项；临时视图，不持久化）。
+ *        前置：词库 ≥ 1（目录索引由装载链路 catalog_build 构建，空/失配
+ *        由渲染层兑底）；三级视图状态由 browse_mode 自理，首帧渲染由
+ *        调用方在 enter 成功后执行。
+ * @return true 成功；false 词库为空（未进入，无副作用）。
+ */
+bool study_mode_enter_browse(void);
+
+/**
+ * @brief 退出目录浏览回闪卡（视图内 RST 长按/逐级退到顶退出）：
+ *        游标恢复进视图前的闪卡位置（浏览取消不丢学习进度）；
+ *        选词跳转走 study_mode_seek（模式已切，勿重复调用）。
+ */
+void study_mode_exit_browse(void);
+
+/* ---- 语音查词临时视图（同设计，chat 前置先例简化版） ---- */
+
+/**
+ * @brief 进入语音查词（快捷菜单「语音查词」项；临时视图，不持久化）。
+ *        前置：Wi-Fi 已连 + 设备 Key 已配；无 SD 依赖（PSRAM 缓冲
+ *        直传，无音频落盘）。状态机复位/首帧由调用方在 enter 成功后执行。
+ * @return true 成功；false 前置不满足（未进入，无副作用）。
+ */
+bool study_mode_enter_voice_search(void);
+
+/**
+ * @brief 退出语音查词回闪卡（视图内长按 RST/长按中）：游标恢复进视图
+ *        前位置；已选词跳转走 study_mode_seek（模式已切，勿重复调用）。
+ */
+void study_mode_exit_voice_search(void);
+
+/**
+ * @brief 词库索引定位：切 FLASH 模式 + 游标=index（钳位）+ 渲染。
+ *        供 browse（目录选词）/ voice_search（候选确认）共用；
+ *        不写 NVS（FLASH 本就可恢复）；空词库无操作。
+ */
+void study_mode_seek(int word_index);
 
 /**
  * @brief 取消收藏（SET 长按 toggle）之后的序列收缩钳位：当前词移出收藏

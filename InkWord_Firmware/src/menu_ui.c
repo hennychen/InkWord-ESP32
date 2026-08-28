@@ -45,6 +45,8 @@
 extern bool deck_flow_switch(int idx);
 #include "study_mode_machine.h"
 #include "word_parser.h"
+#include "browse_mode.h"   /* 教材目录三级视图（2026-08-28 设计） */
+#include "voice_search.h" /* 语音查词状态机（同设计） */
 
 #include "esp_timer.h"
 #include "esp_heap_caps.h"   /* INFO 页 PSRAM 查询 */
@@ -290,6 +292,38 @@ static void act_quiz(void)
     quiz_flow_start();
 }
 
+/* 教材目录（2026-08-28 设计 §B3）：前置词库 ≥1 在
+ * study_mode_enter_browse 内，不满足长震回学习页；满足则三级视图
+ * 清态 + 首帧全刷（ui_render_current 的 MODE_BROWSE 分流承担） */
+static void act_browse(void)
+{
+    menu_ui_exit();
+    if (!study_mode_enter_browse()) {
+        haptic_event(HAPTIC_ERROR);   /* 空词库：边界反馈 */
+        ui_render_current();
+        return;
+    }
+    haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
+    browse_mode_reset();
+    ui_render_current();
+}
+
+/* 语音查词（同设计 §B3）：前置 Wi-Fi/Key 在
+ * study_mode_enter_voice_search 内（chat 预检先例），不满足长震回
+ * 学习页；满足则状态机清态起任务 + 首帧（MODE_VOICE 分流） */
+static void act_voice_search(void)
+{
+    menu_ui_exit();
+    if (!study_mode_enter_voice_search()) {
+        haptic_event(HAPTIC_ERROR);   /* 无网/未配 Key：边界反馈 */
+        ui_render_current();
+        return;
+    }
+    haptic_event(HAPTIC_MODE);
+    voice_search_reset();
+    ui_render_current();
+}
+
 static void act_info(void)
 {
     s_page = MU_PAGE_INFO;
@@ -321,12 +355,16 @@ static void act_keys(void)
     draw_keys(false);
 }
 
-/* 分组化 13 行 = 3 组头 + 10 项（2026-08-24，O4；二期设置/词书：
+/* 分组化 15 行 = 3 组头 + 12 项（2026-08-24，O4；二期设置/词书：
  * 数组追加即扩展点，组头行 label 与按键说明页组头同风格方括号；
- * 2026-08-27 [系统] 组增「音量」置「设置」前：高频直达项前置） */
+ * 2026-08-27 [系统] 组增「音量」置「设置」前：高频直达项前置；
+ * 2026-08-28 [学习] 组增「教材目录/语音查词」置收藏后（使用频率
+ * 前插，设计 §B3；图标复用词书/对话剪影） */
 static const mu_item_t s_items[] = {
     { "[ 学习 ]",  true,  NULL,               NULL,             NULL },
     { "收藏列表",   false, menu_icon_collected, badge_collected,  act_collection },
+    { "教材目录",   false, menu_icon_decks,    NULL,             act_browse },
+    { "语音查词",   false, menu_icon_chat,     NULL,             act_voice_search },
     { "模式选择",   false, menu_icon_modesel,  badge_mode,       act_modesel },
     { "词书选择",   false, menu_icon_decks,    badge_deck,       act_deck },
     { "AI 对话",    false, menu_icon_chat,     NULL,             act_chat },

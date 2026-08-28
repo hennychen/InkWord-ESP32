@@ -129,6 +129,18 @@ extern void test_cjk_font_sd_rejects_bad_bin(void);
 extern void test_cjk_font_sd_missing_file_semantics(void);
 extern void test_cjk_font_sd_swift_artifact(void);
 
+/* catalog_index 教材目录索引（2026-08-28 教材目录浏览设计）：同 runner 挂载
+ * （词池由 catalog_build_from 自构，不依赖 word_parser 运行期） */
+extern void test_catalog_unit_name_of(void);
+extern void test_catalog_grade_buckets_and_order(void);
+extern void test_catalog_unit_order_numeric(void);
+extern void test_catalog_unit_topic_and_starter_order(void);
+extern void test_catalog_grade_order_expansion_and_primary(void);
+extern void test_catalog_empty_and_all_blank_grade(void);
+extern void test_catalog_overflow_merges_to_fallback(void);
+extern void test_catalog_rebuild_idempotent(void);
+extern void test_catalog_utf8_truncation_safe(void);
+
 /* daily_plan 按组配额 + 考试倒计时（v1.5 T5.5）：同 runner 挂载
  * （nvs/时钟/组 id 桩与 mock 实现在 test_daily_plan.c） */
 extern void test_dp_goal_default_when_no_key(void);
@@ -183,5 +195,14 @@ int main(void)
     RUN_TEST(test_exam_refused_when_clock_unsynced);
     RUN_TEST(test_exam_month_rollover_math);
     RUN_TEST(test_exam_leap_year_math);
+    RUN_TEST(test_catalog_unit_name_of);
+    RUN_TEST(test_catalog_grade_buckets_and_order);
+    RUN_TEST(test_catalog_unit_order_numeric);
+    RUN_TEST(test_catalog_unit_topic_and_starter_order);
+    RUN_TEST(test_catalog_grade_order_expansion_and_primary);
+    RUN_TEST(test_catalog_empty_and_all_blank_grade);
+    RUN_TEST(test_catalog_overflow_merges_to_fallback);
+    RUN_TEST(test_catalog_rebuild_idempotent);
+    RUN_TEST(test_catalog_utf8_truncation_safe);
     return UNITY_END();
 }

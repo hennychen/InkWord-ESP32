@@ -53,7 +53,7 @@ static bool s_reveal = true;
 
 static const char *s_names[MODE_COUNT] =
     { "Flash", "Dictation", "Review", "Reader", "WrongBook", "收藏",
-      "AI Chat", "测验" };
+      "AI Chat", "测验", "目录", "语音" };
 
 /* ---- 序列抽象：默认全词库，错词本换连错过滤视图，阅读换页序列 ---- */
 
@@ -65,6 +65,8 @@ static int seq_total(void)
     if (s_current == MODE_READER)     return reader_page_count();
     if (s_current == MODE_CHAT)       return 0;  /* 对话无词序列（状态栏 0/0） */
     if (s_current == MODE_QUIZ)       return 0;  /* 测验题号由 main.cpp 自绘状态栏 */
+    if (s_current == MODE_BROWSE)     return 0;  /* 目录页码由 browse_mode 自绘 */
+    if (s_current == MODE_VOICE)      return 0;  /* 候选列表由 voice_search 自绘 */
     return word_parser_get_count();
 }
 
@@ -94,7 +96,8 @@ void study_mode_init(void)
         uint8_t m = 0;
         if (nvs_get_u8(h, "last_mode", &m) == ESP_OK &&
             m < MODE_COUNT && m != MODE_WRONGBOOK && m != MODE_COLLECTION &&
-            m != MODE_CHAT && m != MODE_QUIZ) {
+            m != MODE_CHAT && m != MODE_QUIZ && m != MODE_BROWSE &&
+            m != MODE_VOICE) {
             s_current = (study_mode_t)m;
         }
         nvs_close(h);
@@ -135,7 +138,8 @@ study_mode_t study_mode_switch_next(void)
     do {
         s_current = (study_mode_t)((s_current + 1) % MODE_COUNT);
     } while (s_current == MODE_WRONGBOOK || s_current == MODE_COLLECTION ||
-             s_current == MODE_CHAT || s_current == MODE_QUIZ);
+             s_current == MODE_CHAT || s_current == MODE_QUIZ ||
+             s_current == MODE_BROWSE || s_current == MODE_VOICE);
     apply_mode(s_current);
     return s_current;
 }
@@ -144,7 +148,8 @@ void study_mode_set(study_mode_t mode)
 {
     if (mode < 0 || mode >= MODE_COUNT) return;
     if (mode == MODE_WRONGBOOK || mode == MODE_COLLECTION ||
-        mode == MODE_CHAT || mode == MODE_QUIZ) return;
+        mode == MODE_CHAT || mode == MODE_QUIZ ||
+        mode == MODE_BROWSE || mode == MODE_VOICE) return;
     apply_mode(mode);   /* 同模式重入也归零游标，与 switch_next 语义一致 */
 }
 
@@ -413,6 +418,77 @@ void study_mode_exit_quiz(void)
     s_cursor = 0;
     s_reveal = true;
     LOG_I("left quiz mode");
+}
+
+/* ---- 教材目录浏览/语音查词临时视图（第五先例）+ 共用 seek ---- */
+
+static int s_browse_prev_cursor = 0;   /* 进目录视图前的闪卡游标（退出恢复） */
+static int s_voice_prev_cursor = 0;    /* 进语音视图前的闪卡游标（退出恢复） */
+
+bool study_mode_enter_browse(void)
+{
+    /* 前置：词库 ≥ 1（目录索引由装载链路 catalog_build 构建，空/失配
+     * 由渲染层兑底）；三级视图状态与首帧由调用方自理 */
+    if (word_parser_get_count() == 0) {
+        LOG_W("browse enter rejected: empty vocab");
+        return false;
+    }
+    s_browse_prev_cursor = s_cursor;
+    s_current = MODE_BROWSE;
+    s_cursor = 0;
+    s_reveal = true;
+    LOG_I("entered browse mode");
+    return true;
+}
+
+void study_mode_exit_browse(void)
+{
+    /* 临时视图：不写 last_mode；游标恢复进视图前的闪卡位置（浏览取消
+     * 不丢学习进度）；选词跳转已走 study_mode_seek（模式已切 FLASH） */
+    s_current = MODE_FLASH;
+    s_cursor = s_browse_prev_cursor;
+    s_reveal = true;
+    LOG_I("left browse mode");
+}
+
+bool study_mode_enter_voice_search(void)
+{
+    /* 前置：上传查词全程依赖网络；无 SD 依赖（PSRAM 缓冲直传）。
+     * 状态机复位/首帧由调用方自理（同 QUIZ 先例） */
+    if (!wifi_is_connected() || !sync_has_device_key()) {
+        LOG_W("voice enter rejected: wifi=%d key=%d",
+              wifi_is_connected(), sync_has_device_key());
+        return false;
+    }
+    s_voice_prev_cursor = s_cursor;
+    s_current = MODE_VOICE;
+    s_cursor = 0;
+    s_reveal = true;
+    LOG_I("entered voice search mode");
+    return true;
+}
+
+void study_mode_exit_voice_search(void)
+{
+    s_current = MODE_FLASH;
+    s_cursor = s_voice_prev_cursor;
+    s_reveal = true;
+    LOG_I("left voice search mode");
+}
+
+void study_mode_seek(int word_index)
+{
+    /* 词库索引定位（browse 选词/voice 候选确认共用）：切 FLASH +
+     * 游标=index 钳位 + 渲染；不写 NVS（FLASH 本就可恢复） */
+    int total = word_parser_get_count();
+    if (total <= 0) return;
+    if (word_index < 0) word_index = 0;
+    if (word_index >= total) word_index = total - 1;
+    s_current = MODE_FLASH;
+    s_cursor = word_index;
+    s_reveal = true;
+    LOG_I("seek to word #%d", word_index);
+    ui_render_word(s_current, seq_word_index(s_cursor));
 }
 
 bool study_mode_after_uncollect(void)
