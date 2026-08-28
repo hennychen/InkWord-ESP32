@@ -7,6 +7,10 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.AI" Version="9.10.2" />
+    <!-- 语音查词（2026-08-28）：AppDbContext 查询（词库范围过滤），
+         版本线对齐 Jobs/Infrastructure 实际编译的 8.0.8（Npgsql 传递 8.0.4
+         会致 CS1705，Jobs 直引 8.0.8 同款先例） -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.8" />
     <!-- P2A（2026-08-24）：sherpa-onnx C# 绑定（native 库随包分发），
          ASR 转写与 M5 GOP 升级共用；模型文件走 volume 挂载不入包 -->
     <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.5" />

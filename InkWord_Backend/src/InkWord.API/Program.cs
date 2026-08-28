@@ -55,6 +55,7 @@ builder.Services.AddScoped<AiContentService>();
 builder.Services.AddScoped<PronunciationService>();
 builder.Services.AddScoped<TtsService>();
 builder.Services.AddScoped<ChatService>();
+builder.Services.AddScoped<VoiceSearchService>(); // 语音查词（2026-08-28，ASR+词库三级匹配）
 
 // ---- ASR 转写引擎（P2A 2026-08-24）：sherpa-onnx C# 绑定（native 随 NuGet
 // 分发），模型 volume 挂载（Asr:ModelDir，与 M5 GOP 升级共用本绑定）；

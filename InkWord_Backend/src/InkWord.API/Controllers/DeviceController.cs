@@ -27,17 +27,19 @@ public class DeviceController : ControllerBase
     private readonly PronunciationService _pron;
     private readonly TtsService _tts;
     private readonly ChatService _chatSvc;
+    private readonly VoiceSearchService _voice;
     private readonly AppDbContext _db; // T4.1：v2 归属映射（deck/subject 身份）
 
     public DeviceController(IDeviceRepository deviceRepo, IWordRepository wordRepo,
         ILearningRecordRepository recordRepo, IOtaPackageRepository otaRepo,
         SrsService srs, PronunciationService pron, TtsService tts, ChatService chatSvc,
-        AppDbContext db)
+        VoiceSearchService voice, AppDbContext db)
     {
         _deviceRepo = deviceRepo; _wordRepo = wordRepo;
         _recordRepo = recordRepo; _otaRepo = otaRepo; _srs = srs; _pron = pron;
         _tts = tts;
         _chatSvc = chatSvc;
+        _voice = voice;
         _db = db;
     }
 
@@ -279,6 +281,34 @@ public class DeviceController : ControllerBase
         }
 
         return Ok(ApiResponse<ChatReply>.Ok(reply));
+    }
+
+    /// <summary>语音查词：multipart WAV（16kHz/16bit/mono ≤5s）→ ASR → 词库三级匹配。</summary>
+    /// <remarks>?deck={Code} 限定设备活跃词书范围（失配/缺省兜底全库）；
+    /// 响应 { transcript, candidates:[{text,meaning,cloudId,score}] }（top-5）。
+    /// 错误：非 WAV/无话音 400、ASR 未配置 503、超限 413（chat 同款）。</remarks>
+[HttpPost("voice-search")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+public async Task<IActionResult> VoiceSearch(
+        [FromQuery] string? deck, IFormFile file, CancellationToken ct)
+    {
+        if (file == null || file.Length == 0)
+            return BadRequest(ApiResponse.Fail(400, "empty file"));
+        if (file.Length > VoiceSearchService.MaxWavBytes)
+            return StatusCode(413, ApiResponse.Fail(413, "file too large"));
+
+        using var ms = new MemoryStream();
+        await file.CopyToAsync(ms, ct);
+
+        try
+        {
+            var result = await _voice.SearchAsync(ms.ToArray(), deck, ct);
+            return Ok(ApiResponse<VoiceSearchResult>.Ok(result));
+        }
+        catch (VoiceSearchException ex)
+        {
+            return StatusCode(ex.StatusCode, ApiResponse.Fail(ex.StatusCode, ex.Message));
+        }
     }
 
     // ---- helpers ----
