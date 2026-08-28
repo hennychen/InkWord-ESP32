@@ -129,6 +129,10 @@ void epd_gfx_draw_rect(int x, int y, int w, int h, uint16_t color);
 void epd_gfx_draw_hline(int x, int y, int w, uint16_t color);
 /** @brief 画垂直线 */
 void epd_gfx_draw_vline(int x, int y, int h, uint16_t color);
+/** @brief 切换 FreeSans 常规/Bold 字体表（2026-08-27 P2 设置「粗细」）：
+ *         draw_text/text_bounds 每次调用经 font_for_size 选表，切换
+ *         即时生效且量测/绘制一致；仅 ASCII 路径生效，CJK 点阵不受影响 */
+void epd_gfx_set_bold(bool on);
 /** @brief 画文本（font_size: 1=小9pt, 2=中14pt默认, 3=大18pt, 4=特大24pt；y 为基线） */
 void epd_gfx_draw_text(int x, int y, const char *text, uint16_t color, int font_size);
 /** @brief 测量文本宽高 */

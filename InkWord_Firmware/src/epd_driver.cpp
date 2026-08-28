@@ -46,6 +46,14 @@
 #include "Fonts/Arial14pt7b.h"   /* 官方 fontconvert 从 Arial.ttf 生成（GFX 库无 14pt 档） */
 #include <Fonts/FreeSans18pt7b.h>
 #include <Fonts/FreeSans24pt7b.h>
+/* Bold 表（2026-08-27 P2 设置「粗细」）：GFX 库无 14pt 档（Arial14pt7b
+ * 需本地生成同理），14pt 槽降用 FreeSansBold12pt7b——保住四档粗细均
+ * 可切换，代价是 14pt 档加粗时字号降 12pt（状态栏/菜单，真机目检）；
+ * 后续可用官方 fontconvert 生成 FreeSansBold14pt7b 补齐 */
+#include <Fonts/FreeSansBold9pt7b.h>
+#include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
+#include <Fonts/FreeSansBold24pt7b.h>
 
 #include <string.h>
 #include <stdlib.h>     /* malloc：帧缓冲内部 SRAM 分配 */
@@ -90,11 +98,27 @@ static const GFXfont *s_fonts[] = {
     &FreeSans18pt7b,
     &FreeSans24pt7b,
 };
+/* Bold 表（2026-08-27 P2 设置「粗细」）：epd_gfx_set_bold 注入（main
+ * 初始化 NVS 恢复 / settings 切换即时 apply，音量→es8311 同范式）；
+ * 仅 FreeSans/ASCII 路径生效，CJK 点阵（cjk_text）不受影响。
+ * 14pt 槽降用 12pt Bold（库无 14pt 档，见上方 include 注） */
+static const GFXfont *s_fonts_bold[] = {
+    &FreeSansBold9pt7b,
+    &FreeSansBold12pt7b,
+    &FreeSansBold18pt7b,
+    &FreeSansBold24pt7b,
+};
+static bool s_bold = false;      /* 默认关：视觉零变化铁律 */
+
+void epd_gfx_set_bold(bool on)
+{
+    s_bold = on;
+}
 
 static const GFXfont *font_for_size(int font_size)
 {
     if (font_size < 1 || font_size > 4) font_size = 2;
-    return s_fonts[font_size - 1];
+    return (s_bold ? s_fonts_bold : s_fonts)[font_size - 1];
 }
 
 /* GFXcanvas1 1bpp 画布色（数值与 GxEPD2 的 GxEPD_BLACK/GxEPD_WHITE 一致：

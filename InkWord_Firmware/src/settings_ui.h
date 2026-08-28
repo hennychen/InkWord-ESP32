@@ -7,7 +7,11 @@
  * 「设置」项进入（先 menu_ui_exit 后 enter，双激活防线同菜单子功能）。
  *
  * 行项：每日新词量（±5 循环，与 daily_plan 共用 set_daily 键）/ 发音
- * [开关] / 震动 [开关] / 字号 [标准|大字] / 测验快答 [开关]（v1.5
+ * [开关] / 震动 [开关] / 字号 [标准|大字|特大]（2026-08-27 三档化，
+ * 意图存档、渲染层按布局档位钳位）/ 单词大小 [大|中|小]（2026-08-27
+ * P1b：ui_fit_font 起步档 4/3/2，超宽降级机制不变）/ 粗细 [标准|
+ * 加粗]（2026-08-27 P2：FreeSans/Bold 表切换，仅英文/ASCII 路径） /
+ * 测验快答 [开关]（v1.5
  * T5.1：2×2 方向直选，默认关=纵列基线；T3 听音题恒直选不受此键控）
  * / 考试倒计时（v1.5 T5.5）+ 屏幕方向 [默认|竖屏|横屏]（2026-08-26
  * 增，即改即生效：ui_apply_rotation 重建画布后本页全刷重排）
@@ -22,7 +26,10 @@
  *
  * NVS 键（"inkword" 命名空间追加，不动既有键）：
  *   set_daily u8（daily_plan 定义）/ set_audio u8 / set_haptic u8 /
- *   set_font u8 / set_quizgrid u8 / set_rot u8（0=跟随面板默认 /
+ *   set_font u8（0=标准/1=大字/2=特大，旧值 0/1 语义不变零迁移） /
+ *   set_word u8（0=大/1=中/2=小，单词 fit 起步档 4/3/2） /
+ *   set_bold u8（0=标准/1=加粗，FreeSans/Bold 表切换） /
+ *   set_quizgrid u8 / set_rot u8（0=跟随面板默认 /
  *   1=竖屏 / 2=横屏，意图相对面板默认方向表达，不存绝对旋转——
  *   同一键跨面板重编译语义不漂移；映射见 main ui_apply_rotation）
  *   / set_vol u8（0~100 步进10，默认 75=0dB 历史听感；es8311 驱动
@@ -56,8 +63,20 @@ bool settings_audio_enabled(void);
 /** 震动开关（set_haptic，默认开）：haptic_event 入口门控。 */
 bool settings_haptic_enabled(void);
 
-/** 字号档（set_font）：0=标准（档位默认）/ 1=大字（释义+阅读默认 +1 级）。 */
+/** 字号档（set_font）：0=标准（档位默认）/ 1=大字 / 2=特大。学习页
+ *  正文按档位钳位映射（TINY/SMALL 特大等价大字，见 main UI_MEAN_LEVEL）；
+ *  阅读器仅影响无记忆默认级（+1 后钳位，书内 rd_font 记忆优先）。 */
 int settings_font_mode(void);
+
+/** 单词字号偏好（set_word，2026-08-27 P1b）：0=大(24pt)/1=中(18pt)/
+ *  2=小(14pt)，ui_fit_font 起步档，超宽自动降级机制不变；默认 0=
+ *  历史行为（start 4）。 */
+int settings_word_size(void);
+
+/** 粗细开关（set_bold，2026-08-27 P2，默认关）：仅英文/ASCII 路径
+ *  （epd_gfx_set_bold 切 FreeSans/Bold 表，单词/状态栏/菜单）；CJK
+ *  点阵与 IPA 音标行不受影响。setter 即时 apply，重启 main 同步。 */
+bool settings_bold_enabled(void);
 
 /** 测验快答（set_quizgrid，v1.5 T5.1）：false=纵列（P1 基线） /
  *  true=2×2 方向直选。T3 听音题恒直选（中键留给重播），不受此键控。 */

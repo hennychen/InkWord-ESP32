@@ -310,7 +310,8 @@ static void font_level_restore(void)
     uint32_t sig = 0;
     uint8_t fnt = (uint8_t)layout_profile_get()->reader_level;  /* 档位默认 */
     /* v1.2 T2.5 大字档：无记忆默认级 +1（用户书内 rd_font 记忆
-     * 优先，不受全局档影响；阈值钳位） */
+     * 优先，不受全局档影响；阈值钳位）。2026-08-27 P1a 三档化：
+     * set_font 1/2 均按 +1 处理（24px 为字库上限），逻辑天然兼容 */
     if (settings_font_mode() && fnt + 1 < CJK_FONT_LEVELS)
         fnt++;
     bool hit = nvs_get_u32(h, rd_key("rd_sig"), &sig) == ESP_OK && sig == s_sig;

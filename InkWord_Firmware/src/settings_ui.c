@@ -2,7 +2,7 @@
  * @file settings_ui.c
  * @brief 设置页覆盖层实现（v1.2 T2.5，见 settings_ui.h 分层边界）
  *
- * 渲染自足（不依赖 menu_ui 内部几何宏）：状态栏「设置」+ 7 行项
+ * 渲染自足（不依赖 menu_ui 内部几何宏）：状态栏「设置」+ 10 行项
  * （反选高亮同复习词表范式）+ 底部提示栏（TINY 档省略）；进入全刷，
  * 移动/切换局刷内容区（菜单翻页同策略）。几何按布局档位派生
  * （2026-08-25 起，TINY 竖屏修正见 draw_page 注）。
@@ -33,6 +33,8 @@ static const char *TAG = "SET";
 static int8_t s_audio = -1;
 static int8_t s_haptic = -1;
 static int8_t s_font = -1;
+static int8_t s_wordsize = -1;   /* 2026-08-27 P1b：单词字号偏好（大/中/小） */
+static int8_t s_bold = -1;       /* 2026-08-27 P2：英文粗细（标准/加粗） */
 static int8_t s_quizgrid = -1;   /* v1.5 T5.1：测验快答（2×2 方向直选） */
 static int8_t s_rotmode = -1;    /* 2026-08-26 屏幕方向（0=默认/1=竖/2=横） */
 static int8_t s_vol = -1;        /* 2026-08-27 音量（0~100 步进10，默认75） */
@@ -74,7 +76,19 @@ bool settings_haptic_enabled(void)
 int settings_font_mode(void)
 {
     if (s_font < 0) s_font = load_u8("set_font", 0);
-    return s_font ? 1 : 0;
+    return s_font > 2 ? 2 : s_font;   /* 三档钳位（脏值防御）：0/1/2 */
+}
+
+int settings_word_size(void)
+{
+    if (s_wordsize < 0) s_wordsize = load_u8("set_word", 0);
+    return s_wordsize > 2 ? 2 : s_wordsize;   /* 0=大/1=中/2=小（脏值钳位） */
+}
+
+bool settings_bold_enabled(void)
+{
+    if (s_bold < 0) s_bold = load_u8("set_bold", 0);
+    return s_bold != 0;   /* 默认关：常规表，视觉零变化铁律 */
 }
 
 bool settings_quiz_grid(void)
@@ -106,7 +120,7 @@ void settings_volume_set(int v)
 
 /* ---- 覆盖层 UI（menu_ui 范式镜像） ---- */
 
-#define SET_ITEMS 8
+#define SET_ITEMS 10
 
 static bool s_active = false;
 static int  s_sel = 0;          /* 当前编辑行 */
@@ -122,12 +136,12 @@ static int  s_win = 0;          /* 滚动窗口首行（全显档位无意义恒
 static const char *set_label(int i)
 {
     static const char *k_full[SET_ITEMS] = {
-        "每日新词量", "发音", "震动", "字号", "测验快答", "考试倒计时",
-        "屏幕方向", "音量",
+        "每日新词量", "发音", "震动", "字号", "单词大小", "粗细", "测验快答",
+        "考试倒计时", "屏幕方向", "音量",
     };
     static const char *k_tiny[SET_ITEMS] = {
-        "新词量", "发音", "震动", "字号", "测验快答", "倒计时", "屏幕方向",
-        "音量",
+        "新词量", "发音", "震动", "字号", "单词大小", "粗细", "测验快答",
+        "倒计时", "屏幕方向", "音量",
     };
     return layout_profile_get()->kind == LAYOUT_TINY ? k_tiny[i]
                                                       : k_full[i];
@@ -147,16 +161,28 @@ static void row_value(int i, char *buf, size_t bufsz)
     case 0: snprintf(buf, bufsz, "%d", daily_plan_goal()); break;
     case 1: snprintf(buf, bufsz, "%s", settings_audio_enabled() ? "开" : "关"); break;
     case 2: snprintf(buf, bufsz, "%s", settings_haptic_enabled() ? "开" : "关"); break;
-    case 3: snprintf(buf, bufsz, "%s", settings_font_mode() ? "大字" : "标准"); break;
-    case 4: snprintf(buf, bufsz, "%s", settings_quiz_grid() ? "开" : "关"); break;
-    case 5: {   /* 考试倒计时（v1.5 T5.5）：以「N 天」表达，存绝对 ymd */
+    case 3: {   /* 字号三档（2026-08-27 P1a）：意图存档，渲染层按
+        布局档位钳位（TINY/SMALL 屏特大渲染等价大字，见 main
+        UI_MEAN_LEVEL）——set_rot 意图相对面板表达同哲学 */
+        static const char *k[3] = { "标准", "大字", "特大" };
+        snprintf(buf, bufsz, "%s", k[settings_font_mode()]);
+        break;
+    }
+    case 4: {   /* 单词大小（2026-08-27 P1b）：fit 起步档 4/3/2（大/中/小） */
+        static const char *k[3] = { "大", "中", "小" };
+        snprintf(buf, bufsz, "%s", k[settings_word_size()]);
+        break;
+    }
+    case 5: snprintf(buf, bufsz, "%s", settings_bold_enabled() ? "加粗" : "标准"); break;
+    case 6: snprintf(buf, bufsz, "%s", settings_quiz_grid() ? "开" : "关"); break;
+    case 7: {   /* 考试倒计时（v1.5 T5.5）：以「N 天」表达，存绝对 ymd */
         int d = exam_days_left();
         if (d > 0) snprintf(buf, bufsz, "%d 天", d);
         else       snprintf(buf, bufsz, "%s", "关");
         break;
     }
     default: snprintf(buf, bufsz, "%s", rot_value_text()); break;
-    case 7:                              /* 音量：0=静音文案，其余数字档 */
+    case 9:                              /* 音量：0=静音文案，其余数字档 */
         if (settings_volume() == 0) snprintf(buf, bufsz, "%s", "静音");
         else                         snprintf(buf, bufsz, "%d", settings_volume());
         break;
@@ -173,7 +199,11 @@ static void draw_row(int row, const char *label, const char *value,
     if (row == s_sel)                       /* 反选：黑底白字整行 */
         epd_gfx_fill_rect(margin, y, w - 2 * margin, lh - 4, EPD_GFX_BLACK);
     int fg = (row == s_sel) ? EPD_GFX_WHITE : EPD_GFX_BLACK;
-    int base = y + lh * 3 / 4;
+    /* cjk_text_draw 的 y 是字形 cell 顶（cjk_text.h 坐标语义，非
+     * FreeSans 基线），行内垂直居中 = 顶 + (行高-cell 高)/2。原基线
+     * 式 lh*3/4 把字压低 14/17px：选中行字溢出反选框（白字落框外
+     * 白底不可见）、邻行墨迹与框重叠——2.9" 真机 2026-08-28 反馈 */
+    int base = y + (lh - (16 + font_lvl * 4)) / 2;
 
     cjk_text_draw(margin + 4, base, font_lvl, label, fg);
 
@@ -309,15 +339,27 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
             s_haptic = settings_haptic_enabled() ? 0 : 1;
             save_u8("set_haptic", (uint8_t)s_haptic);
             break;
-        case 3:                             /* 字号档循环 标准↔大字 */
-            s_font = settings_font_mode() ? 0 : 1;
+        case 3:                             /* 字号档循环 标准→大字→特大（P1a） */
+            s_font = (settings_font_mode() + 1) % 3;
             save_u8("set_font", (uint8_t)s_font);
             break;
-        case 4:                             /* 测验快答（v1.5 T5.1） */
+        case 4:                             /* 单词大小循环 大→中→小（P1b） */
+            s_wordsize = (settings_word_size() + 1) % 3;
+            save_u8("set_word", (uint8_t)s_wordsize);
+            break;
+        case 5:                             /* 粗细（2026-08-27 P2）：仅
+            英文/ASCII 路径（FreeSans 表切换，单词/状态栏/菜单；CJK
+            点阵不受影响）；即时 apply（音量 setter 同范式），退出
+            设置的全刷链负责重绘 */
+            s_bold = settings_bold_enabled() ? 0 : 1;
+            save_u8("set_bold", (uint8_t)s_bold);
+            epd_gfx_set_bold(s_bold != 0);
+            break;
+        case 6:                             /* 测验快答（v1.5 T5.1） */
             s_quizgrid = settings_quiz_grid() ? 0 : 1;
             save_u8("set_quizgrid", (uint8_t)s_quizgrid);
             break;
-        case 5: {                           /* 考试倒计时（v1.5 T5.5）：
+        case 7: {                           /* 考试倒计时（v1.5 T5.5）：
             关→1→…→99→关 循环；存目标日 ymd（自治钟重启不失真）；
             时钟未同步时 exam_set_days 拒写，回显保持「关」 */
             int d = exam_days_left() + 1;
@@ -325,7 +367,7 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
             exam_set_days(d);
             break;
         }
-        case 6: {                           /* 屏幕方向（2026-08-26）：
+        case 8: {                           /* 屏幕方向（2026-08-26）：
             默认→竖屏→横屏 循环，即改即存即生效（ui_apply_rotation
             重建画布/失效布局，见 main.cpp）；几何已变，本页须全刷
             重排而非局刷内容区，故不走下方统一 draw_page(false) */
@@ -336,7 +378,7 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
             LOG_I("settings: rotation -> %d", s_rotmode);
             return;
         }
-        case 7:                             /* 音量（2026-08-27）：
+        case 9:                             /* 音量（2026-08-27）：
             +10 循环 0→10→…→100→0（与「每日新词量 +5 循环」同范式；
             连续微调走菜单「音量」页上/下键） */
             settings_volume_set(settings_volume() >= 100 ? 0

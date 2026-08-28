@@ -166,10 +166,13 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
  * 右栏 7 字/行阅读体验差，416x240 全宽 21 字/行提升 3 倍）；
  * 字号档位派生：TINY/SMALL 16px / MID+ 20px */
 #define UI_MEAN_LEVEL   (layout_profile_get()->kind <= LAYOUT_SMALL \
-                         ? (settings_font_mode() ? 1 : 0) \
-                         : (settings_font_mode() ? 2 : 1))  /* 正文字号级：
- * 档位默认 TINY/SMALL 16px / MID+ 20px；v1.2 T2.5 大字档（set_font=1）
- * 整体 +1 级（20/24px），行距与几何全部由本宏派生自适应 */
+                         ? (settings_font_mode() >= 1 ? 1 : 0) \
+                         : (settings_font_mode() >= 1 ? 2 : 1))  /* 正文字号级：
+ * 档位默认 TINY/SMALL 16px / MID+ 20px；大字/特大档（set_font>=1）
+ * 整体 +1 级（20/24px），行距与几何全部由本宏派生自适应。2026-08-27
+ * P1a 三档化：意图相对档位表达（set_rot 同哲学）——TINY 屏宽 122~
+ * 128px 下 24px 每行仅 3~4 字 / SMALL 横屏 176 高正文行数趋零，
+ * 特大档(2)在 TINY/SMALL 钳位至 20px（渲染等价大字，语义不漂移） */
 #define UI_WORD_BASE    (UI_STATUS_H + (UI_TINY ? 24 \
                          : (UI_MEAN_LEVEL ? 36 : 32)))  /* 单词基线（68/64/48） */
 #define UI_PHON_TOP     (UI_WORD_BASE + (UI_TINY ? 6 : 9))     /* 音标行 16px 点阵顶（77/73/54） */
@@ -179,7 +182,9 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
  * 错开，MID 末行底 196 < 标签顶 206）；416x240=4 行、400x300=6、
  * 264x176=2、122x250 竖屏=7、128x296 竖屏=9（TINY 预留收至 26） */
 #define UI_BODY_RESERVE (UI_TINY ? 26 : 30)
-#define UI_BODY_LINES   ((epd_gfx_height() - UI_BODY_RESERVE - UI_BODY_TOP) / UI_BODY_LH)
+#define UI_BODY_LINES_  ((epd_gfx_height() - UI_BODY_RESERVE - UI_BODY_TOP) / UI_BODY_LH)
+#define UI_BODY_LINES   (UI_BODY_LINES_ < 1 ? 1 : UI_BODY_LINES_)  /* 下限 1：
+ * 极端几何（窄屏高字号叠加）防御，正文区至少 1 行可翻页（P1a） */
 #define UI_BODY_MAX_W   (epd_gfx_width() - 2 * UI_MARGIN_X)   /* 全宽正文（392/232/106/112） */
 #define UI_FOOT_BASE    (epd_gfx_height() - 16)        /* 底部标签基线：底边距 16（224） */
 #define UI_FOOT_TOP     (UI_FOOT_BASE - 18)             /* 中文 tag 16px 点阵顶：基线上 16+2（206） */
@@ -217,6 +222,7 @@ static int  s_rv_off = 0;              /* 词表滚动窗口偏移 */
  * （C++ 静态变量单次定义：s_last_mode 自原渲染区上移至此） */
 static study_mode_t s_last_mode = MODE_COUNT; /* 无效值：首帧强制全刷 */
 static int ui_fit_font(const char *text, int start_size, int max_w);
+static int ui_word_start_size(void);   /* P1b：单词字号偏好→fit 起步档 */
 extern "C" void ui_render_word(study_mode_t mode, int index);
 extern "C" void ui_render_current(void);
 
@@ -549,7 +555,8 @@ static void ui_draw_quiz(void)
             epd_gfx_draw_text(UI_MARGIN_X,
                               UI_STATUS_H + (opt_top - UI_STATUS_H - 20) * 2 / 3,
                               w->text, EPD_GFX_BLACK,
-                              ui_fit_font(w->text, 4, UI_BODY_MAX_W));
+                              ui_fit_font(w->text, ui_word_start_size(),
+                                          UI_BODY_MAX_W));
         cjk_text_draw_wrap(UI_MARGIN_X, opt_top - 20, UI_BODY_MAX_W,
                            0, 18, 1, quiz_txt(q.opt_word[1], 1),
                            EPD_GFX_BLACK);
@@ -557,7 +564,8 @@ static void ui_draw_quiz(void)
         /* T1：单词大字（全宽自适应降字号）+ 音标（斜杠包裹惯例） */
         int stem_base = UI_STATUS_H + (opt_top - UI_STATUS_H) * 2 / 3;
         epd_gfx_draw_text(UI_MARGIN_X, stem_base, w->text, EPD_GFX_BLACK,
-                          ui_fit_font(w->text, 4, UI_BODY_MAX_W));
+                          ui_fit_font(w->text, ui_word_start_size(),
+                                      UI_BODY_MAX_W));
         if (w->phonetic[0] && opt_top - stem_base - 6 >= 18) {
             if (w->phonetic[0] == '/' || w->phonetic[0] == '[')
                 cjk_text_draw(UI_MARGIN_X, stem_base + 6, 0,
@@ -893,6 +901,15 @@ extern "C" bool deck_flow_switch(int idx)
  * SET 翻义保持页位；页数由排版几何实时派生（见 ui_mean_total_pages） */
 static int s_mean_page = 0;      /* 当前释义页（0 基） */
 static int s_mean_word = -1;     /* 页游标绑定的词库索引（错词本=映射后） */
+
+/* 单词字号偏好（set_word）→ fit 起步档：0=大(24pt)/1=中(18pt)/2=小(14pt)；
+ * 超宽自动降级机制不变（ui_fit_font 向下遍历）；默认 0 = 历史行为
+ * start 4，视觉零变化（2026-08-27 P1b）。前置声明见编排块前 */
+static int ui_word_start_size(void)
+{
+    int w = settings_word_size();
+    return w == 2 ? 2 : (w == 1 ? 3 : 4);
+}
 
 /* 字号自适应：从 start_size 逐级降到能放进 max_w 的字号 */
 static int ui_fit_font(const char *text, int start_size, int max_w)
@@ -1310,7 +1327,8 @@ static void ui_draw_content(const WordEntry *w)
         ui_draw_spelling_slots(w->text);   /* 听写遮蔽：藏词画空格线 */
     } else {
         epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, w->text, EPD_GFX_BLACK,
-                          ui_fit_font(w->text, 4, UI_BODY_MAX_W));
+                          ui_fit_font(w->text, ui_word_start_size(),
+                                      UI_BODY_MAX_W));
 
         if (w->phonetic[0]) {
             /* 词典惯例斜杠包裹：裸 IPA 补 / /，自带包裹符（/[）不双包 */
@@ -2283,6 +2301,9 @@ void setup()
     /* 音量恢复（2026-08-27）：NVS 镜像同步进 es8311 驱动状态（默认 75=
      * 0xBF 历史听感；此后 dac_start 起播回写，设置页/菜单即时调节） */
     es8311_set_volume(settings_volume());
+    /* 粗细恢复（2026-08-27 P2）：NVS 同步进 epd 表选择（默认关=常规表；
+     * 设置页切换即时 apply，见 settings_ui case 5） */
+    epd_gfx_set_bold(settings_bold_enabled());
     ui_sfx_init();                   /* T1.6 提示音样本探测（缺样本静默降级） */
     haptic_init();                   /* 触觉反馈（P2 震动）：先于按键扫描任务 */
     max17048_init();                 /* T2.6 电量计（共享 I2C，不在位静默降级） */
