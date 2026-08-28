@@ -12,6 +12,13 @@
  *   实现「重按打断重播」，无竞态窗口；
  * - audio_deinit() 唤醒并等待音频任务退出后再卸载 I2S，
  *   power_manager 深睡收口复用此语义（≤2s 阻塞，入睡路径可接受）。
+ *
+ * 起播时序（2026-08-28 防首播杂音）：dac_start 下放到 play_wav/play_mp3
+ * 内、采样率切换之后——曾由 play_by_ext 先行上电解静音，首帧解码出的
+ * 采样率触发 I2S 卸载重装（MCLK 失钟/跳频 + codec 分频重写），解 mute
+ * 状态下的时钟域瞬态经常开 NS4150B 直接可闻 =「第一次播放杂音、
+ * 同频重播正常」根因。配套 s_cur_rate：同频 set_rate 直接短路，
+ * 连重播的残余失钟窗口一并消除。
  */
 #include "audio_player.h"
 #include "debug_log.h"
@@ -63,6 +70,7 @@ typedef struct {
 
 static bool s_inited = false;
 static bool s_i2s_installed = false;   /* 跟踪 I2S 驱动是否已安装 */
+static uint32_t s_cur_rate = 0;        /* I2S 当前采样率（同频 set_rate 免重装） */
 static volatile bool s_playing = false;
 static volatile bool s_stop_req = false;
 static volatile bool s_suspended = false; /* 录音让渡期拒绝播放（M5.2/P2B） */
@@ -145,6 +153,7 @@ static int i2s_configure_std(uint32_t sample_rate, uint16_t bits, uint16_t chann
     };
     ret = i2s_set_pin(I2S_PORT_NUM, &pin_cfg);
     if (ret != ESP_OK) return -1;
+    s_cur_rate = sample_rate;          /* 重装即新率（同频短路判据） */
 
     /* MCLK 显式 GPIO matrix 路由（双保险）：legacy 驱动对 mck_io_num=0
      * 的路由行为无源码可证，直接绑定 I2S0 MCLK 输出信号（幂等） */
@@ -205,8 +214,10 @@ static int play_wav(const char *path, uint32_t gen)
         return -1;
     }
 
-    /* 按文件采样率重配 I2S */
+    /* 按文件采样率重配 I2S，时钟切换完成后才上电解静音
+     * （2026-08-28：切换时 codec 处于 mute 态，瞬态不可闻） */
     audio_set_sample_rate(hdr.sample_rate);
+    es8311_dac_start();
 
     uint8_t buf[I2S_READ_LEN];
     size_t rbytes;
@@ -252,6 +263,7 @@ static int play_mp3(const char *path, uint32_t gen)
     int buf_fill = (int)read_bytes;          /* helix 约定 bytesLeft 为 int */
     uint8_t *read_ptr = in_buf;
     int prev_sample_rate = 0;
+    bool dac_on = false;               /* 首帧时钟切换后才上电解静音 */
 
     while (play_keep_going(gen)) {
         /* 同步字搜索（ESP8266Audio 变体：返回偏移量，不回写指针） */
@@ -278,8 +290,15 @@ static int play_mp3(const char *path, uint32_t gen)
 
         MP3GetLastFrameInfo(decoder, &info);
         if ((int)info.samprate != prev_sample_rate) {
+            /* 采样率切换先于首次 dac_start：切换时 codec 保持 mute
+             * （dac_stop 态），失钟/跳频瞬态不可闻（2026-08-28）。
+             * 中途变率（拼接文件罕见）保持直接切，杂音容忍 */
             audio_set_sample_rate(info.samprate);
             prev_sample_rate = (int)info.samprate;
+            if (!dac_on) {
+                es8311_dac_start();   /* 时钟稳定后再上电解静音 */
+                dac_on = true;
+            }
         }
 
         size_t pcm_bytes = (size_t)info.outputSamps * sizeof(int16_t);
@@ -308,10 +327,10 @@ static bool ends_with(const char *s, const char *suf)
     return ls >= lf && strcasecmp(s + ls - lf, suf) == 0;
 }
 
-/* 按扩展名分发（返回播放结果码） */
+/* 按扩展名分发（返回播放结果码）。dac_start 已下放到 play_wav/
+ * play_mp3 的采样率切换之后（2026-08-28 防首播杂音，见文件头注释） */
 static int play_by_ext(const char *path, uint32_t gen)
 {
-    es8311_dac_start();     /* 起播前上电解静音（idle 收口后恢复） */
     if (ends_with(path, ".wav")) return play_wav(path, gen);
     if (ends_with(path, ".mp3")) return play_mp3(path, gen);
     LOG_E("unsupported format: %s", path);
@@ -328,6 +347,11 @@ static void audio_task(void *arg)
         if (s_shutdown || msg.path[0] == '\0') break;  /* deinit 唤醒退出 */
 
         s_stop_req = false;   /* 新曲目清除旧打断请求 */
+        /* 播放时再 probe 自愈（补齐 audio_init 注释承诺）：开机时
+         * es8311_init 失败（codec 响应滞后于 MCLK 重建，2026-08-28 实测）
+         * 后，首次播放前重试——距开机已数百 ms 以上，成功率高于 boot 期 */
+        if (!es8311_present())
+            es8311_init();
         s_playing = true;
         play_by_ext(msg.path, msg.gen);
         s_playing = false;
@@ -417,6 +441,7 @@ void audio_deinit(void)
         i2s_stop(I2S_PORT_NUM);
         i2s_driver_uninstall(I2S_PORT_NUM);
         s_i2s_installed = false;
+        s_cur_rate = 0;                /* 驱动已卸，同频短路失效 */
     }
     /* codec 掉电（suspend 序列，保留 I2C 驱动） */
     es8311_dac_stop();
@@ -429,6 +454,9 @@ void audio_deinit(void)
 int audio_set_sample_rate(uint32_t sample_rate)
 {
     if (!s_inited && !s_suspended) return -1;
+    /* 同频免重装（2026-08-28）：卸载/重装 = MCLK 失钟窗口 + 内存折腾，
+     * 同频跳过连残余瞬态一并消除（重播同曲场景零开销） */
+    if (sample_rate == s_cur_rate) return 0;
     /* channels 必须 2（stereo L=R，与 init/resume 一致）：曾传 1 重装成
      * ONLY_LEFT 单槽帧，i2s_write_mono 仍按 stereo 复制 L/R 交错写入，
      * 帧解释错位 → 真机 MP3 播放杂音+慢放（2026-08-27 SD 卡读音实测；
@@ -531,7 +559,9 @@ int audio_play_test_tone(void)
 
     uint32_t gen = ++s_req_gen;
     s_stop_req = false;
-    es8311_set_sample_rate(h->sample_rate); /* 与 WAV 采样率同步 */
+    /* 44.1k 与默认同频时短路零开销；前曲残留异频则重装 I2S
+     * （曾只同步 codec 分频不重装 I2S，异频残留下自检会变调） */
+    audio_set_sample_rate(h->sample_rate);
     es8311_dac_start();
 
     /* 单次播报（bring-up 已验收，循环版 2026-08-27 收尾移除） */

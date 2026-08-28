@@ -75,7 +75,10 @@ extern "C" {
 #define I2S_BCK_PIN         (4)     /**< I2S BCLK/SCLK (位时钟) → 模块 SCLK */
 #define I2S_WS_PIN          (5)     /**< I2S LRCK  (字选择/左右声道) → 模块 LRCK */
 #define I2S_DATA_OUT_PIN    (6)     /**< I2S DOUT (数据输出) → 模块 DIN（codec DAC 侧） */
-#define I2S_SAMPLE_RATE     (44100) /**< 默认采样率 */
+/* 2026-08-28 统一 48k 家族：Piper 单词 MP3 实测 48000，提示音样本同步
+ * 48k（gen_ui_sounds.py）——开机/提示音/单词全链同频，audio_player
+ * s_cur_rate 同频短路全程命中，会话内零 I2S 重装零 codec 分频重写 */
+#define I2S_SAMPLE_RATE     (48000) /**< 默认采样率 */
 #define I2S_SAMPLE_BITS     (16)    /**< 每采样位数 */
 
 /* ============================================================

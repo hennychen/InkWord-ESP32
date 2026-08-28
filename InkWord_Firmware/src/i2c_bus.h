@@ -27,6 +27,15 @@ extern "C" {
  */
 int i2c_bus_init(void);
 
+/**
+ * @brief 总线死锁恢复（2026-08-28）：从机事务中途失宿主（MCU 复位/
+ *        毛刺）会卡住持续拉低 SDA，整总线 NACK。卸驱动接管引脚打
+ *        9×SCL 脉冲喂完挂起事务 + STOP 后重装驱动。
+ *        SDA 空闲时序列无害（空时钟 + 重复 STOP）。
+ * @return 0 恢复完成（驱动已重装）；-1 未装载/重装失败。
+ */
+int i2c_bus_recover(void);
+
 /** 写 8bit 寄存器（addr 为 7bit 地址）。0 成功 / -1 失败。 */
 int i2c_bus_write_reg(uint8_t addr, uint8_t reg, uint8_t val);
 

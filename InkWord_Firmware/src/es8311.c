@@ -20,6 +20,8 @@
 #include "driver/i2c.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"   /* probe 退避重试 vTaskDelay（2026-08-28） */
+#include "freertos/task.h"
 
 #include <string.h>
 
@@ -183,8 +185,24 @@ int es8311_init(void)
         return -1;
 
     /* 2. 探测 codec（失败保留总线装载——共享总线下设备在位性独立，
-     * 心跳电量读数仍可用） */
-    if (es8311_probe() < 0) {
+     * 心跳电量读数仍可用）。
+     * 三级递进（2026-08-28 实测）：退避重试（codec 响应滞后场景）
+     * → 总线恢复（从机事务中途失宿主拉死 SDA 的死锁场景，
+     * 9×SCL+STOP）→ 再退避。单次 probe + 纯延时已被实测否决。 */
+    int rc = es8311_probe();
+    if (rc < 0) {
+        vTaskDelay(pdMS_TO_TICKS(300));
+        rc = es8311_probe();
+    }
+    if (rc < 0) {
+        i2c_bus_recover();
+        rc = es8311_probe();
+    }
+    if (rc < 0) {
+        vTaskDelay(pdMS_TO_TICKS(300));
+        rc = es8311_probe();
+    }
+    if (rc < 0) {
         LOG_E("codec not found on I2C (check module wiring)");
         return -2;
     }
@@ -235,9 +253,12 @@ int es8311_init(void)
      * 分频，播放变调/无声）。时钟寄存器 REG02-08 与后续静默态
      * REG31/32/17/0E/12/14/0D/15/37/45 无交集，顺序安全 */
     s_inited = true;
-    if (es8311_set_sample_rate(44100) != 0) {
+    /* 默认系数与 I2S 装载同源（2026-08-28）：曾硬编码 44100，I2S 侧统一
+     * 48k 后即成双源失配隐患（I2S 48k / codec 44.1k 系数， dac_start
+     * 先于 set_rate 的窗口变调） */
+    if (es8311_set_sample_rate(I2S_SAMPLE_RATE) != 0) {
         s_inited = false;
-        LOG_W("default 44.1k coeff not found (non-fatal)");
+        LOG_W("default %dHz coeff not found (non-fatal)", I2S_SAMPLE_RATE);
     }
     
     /* 5. 默认静音态（DAC/ADC 均不上电） */
@@ -274,6 +295,11 @@ void es8311_deinit(void)
     i2c_write(REG_ADC15, 0x00);
     i2c_write(REG_DAC37, 0x08);
     i2c_write(REG_GP45, 0x01);
+    /* 关时钟使能（2026-08-28）：时钟使能态下 MCLK 突停（MCU 复位，
+     * 深睡唤醒/串口毛刺同款场景）会使内部时钟域挂死——之后 I2C
+     * 持续 NACK 且总线电平健康，仅断电可解。失 MCLK 前先掉时钟
+     * 使能，让芯片以静止态渡过无钟窗口。init/dac_start 重写 0x3F */
+    i2c_write(REG_CLK_MGR01, 0x00);
     s_inited = false;
     LOG_I("codec deinit (suspend)");
 }

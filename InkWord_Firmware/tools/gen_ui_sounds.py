@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """InkWord UI 提示音生成器 (v1.1 T1.6，2026-08-24)
 
-生成 4 个提示音样本（16kHz / mono / PCM16 / <0.3s）：
+生成 4 个提示音样本（48kHz / mono / PCM16 / <0.3s）：
   key.wav  按键按下确认 -- 短「滴」（1.8kHz 正弦指数衰减，70ms）
   rate.wav 自评提交   -- 「滴答」双音下行（1.0k + 0.8k，170ms）
   mode.wav 模式切换   -- 「滴--」短低 + 长高（0.6k + 1.2k，235ms）
@@ -20,7 +20,10 @@ import sys
 import wave
 from pathlib import Path
 
-SR = 16000                 # 采样率（与 audio_player WAV 直播路径一致）
+# 采样率（2026-08-28 统一 48k 家族）：与单词 MP3（Piper 48000）/
+# 固件 I2S 默认（gpio_config.h I2S_SAMPLE_RATE）同频——会话内
+# audio_player s_cur_rate 同频短路命中，零 I2S 重装零 codec 分频重写
+SR = 48000
 AMP = 0.55                 # 满刻度幅度（避免大音量失真）
 EDGE_MS = 3                # 淡入淡出边沿
 
