@@ -92,11 +92,11 @@ public class TtsServiceTests : IDisposable
     public async Task SaveClip_WritesFile_AndRejectsUnsafeName()
     {
         _engine.NextResult = new byte[] { 1, 2, 3 };
-        var saved = await _svc.SaveClipAsync("chat_123.mp3", "Good job!", CancellationToken.None);
+        var saved = await _svc.SaveClipAsync("chat_123.mp3", "Good job!", "en", CancellationToken.None);
         Assert.Equal("chat_123.mp3", saved);
         Assert.True(File.Exists(Path.Combine(_dir, "chat_123.mp3")));
 
-        Assert.Null(await _svc.SaveClipAsync("../evil.mp3", "x", CancellationToken.None));
+        Assert.Null(await _svc.SaveClipAsync("../evil.mp3", "x", "en", CancellationToken.None));
     }
 
     // ---- chat_ 回收 ----
@@ -154,7 +154,7 @@ public class TtsServiceTests : IDisposable
         public byte[]? NextResult { get; set; } = new byte[] { 0x01 };
         public int Calls { get; private set; }
 
-        public Task<byte[]?> SynthesizeMp3Async(string text, CancellationToken ct)
+        public Task<byte[]?> SynthesizeMp3Async(string text, string lang, CancellationToken ct)
         {
             Calls++;
             return Task.FromResult(NextResult);

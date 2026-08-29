@@ -12,8 +12,9 @@ namespace InkWord.Services;
 /// </summary>
 public interface ISpeechSynthesizer
 {
-    /// <summary>合成文本为 MP3 字节；失败返回 null（调用方决定跳过/重试）</summary>
-    Task<byte[]?> SynthesizeMp3Async(string text, CancellationToken ct);
+    /// <summary>合成文本为 MP3 字节（lang="en"|"zh" 选音色，A2 中文路由）；
+    /// 失败返回 null（调用方决定跳过/重试）</summary>
+    Task<byte[]?> SynthesizeMp3Async(string text, string lang, CancellationToken ct);
 }
 
 /// <summary>
@@ -24,6 +25,7 @@ public partial class PiperSynthesizer : ISpeechSynthesizer
 {
     private readonly string _piperPath;
     private readonly string _voice;
+    private readonly string _voiceZh;
     private readonly string _ffmpegPath;
     private readonly ILogger<PiperSynthesizer> _logger;
 
@@ -31,19 +33,21 @@ public partial class PiperSynthesizer : ISpeechSynthesizer
     {
         _piperPath = cfg["Tts:PiperPath"] ?? "piper";
         _voice = cfg["Tts:PiperVoice"] ?? "en_US-lessac-medium.onnx";
+        _voiceZh = cfg["Tts:PiperVoiceZh"] ?? "zh_CN-huayan-medium.onnx";
         _ffmpegPath = cfg["Tts:FfmpegPath"] ?? "ffmpeg";
         _logger = logger;
     }
 
-    public async Task<byte[]?> SynthesizeMp3Async(string text, CancellationToken ct)
+    public async Task<byte[]?> SynthesizeMp3Async(string text, string lang, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
+        var voice = lang == "zh" ? _voiceZh : _voice;   // A2 中文音色路由
 
         var wavPath = Path.Combine(Path.GetTempPath(), $"inkword-tts-{Guid.NewGuid():N}.wav");
         try
         {
             // 1) piper：stdin 喂文本，输出 WAV 文件
-            var piper = ProcessStartInfoFor($"{Quote(_piperPath)} --voice {Quote(_voice)} --output_file {Quote(wavPath)}");
+            var piper = ProcessStartInfoFor($"{Quote(_piperPath)} --voice {Quote(voice)} --output_file {Quote(wavPath)}");
             using (var proc = Process.Start(piper)!)
             {
                 await proc.StandardInput.WriteLineAsync(text.AsMemory(), ct);
@@ -154,7 +158,7 @@ public partial class TtsService
     public async Task<bool> EnsureWordAudioAsync(Word word, CancellationToken ct)
     {
         if (HasAudio(word.Id)) return true;
-        var mp3 = await _engine.SynthesizeMp3Async(Sanitize(word.Text), ct);
+        var mp3 = await _engine.SynthesizeMp3Async(Sanitize(word.Text), "en", ct);
         if (mp3 is null || mp3.Length == 0)
         {
             _logger.LogDebug("词条合成失败：{Word}", word.Text);
@@ -164,15 +168,16 @@ public partial class TtsService
         return true;
     }
 
-    /// <summary>任意短文本合成并按指定文件名落盘（对话回复 chat_*.mp3）</summary>
-    public async Task<string?> SaveClipAsync(string fileName, string text, CancellationToken ct)
+    /// <summary>任意短文本合成并按指定文件名落盘（对话回复 chat_*.mp3；
+    /// lang 透传引擎选音色，A2 中文路由）</summary>
+    public async Task<string?> SaveClipAsync(string fileName, string text, string lang, CancellationToken ct)
     {
         if (!SafeFileNameRegex().IsMatch(fileName))
         {
             _logger.LogWarning("非法音频文件名被拒：{File}", fileName);
             return null;
         }
-        var mp3 = await _engine.SynthesizeMp3Async(Sanitize(text), ct);
+        var mp3 = await _engine.SynthesizeMp3Async(Sanitize(text), lang, ct);
         if (mp3 is null || mp3.Length == 0) return null;
         await WriteAtomicAsync(fileName, mp3, ct);
         return fileName;

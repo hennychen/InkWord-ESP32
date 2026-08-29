@@ -1,10 +1,13 @@
 using System.Security.Cryptography;
+using System.Text.Json.Nodes;
 using InkWord.API.DTOs;
 using InkWord.API.Filters;
 using InkWord.Core.Common;
 using InkWord.Core.Entities;
 using InkWord.Core.Repositories;
+using InkWord.Infrastructure.Cache;
 using InkWord.Infrastructure.DbContext;
+using InkWord.Jobs;
 using InkWord.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -29,11 +32,12 @@ public class DeviceController : ControllerBase
     private readonly ChatService _chatSvc;
     private readonly VoiceSearchService _voice;
     private readonly AppDbContext _db; // T4.1：v2 归属映射（deck/subject 身份）
+    private readonly IRedisCache _cache; // A3：chat-review 周报 Redis 热路径
 
     public DeviceController(IDeviceRepository deviceRepo, IWordRepository wordRepo,
         ILearningRecordRepository recordRepo, IOtaPackageRepository otaRepo,
         SrsService srs, PronunciationService pron, TtsService tts, ChatService chatSvc,
-        VoiceSearchService voice, AppDbContext db)
+        VoiceSearchService voice, AppDbContext db, IRedisCache cache)
     {
         _deviceRepo = deviceRepo; _wordRepo = wordRepo;
         _recordRepo = recordRepo; _otaRepo = otaRepo; _srs = srs; _pron = pron;
@@ -41,6 +45,7 @@ public class DeviceController : ControllerBase
         _chatSvc = chatSvc;
         _voice = voice;
         _db = db;
+        _cache = cache;
     }
 
     /// <summary>B-08 首次注册：生成 ApiKey</summary>
@@ -252,14 +257,20 @@ public class DeviceController : ControllerBase
     }
 
     /// <summary>P2A 语音对话：multipart WAV（16kHz/16bit/mono ≤10s）→ ASR+LLM+TTS 单端点闭环。</summary>
-    /// <remarks>响应 { transcript, reply, engine, audioUrl }；audioUrl=null 表示
-    /// TTS 失败（文本仍可用）。错误：非 WAV/无话音 400、ASR 未配置 503、
-    /// LLM 故障 502、超限 413。会话上下文 Redis chat:{deviceId} 最近 12 轮
-    /// TTL 30 分钟，Redis 不可用降级单轮；回复 MP3 落 data/audio/chat_*.mp3
-    /// （ChatAudioCleanupJob 每小时回收超 1 小时文件）。</remarks>
+    /// <remarks>A1 模式扩展（2026-08-28）：?mode={free|scenario|translate}&amp;scenarioId={code}
+    /// （老固件不带 query = free，行为与现状一致）；scenario 模式响应
+    /// data 额外携带 warmup（首轮中文预热，其余轮 null 可缺省）。
+    /// 响应 { transcript, reply, engine, audioUrl, mode?, warmup? }；
+    /// audioUrl=null 表示 TTS 失败（文本仍可用；translate 模式 LLM
+    /// 未按两行格式时同样降级纯屏显）。错误：非 WAV/无话音/非法
+    /// mode/未知场景 400、ASR 未配置 503、LLM 故障 502、超限 413。
+    /// 会话上下文 Redis 按模式隔离（free=chat:{deviceId} 现状不变，
+    /// scenario/translate 追加后缀），TTL 30 分钟；回复 MP3 落
+    /// data/audio/chat_*.mp3（ChatAudioCleanupJob 每小时回收超 1 小时文件）。</remarks>
     [HttpPost("chat")]
     [ServiceFilter(typeof(DeviceAuthFilter))]
-    public async Task<IActionResult> Chat(IFormFile file, CancellationToken ct)
+    public async Task<IActionResult> Chat([FromQuery] string? mode,
+        [FromQuery] string? scenarioId, IFormFile file, CancellationToken ct)
     {
         var device = (Device)HttpContext.Items["Device"]!;
         if (file == null || file.Length == 0)
@@ -273,7 +284,7 @@ public class DeviceController : ControllerBase
         ChatReply reply;
         try
         {
-            reply = await _chatSvc.ConverseAsync(device.Id, ms.ToArray(), ct);
+            reply = await _chatSvc.ConverseAsync(device.Id, ms.ToArray(), mode, scenarioId, ct);
         }
         catch (ChatException ex)
         {
@@ -312,6 +323,49 @@ public async Task<IActionResult> VoiceSearch(
     }
 
     // ---- helpers ----
+    /// <summary>对话周报（A3）：GET /api/device/chat-review。</summary>
+    /// <remarks>设备快捷菜单「对话周报」项拉取：Redis 热路径（周报 Job
+    /// 周日 05:00 写入，TTL 7 天）→ ChatReviews 表冷路径（倒序最新）→
+    /// 404（无对话记录或 Job 未跑）。review 为 LLM 结构化 JSON
+    /// （summary/topics/highlights/suggestion/reviewWords 五段），设备
+    /// cJSON 解析屏显；turnCount 供屏头统计。</remarks>
+    [HttpGet("chat-review")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public async Task<IActionResult> ChatReview(CancellationToken ct)
+    {
+        var device = (Device)HttpContext.Items["Device"]!;
+
+        ChatReviewCache? cached = null;
+        try
+        {
+            cached = await _cache.GetAsync<ChatReviewCache>(
+                $"chatreview:{device.Id:N}", ct);
+        }
+        catch (Exception) { /* Redis 挂走冷路径，chat 降级同哲学 */ }
+        if (cached is not null)
+            return Ok(ApiResponse<object>.Ok(
+                ToPayload(cached.WeekStart, cached.TurnCount, cached.PayloadJson)));
+
+        var latest = await _db.ChatReviews.AsNoTracking()
+            .Where(r => r.DeviceId == device.Id)
+            .OrderByDescending(r => r.WeekStart)
+            .FirstOrDefaultAsync(ct);
+        if (latest is null)
+            return NotFound(ApiResponse.Fail(404, "no review yet"));
+
+        return Ok(ApiResponse<object>.Ok(
+            ToPayload(latest.WeekStart, latest.TurnCount, latest.PayloadJson)));
+    }
+
+    /// <summary>周报下发载荷：review 解为 JSON 对象嵌入（设备免二次转义），
+    /// 非法 JSON 兜底原文字符串</summary>
+    private static object ToPayload(DateTime weekStart, int turnCount, string payloadJson) => new
+    {
+        weekStart,
+        turnCount,
+        review = JsonNode.Parse(payloadJson) ?? (object)payloadJson,
+    };
+
     /// <summary>ApiKey 生成（public：MyDeviceController 绑定换发同源 + 测试直测，HashPassword 先例）</summary>
     public static string GenerateApiKey()
     {

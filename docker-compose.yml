@@ -76,14 +76,25 @@ services:
       # 首次准备：宿主机 ./data/piper/ 放 piper 二进制 + voices/en_US-lessac-medium.onnx
       Tts__PiperPath: "/data/piper/piper"
       Tts__PiperVoice: "/data/piper/voices/en_US-lessac-medium.onnx"
+      # A2 中文音色（free 模式中文回复播报）：宿主机 ./data/piper/voices/
+      # 放 zh_CN-huayan-medium.onnx（~63MB，github.com/rhasspy/piper
+      # releases zh_CN-huayan-medium）
+      Tts__PiperVoiceZh: "/data/piper/voices/zh_CN-huayan-medium.onnx"
       Tts__AudioDir: "/data/audio"
-      # P2A ASR（Asr__* → Asr:*）：sherpa-onnx zipformer-en 模型 volume 挂载
+      # P2A ASR（Asr__* → Asr:*）：sherpa-onnx zipformer 模型 volume 挂载
       # （native 库随 NuGet 入镜像，模型不入）；首次准备：宿主机
       # ./data/sherpa/zipformer-en/ 放 encoder/decoder/joiner-epoch-99-avg-1.onnx
       # + tokens.txt（github.com/k2-fsa/sherpa-onnx releases asr-models/
-      # sherpa-onnx-zipformer-en-2023-06-26），启用设 ASR_PROVIDER=sherpa
+      # sherpa-onnx-zipformer-en-2023-06-26），启用设 ASR_PROVIDER=sherpa。
+      # A2 双语升级（代码零改，2026-08-29 已部署达标）：./data/sherpa/
+      # zipformer-zh-en/ 放同构 transducer 三件套+tokens
+      # （github.com/k2-fsa/sherpa-onnx releases asr-models/
+      # sherpa-onnx-zipformer-zh-en-2023-11-22，312MB 包；实际加载
+      # int8 encoder + fp32 decoder + int8 joiner）后设 ASR_MODEL_DIR
+      # 切换；回退指回 en 目录即回滚（20 句基准 CER 1.3% 记录
+      # AI_CHAT_MODE.md §7.3；旧记名 bilingual-zh-en 为误，GitHub 404）
       Asr__Provider: "${ASR_PROVIDER:-none}"
-      Asr__ModelDir: "/data/sherpa/zipformer-en"
+      Asr__ModelDir: "${ASR_MODEL_DIR:-/data/sherpa/zipformer-en}"
     ports:
       - "8080:8080"
     volumes:

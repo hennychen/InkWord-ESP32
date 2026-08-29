@@ -104,6 +104,13 @@ builder.Services.AddTransient<CleanupJob>();
 builder.Services.AddTransient<AiContentJob>();
 builder.Services.AddTransient<TtsJob>();
 builder.Services.AddTransient<ChatAudioCleanupJob>();
+// A3 对话复盘：落库执行体/清理/周报 Job；Sink 与词库快照 Singleton
+// （无状态/自管缓存，经 IServiceScopeFactory 取短生命周期 db）
+builder.Services.AddTransient<ChatTurnLogger>();
+builder.Services.AddTransient<ChatTurnCleanupJob>();
+builder.Services.AddTransient<ChatReviewJob>();
+builder.Services.AddSingleton<IChatTurnSink, HangfireChatTurnSink>();
+builder.Services.AddSingleton<IWordListProvider, CachedWordListProvider>();
 
 // ---- 设备认证过滤器 ----
 builder.Services.AddScoped<DeviceAuthFilter>();
@@ -276,6 +283,32 @@ if (app.Environment.IsDevelopment())
         @"CREATE INDEX IF NOT EXISTS ""IX_Decks_OwnerId"" ON ""Decks"" (""OwnerId"")",
     };
     foreach (var sql in t53Sql)
+        db.Database.ExecuteSqlRaw(sql);
+
+    // A3 对话复盘（2026-08-29）：ChatTurns 轮次日志（append-only，
+    // 90 天由 ChatTurnCleanupJob 回收）+ ChatReviews 周报留痕（同设备
+    // 同周唯一，倒序取最新即本周）。幂等，新库 EnsureCreated 已含空转。
+    var a3Sql = new[]
+    {
+        @"CREATE TABLE IF NOT EXISTS ""ChatTurns"" (
+            ""Id"" uuid NOT NULL PRIMARY KEY,
+            ""DeviceId"" uuid NOT NULL,
+            ""Mode"" varchar(16) NOT NULL,
+            ""ScenarioId"" varchar(16),
+            ""Transcript"" varchar(512) NOT NULL,
+            ""Reply"" varchar(1024) NOT NULL,
+            ""Ts"" timestamp with time zone NOT NULL)",
+        @"CREATE INDEX IF NOT EXISTS ""IX_ChatTurns_DeviceId_Ts"" ON ""ChatTurns"" (""DeviceId"", ""Ts"")",
+        @"CREATE TABLE IF NOT EXISTS ""ChatReviews"" (
+            ""Id"" uuid NOT NULL PRIMARY KEY,
+            ""DeviceId"" uuid NOT NULL,
+            ""WeekStart"" timestamp with time zone NOT NULL,
+            ""PayloadJson"" text NOT NULL,
+            ""TurnCount"" integer NOT NULL,
+            ""CreatedAt"" timestamp with time zone NOT NULL)",
+        @"CREATE UNIQUE INDEX IF NOT EXISTS ""IX_ChatReviews_DeviceId_WeekStart"" ON ""ChatReviews"" (""DeviceId"", ""WeekStart"")",
+    };
+    foreach (var sql in a3Sql)
         db.Database.ExecuteSqlRaw(sql);
 
     // v2.0 T6.2 完整账户（ACCOUNT_MODEL_DECISION §五）：Device.UserId 兑现

@@ -18,6 +18,8 @@ public class AppDbContext : Microsoft.EntityFrameworkCore.DbContext
     public DbSet<Word> Words => Set<Word>();
     public DbSet<LearningRecord> LearningRecords => Set<LearningRecord>();
     public DbSet<OtaPackage> OtaPackages => Set<OtaPackage>();
+    public DbSet<ChatTurn> ChatTurns => Set<ChatTurn>();       // A3 对话轮日志
+    public DbSet<ChatReview> ChatReviews => Set<ChatReview>(); // A3 对话周报
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -108,6 +110,24 @@ public class AppDbContext : Microsoft.EntityFrameworkCore.DbContext
         {
             e.HasIndex(o => new { o.TargetBoard, o.Version });
             e.Property(o => o.Version).HasMaxLength(32).IsRequired();
+        });
+
+        // ChatTurn（A3）：append-only 时序日志，不继承 BaseEntity（无审计列
+        // 与软删除过滤），纯 Id 关联不建 FK；DeviceId+Ts 服务周报范围聚合
+        modelBuilder.Entity<ChatTurn>(e =>
+        {
+            e.HasIndex(t => new { t.DeviceId, t.Ts });
+            e.Property(t => t.Mode).HasMaxLength(16).IsRequired();
+            e.Property(t => t.ScenarioId).HasMaxLength(16);
+            e.Property(t => t.Transcript).HasMaxLength(512).IsRequired();
+            e.Property(t => t.Reply).HasMaxLength(1024).IsRequired();
+        });
+
+        // ChatReview（A3）：同设备同周唯一，倒序取最新即本周报
+        modelBuilder.Entity<ChatReview>(e =>
+        {
+            e.HasIndex(r => new { r.DeviceId, r.WeekStart }).IsUnique();
+            e.Property(r => r.PayloadJson).IsRequired();
         });
 
         // 全局查询过滤：软删除（逐实体显式设置，避免非泛型委托推断问题）

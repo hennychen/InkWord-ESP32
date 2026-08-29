@@ -56,3 +56,8 @@ tools/default_vocab/out/audio_raw/
 tools/default_vocab/out/audio/
 # TF 卡旧词库快照（临时回滚档）
 tools/default_vocab/out/tf_backup_*/
+
+# 后端运行数据（不入库）：sherpa-onnx ASR 模型（689M 第三方大文件，
+# asr-models releases 下载部署，见 docs/AI_CHAT_MODE.md §7.3）与
+# TTS 音频运行产物
+InkWord_Backend/src/InkWord.API/data/

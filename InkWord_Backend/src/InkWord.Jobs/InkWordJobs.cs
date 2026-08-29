@@ -51,6 +51,19 @@ public static class JobRegistrar
             j => j.RunAsync(),
             Cron.Hourly(),
             TimeZoneInfo.Local);
+
+        // A3（2026-08-29）：每天 04:00 清理 90 天前对话轮（错开 TTS 03:00）；
+        // 每周日 05:00 生成设备对话周报（错开冷词归档 00:00，LLM 低谷窗口）。
+        RecurringJob.AddOrUpdate<ChatTurnCleanupJob>(
+            "daily-chat-turn-cleanup",
+            j => j.RunAsync(),
+            Cron.Daily(4),
+            TimeZoneInfo.Local);
+        RecurringJob.AddOrUpdate<ChatReviewJob>(
+            "weekly-chat-review",
+            j => j.RunAsync(CancellationToken.None),
+            Cron.Weekly(DayOfWeek.Sunday, 5),
+            TimeZoneInfo.Local);
     }
 }
 
