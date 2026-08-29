@@ -18,6 +18,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "chat_mode.h"   /* A1：chat_request_t（enter_chat 模式透传） */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -120,12 +122,15 @@ void study_mode_exit_collection(void);
 /* ---- AI 对话临时视图（P2B，chat_mode 五态状态机） ---- */
 
 /**
- * @brief 进入 AI 对话（快捷菜单「AI 对话」项；临时视图，不持久化）。
+ * @brief 进入 AI 对话（快捷菜单「AI 对话」二级页确认项；临时视图，
+ *        不持久化）。A1 模式参数化：req 携带 mode（free/scenario/
+ *        translate）+ scenarioId + 屏显标题，透传 chat_mode_enter。
  *        前置：Wi-Fi 已连接 + 设备 Key 已配 + SD 在位（回复 MP3 落盘），
  *        任一不满足返回 false 由调用方给边界反馈。
+ * @param req 对话请求（mode/scenario/title；NULL=free 缺省）。
  * @return true 成功；false 前置不满足（未进入，无副作用）。
  */
-bool study_mode_enter_chat(void);
+bool study_mode_enter_chat(const chat_request_t *req);
 
 /**
  * @brief 退出 AI 对话回闪卡模式（模式内长按中 / RST）：停对话任务、

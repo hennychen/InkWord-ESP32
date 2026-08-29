@@ -1,16 +1,18 @@
 /**
  * @file chat_mode.h
- * @brief AI 语音对话模式状态机 (P2B，2026-08-24)
+ * @brief AI 语音对话模式状态机 (P2B，2026-08-24；A1 模式参数化 2026-08-28)
  *
  * AI 后端化红线：设备只录音上传 / 下载播放，ASR+LLM+TTS 全在后端
- * （POST /api/device/chat 单端点闭环，协议冻结见 docs/AI_CHAT_MODE.md）。
+ * （POST /api/device/chat 单端点闭环，协议冻结见 docs/AI_CHAT_MODE.md
+ * §7 模式扩展：?mode={free|scenario|translate}&scenarioId={code}）。
  * 五态循环 idle → recording(≤10s，VAD 断或中键说完即发) → uploading
  * → thinking(下载回复 MP3) → playing → idle；语音优先、屏幕克制：
  * 环路内仅状态区局刷（ui_render_chat），三色面板（无局刷能力）
  * 零渲染纯语音+震动。
  *
- * 按键：中=开始/发送/打断重说，长按中或 RST=请求退出（由 main 编排
- * 层执行 study_mode_exit_chat）；haptic：录音起一短震、回复到两短震、
+ * 按键：中=开始/发送/打断重说，SET=收藏本轮生词（A3：idle 态触发，
+ * 任务上下文逐条推 /sync/collect），长按中或 RST=请求退出（由 main 编
+ * 排层执行 study_mode_exit_chat）；haptic：录音起一短震、回复到两短震、
  * 网络失败一长震（回 idle 不退模式）。电源零改动：每次按键
  * power_note_activity 自然续期。
  */
@@ -38,12 +40,36 @@ typedef enum {
 /** 末句回复缓冲上限（后端 EnforceLimits ≤260 字符 + 余量） */
 #define CHAT_REPLY_MAX (256)
 
+/** 场景预热缓冲上限（后端 WarmupIntro ≤180 UTF-8 字节 + 余量） */
+#define CHAT_WARMUP_MAX (192)
+
+/** A3 生词命中：后端 wordHits 上限（ChatService.MaxWordHits 对齐） */
+#define CHAT_HIT_MAX       (5)
+/** 词条文本上限（英文词条余量） */
+#define CHAT_HIT_TEXT_MAX  (24)
+/** 云端词条 Guid（36 字符 + NUL） */
+#define CHAT_HIT_CLOUD_MAX (40)
+
+/**
+ * @brief 对话模式请求（A1）：后端 query 参数 + 屏显标题。
+ *
+ * mode 空串 = free（URL 不携 query，与老固件请求逐字节一致）；
+ * scenario 仅 mode="scenario" 时非空；title 为屏显标签（如
+ * 「餐厅点餐」/「英→中翻译」，free 缺省 "AI Chat"）。
+ */
+typedef struct {
+    char mode[12];      /* "" | "free" | "scenario" | "translate" */
+    char scenario[16];  /* 场景 Id 短码（food/directions/...） */
+    char title[24];     /* ui_render_chat 标题（UTF-8 CJK ≤7 字 + NUL） */
+} chat_request_t;
+
 /**
  * @brief 进入对话模式（快捷菜单项触发；study_mode_enter_chat 预检
- *        通过后调用）：复位状态并启动常驻对话任务（6KB 栈，模式
- *        生命周期内轮询触发位驱动轮次，不阻塞按键回调）。
+ *        通过后调用）：复位状态、保存模式请求并启动常驻对话任务
+ *        （6KB 栈，模式生命周期内轮询触发位驱动轮次，不阻塞按键
+ *        回调）。
  */
-void chat_mode_enter(void);
+void chat_mode_enter(const chat_request_t *req);
 
 /**
  * @brief 请求退出：置取消位 + 停播 + 清模式标志；常驻任务在最近的
@@ -68,6 +94,15 @@ chat_state_t chat_mode_state(void);
 
 /** 末句回复文本（空串=尚无回合；屏显驻留用）。 */
 const char *chat_mode_reply(void);
+
+/** 当前场景预热文案（空串=非场景/非首轮；首轮 speaking 态屏显） */
+const char *chat_mode_warmup(void);
+
+/** 模式标签（chat_request_t.title，缺省 "AI Chat"；首帧/IDLE 态标题） */
+const char *chat_mode_title(void);
+
+/** 本轮生词命中数（0~CHAT_HIT_MAX；新一轮起清零，SET 收藏成功后清零） */
+int chat_mode_wordhit_count(void);
 
 #ifdef __cplusplus
 }

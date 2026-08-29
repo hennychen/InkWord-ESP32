@@ -47,7 +47,11 @@ extern bool deck_flow_switch(int idx);
 #include "word_parser.h"
 #include "browse_mode.h"   /* 教材目录三级视图（2026-08-28 设计） */
 #include "voice_search.h" /* 语音查词状态机（同设计） */
+#include "chat_mode.h"    /* A1：chat_request_t（对话二级页确认组包） */
+#include "sync_client.h"  /* A3：对话周报拉取（chat-review 端点） */
 
+#include "freertos/FreeRTOS.h"   /* A3：周报拉取一次性任务 */
+#include "freertos/task.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"   /* INFO 页 PSRAM 查询 */
 
@@ -86,7 +90,9 @@ extern void quiz_flow_start(void);  /* v1.2 T2.2：测验会话启动（题池+�
 
 /* ---- 模块状态（静态零初始化，无 init 无堆分配；~10B） ---- */
 typedef enum { MU_PAGE_MAIN = 0, MU_PAGE_MODE, MU_PAGE_DECK, MU_PAGE_INFO,
-               MU_PAGE_KEYS, MU_PAGE_VOL } mu_page_t;
+               MU_PAGE_KEYS, MU_PAGE_VOL, MU_PAGE_CHATSEL, MU_PAGE_SCENARIO,
+               MU_PAGE_REVIEW
+} mu_page_t;
 
 typedef struct {
     const char *label;                    /* UTF-8 CJK 标签（组头=组名） */
@@ -104,9 +110,43 @@ static int       s_mode_sel = 0; /* 模式列表选中（进入时预定位当�
 static int       s_deck_sel = 0; /* 词书列表选中（进入时预定位活跃卡组） */
 static int       s_keys_page = 0; /* 按键说明页页码 */
 static int       s_info_page = 0; /* 设备信息页页码（学习概况/设备信息） */
+static int       s_chatsel_sel = 0;  /* AI 对话二级页选中（A1：0 自由/1 翻译/2 场景） */
+static int       s_scenario_sel = 0; /* 场景列表选中（s_scenarios 下标） */
+
+/* 对话周报页（A3）：拉取一次性任务写入，按键上下文只读；gen 代际计数
+ * 防任务渲染串页（退出/重进后旧任务结果丢弃） */
+#define MU_REVIEW_LOADING 1
+#define MU_REVIEW_OK      2
+#define MU_REVIEW_NONE    3   /* 404：周报未生成 */
+#define MU_REVIEW_FAIL    4
+static chat_review_t s_review;              /* 结构体截断已保屏显安全 */
+static int           s_review_state = 0;
+static int           s_review_page  = 0;   /* OK 态两页：0 概况/1 建议+复习词 */
+static volatile int  s_review_gen   = 0;
+static volatile bool s_review_busy  = false;
 
 /* 可选模式中文名（二级列表与主菜单徽标共用） */
 static const char *s_mode_labels[4] = { "闪卡", "听写", "复习", "阅读" };
+
+/* AI 对话二级选择（A1）：模式页 3 项 + 场景页 6 项镜像后端
+ * ScenarioLibrary（Id 短码两侧同步维护；标签纯 CJK TINY 档可显，
+ * 与 chat_request_t.title 同源文案） */
+static const char *s_chatsel_labels[3] = { "自由对话", "英中翻译", "场景对话" };
+
+typedef struct {
+    const char *id;     /* 后端 scenarioId（ASCII 短码） */
+    const char *label;  /* 二级页标签（兼作对话页标题） */
+} mu_scenario_t;
+
+static const mu_scenario_t s_scenarios[] = {
+    { "food",       "餐厅点餐" },
+    { "directions", "问路指路" },
+    { "school",     "校园聊天" },
+    { "shopping",   "商场购物" },
+    { "travel",     "旅行住宿" },
+    { "doctor",     "看医生" },
+};
+#define MU_SCENARIO_COUNT ((int)(sizeof(s_scenarios) / sizeof(s_scenarios[0])))
 
 static const char *mu_mode_label(study_mode_t m)
 {
@@ -122,6 +162,8 @@ static void draw_deck(bool partial);
 static void draw_info(bool partial);
 static void draw_keys(bool partial);
 static void draw_vol(bool partial);
+static void draw_chatsel(bool partial);
+static void draw_scenario(bool partial);
 
 /* ============================================================
  * 徽标填充（每次重绘现取：均为廉价查询，无缓存失效问题）
@@ -234,19 +276,97 @@ static void act_lan(void)
     lan_server_enter_receive_page();
 }
 
-/* AI 对话（P2B）：前置预检在 study_mode_enter_chat 内（Wi-Fi/Key/SD），
- * 不满足长震回学习页；满足则进入对话临时视图（首帧全刷由
- * ui_render_current 的 MODE_CHAT 分流承担） */
+/* AI 对话（P2B；A1 二级选择页）：先进模式页（自由/英中翻译/场景
+ * 对话），确认后才组包进入；前置预检（Wi-Fi/Key/SD）在
+ * study_mode_enter_chat 内，不满足长震回学习页；满足则进入对话
+ * 临时视图（首帧全刷由 ui_render_current 的 MODE_CHAT 分流承担） */
 static void act_chat(void)
 {
+    s_page = MU_PAGE_CHATSEL;
+    s_chatsel_sel = 0;
+    draw_chatsel(false);
+}
+
+/* 对话确认进入（A1）：按二级页选择组 chat_request_t（mode/scenario/
+ * title；free 留空串=URL 不携 query，与老固件请求逐字节一致），
+ * 「先 exit 后 enter」纪律与预检失败反馈同 act_quiz 先例 */
+static void chat_enter(int chatsel, int scenario_sel)
+{
+    chat_request_t req;
+    memset(&req, 0, sizeof(req));
+    if (chatsel == 1) {
+        strlcpy(req.mode, "translate", sizeof(req.mode));
+        strlcpy(req.title, "英中翻译", sizeof(req.title));
+    } else if (chatsel == 2) {
+        strlcpy(req.mode, "scenario", sizeof(req.mode));
+        strlcpy(req.scenario, s_scenarios[scenario_sel].id,
+                sizeof(req.scenario));
+        strlcpy(req.title, s_scenarios[scenario_sel].label,
+                sizeof(req.title));
+    } else {
+        strlcpy(req.title, "自由对话", sizeof(req.title));
+    }
     menu_ui_exit();
-    if (!study_mode_enter_chat()) {
+    if (!study_mode_enter_chat(&req)) {
         haptic_event(HAPTIC_ERROR);   /* 无网/未配 Key/无 SD：边界反馈 */
         ui_render_current();
         return;
     }
     haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
     ui_render_current();
+}
+
+/* A3 前向声明（绘制函数在绘制区，文件序同 chat_enter 使用点先行） */
+static void draw_review(bool partial);
+
+/* 周报拉取一次性任务（A3）：按键上下文零 HTTP（chat_mode 触发位同哲学
+ * 的一次性版本）；结果写静态区后在任务上下文渲染（chat_mode 任务内
+ * set_state→ui_render_chat 先例），gen/页态双重校验丢弃过期渲染 */
+static void review_fetch_task(void *arg)
+{
+    int gen = (int)(intptr_t)arg;
+    chat_review_t rv;
+    int rc = sync_fetch_chat_review(&rv);
+    if (rc == 0) {
+        s_review = rv;
+        s_review_state = MU_REVIEW_OK;
+    } else {
+        s_review_state = rc == 1 ? MU_REVIEW_NONE : MU_REVIEW_FAIL;
+    }
+    s_review_busy = false;
+    if (s_active && s_page == MU_PAGE_REVIEW && gen == s_review_gen) {
+        s_review_page = 0;
+        haptic_event(rc == 0 ? HAPTIC_PASS : HAPTIC_ERROR);
+        draw_review(false);           /* 加载帧→结果帧（低频页两次全刷可接受） */
+    }
+    vTaskDelete(NULL);
+}
+
+/* 对话周报（A3）：菜单内只读页（不 exit 菜单）；Wi-Fi 预检失败长震
+ * 留主列表，任务在跑时轻反馈；首帧「正在获取」全刷，结果帧任务回画 */
+static void act_review(void)
+{
+    if (!wifi_is_connected()) {
+        haptic_event(HAPTIC_ERROR);
+        return;
+    }
+    if (s_review_busy) {              /* 上一拉取未完：轻反馈不重入 */
+        haptic_event(HAPTIC_KEYPRESS);
+        return;
+    }
+    s_review_busy = true;
+    s_review_gen++;
+    s_review_state = MU_REVIEW_LOADING;
+    s_review_page = 0;
+    s_page = MU_PAGE_REVIEW;
+    draw_review(false);
+    if (xTaskCreate(review_fetch_task, "chatrev", 4096,
+                   (void *)(intptr_t)s_review_gen, 4, NULL) != pdPASS) {
+        s_review_busy = false;
+        s_review_state = MU_REVIEW_FAIL;
+        haptic_event(HAPTIC_ERROR);
+        draw_review(false);
+    }
 }
 
 /* 音频同步：菜单内唯一非独占后台动作（不 exit 菜单，任务 6KB 栈串行
@@ -368,6 +488,7 @@ static const mu_item_t s_items[] = {
     { "模式选择",   false, menu_icon_modesel,  badge_mode,       act_modesel },
     { "词书选择",   false, menu_icon_decks,    badge_deck,       act_deck },
     { "AI 对话",    false, menu_icon_chat,     NULL,             act_chat },
+    { "对话周报",   false, menu_icon_info,     NULL,             act_review },
     { "快速测验",   false, menu_icon_quiz,     NULL,             act_quiz },
     { "[ 同步 ]",  true,  NULL,               NULL,             NULL },
     { "音频同步",   false, menu_icon_audio,    badge_audio_sync, act_audio_sync },
@@ -615,6 +736,87 @@ static void draw_info(bool partial)
     draw_flush();
 }
 
+/* ---- 对话周报页（A3，分页只读同 INFO 页范式）：加载/无周报/失败
+ *      单帧；OK 态两页（0 概况 + 周次轮数 / 1 建议与复习词），
+ *      wrap 断行按剩余高度自适应行数 —— */
+
+static int review_page_count(void)
+{
+    return s_review_state == MU_REVIEW_OK ? 2 : 1;
+}
+
+static void draw_review_body(void)
+{
+    int y = MU_LIST_TOP + 4;
+    char line[64];
+
+    switch (s_review_state) {
+    case MU_REVIEW_LOADING:
+        cjk_text_draw(MU_MARGIN_X, y, MU_FONT_LVL, "正在获取周报...", EPD_GFX_BLACK);
+        cjk_text_draw(MU_MARGIN_X, y + MU_INFO_LH, MU_FONT_LVL,
+                      "约需数秒 · 请稍候", EPD_GFX_BLACK);
+        return;
+    case MU_REVIEW_NONE:
+        cjk_text_draw(MU_MARGIN_X, y, MU_FONT_LVL, "暂无对话周报", EPD_GFX_BLACK);
+        cjk_text_draw(MU_MARGIN_X, y + MU_INFO_LH, MU_FONT_LVL,
+                      "每周日更新 · 对话满一周可看", EPD_GFX_BLACK);
+        return;
+    case MU_REVIEW_FAIL:
+        cjk_text_draw(MU_MARGIN_X, y, MU_FONT_LVL, "获取失败", EPD_GFX_BLACK);
+        cjk_text_draw(MU_MARGIN_X, y + MU_INFO_LH, MU_FONT_LVL,
+                      "网络/服务暂不可用 · 稍后再试", EPD_GFX_BLACK);
+        return;
+    }
+
+    if (s_review_page == 0) {
+        snprintf(line, sizeof(line), "周 %s 起 · 对话 %d 轮",
+                 s_review.week_start + 5, s_review.turn_count);
+        cjk_text_draw(MU_MARGIN_X, y, MU_FONT_LVL, line, EPD_GFX_BLACK);
+        y += MU_INFO_LH;
+        cjk_text_draw(MU_MARGIN_X, y, MU_FONT_LVL, "概况", EPD_GFX_BLACK);
+        y += MU_INFO_LH;
+        int max_lines = (MU_LIST_H - MU_INFO_LH * 3) / MU_INFO_LH;
+        if (max_lines < 1) max_lines = 1;
+        cjk_text_draw_wrap_page(MU_MARGIN_X, y, MU_ITEM_W, MU_FONT_LVL,
+                                MU_INFO_LH, max_lines, 0,
+                                s_review.summary, EPD_GFX_BLACK);
+    } else {
+        cjk_text_draw(MU_MARGIN_X, y, MU_FONT_LVL, "练习建议", EPD_GFX_BLACK);
+        y += MU_INFO_LH;
+        int half = (MU_LIST_H - MU_INFO_LH * 2) / MU_INFO_LH / 2;
+        if (half < 1) half = 1;
+        cjk_text_draw_wrap_page(MU_MARGIN_X, y, MU_ITEM_W, MU_FONT_LVL,
+                                MU_INFO_LH, half, 0,
+                                s_review.suggestion, EPD_GFX_BLACK);
+        int used = cjk_text_wrap_lines(MU_ITEM_W, MU_FONT_LVL,
+                                       s_review.suggestion);
+        if (used > half) used = half;
+        y += used * MU_INFO_LH + MU_INFO_LH;   /* 段间距一行 */
+        cjk_text_draw(MU_MARGIN_X, y, MU_FONT_LVL, "复习词", EPD_GFX_BLACK);
+        y += MU_INFO_LH;
+        int rest = (MU_LIST_TOP + MU_LIST_H - y) / MU_INFO_LH;
+        if (rest < 1) rest = 1;
+        cjk_text_draw_wrap_page(MU_MARGIN_X, y, MU_ITEM_W, MU_FONT_LVL,
+                                MU_INFO_LH, rest, 0,
+                                s_review.words, EPD_GFX_BLACK);
+    }
+}
+
+static void draw_review(bool partial)
+{
+    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+        partial_refresh(draw_review_body);
+        return;
+    }
+    epd_gfx_fill_screen(EPD_GFX_WHITE);
+    draw_title("对话周报",
+               s_review_state == MU_REVIEW_OK ? s_review_page + 1 : 0,
+               review_page_count());
+    draw_review_body();
+    draw_hint();
+    draw_flush();
+}
+
 /* ---- 按键说明页（表驱动分页只读，上/下翻页；行文全半角标点=字库安全
  *      先例，组头行 key=NULL 整行居左作小节分隔） ---- */
 
@@ -644,6 +846,7 @@ static const mu_keyrow_t s_keys[] = {
     { "SET",    "遮蔽 / 取消收藏" },
     { "RST",    "进设置 / 退出视图" },
     { NULL,     "[ AI 对话 ]" },
+    { "上/下",  "选模式 · 选场景" },
     { "中",     "说话·发送·重说" },
     { "RST",    "退出回闪卡" },
     { NULL,     "[ 快速测验 ]" },
@@ -822,6 +1025,70 @@ static void draw_deck(bool partial)
     draw_flush();
 }
 
+/* ---- AI 对话二级页（A1）：模式页 3 项镜像模式选择页范式；场景页
+ *      6 项 MID 可见 4 需滑动窗口跟随（词书页同款，不画滚动条） ---- */
+
+static void draw_chatsel_body(void)
+{
+    for (int i = 0; i < 3 && i < MU_VISIBLE; i++) {
+        int y = MU_LIST_TOP + i * MU_ITEM_H;
+        bool sel = (i == s_chatsel_sel);
+        if (sel)
+            epd_gfx_fill_rect(MU_MARGIN_X, y, MU_ITEM_W, MU_ITEM_H - 4,
+                              EPD_GFX_BLACK);
+        cjk_text_draw(MU_MARGIN_X + 4, y + (MU_ITEM_H - MU_FONT_H) / 2,
+                      MU_FONT_LVL,
+                      s_chatsel_labels[i], sel ? EPD_GFX_WHITE : EPD_GFX_BLACK);
+    }
+}
+
+static void draw_chatsel(bool partial)
+{
+    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+        partial_refresh(draw_chatsel_body);
+        return;
+    }
+    epd_gfx_fill_screen(EPD_GFX_WHITE);
+    draw_title("AI 对话", s_chatsel_sel + 1, 3);
+    draw_chatsel_body();
+    draw_hint();
+    draw_flush();
+}
+
+static void draw_scenario_body(void)
+{
+    int off = s_scenario_sel - MU_VISIBLE + 1;   /* 窗口跟随光标（下界铺 0） */
+    if (off < 0) off = 0;
+    if (MU_SCENARIO_COUNT > MU_VISIBLE && off > MU_SCENARIO_COUNT - MU_VISIBLE)
+        off = MU_SCENARIO_COUNT - MU_VISIBLE;
+
+    for (int i = 0; i < MU_VISIBLE; i++) {
+        int si = off + i;
+        if (si >= MU_SCENARIO_COUNT) break;
+        int y = MU_LIST_TOP + i * MU_ITEM_H;
+        bool sel = (si == s_scenario_sel);
+        if (sel)
+            epd_gfx_fill_rect(MU_MARGIN_X, y, MU_ITEM_W, MU_ITEM_H - 4,
+                              EPD_GFX_BLACK);
+        cjk_text_draw(MU_MARGIN_X + 4, y + (MU_ITEM_H - MU_FONT_H) / 2,
+                      MU_FONT_LVL, s_scenarios[si].label,
+                      sel ? EPD_GFX_WHITE : EPD_GFX_BLACK);
+    }
+}
+
+static void draw_scenario(bool partial)
+{
+    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+        partial_refresh(draw_scenario_body);
+        return;
+    }
+    epd_gfx_fill_screen(EPD_GFX_WHITE);
+    draw_title("场景对话", s_scenario_sel + 1, MU_SCENARIO_COUNT);
+    draw_scenario_body();
+    draw_hint();
+    draw_flush();
+}
+
 /* ============================================================
  * 按键处理（激活时独占；长按全部忽略防误触）
  * ============================================================ */
@@ -996,6 +1263,94 @@ case MU_PAGE_VOL:
             break;
         case NAV_CENTER:
             study_mode_handle_action(3);
+            break;
+        case NAV_SET:
+            s_page = MU_PAGE_MAIN;
+            draw_main(false);
+            break;
+        case NAV_RST:
+            menu_ui_exit_restore();
+            break;
+        default: break;
+        }
+        break;
+
+    case MU_PAGE_CHATSEL:
+        /* AI 对话模式二级页（A1）：上/下循环移动，中=确认（场景项
+         * 转场景列表页），SET 返回主菜单，RST 退出 */
+        switch (id) {
+        case NAV_UP:
+            s_chatsel_sel = (s_chatsel_sel + 2) % 3;
+            draw_chatsel(true);
+            break;
+        case NAV_DOWN:
+            s_chatsel_sel = (s_chatsel_sel + 1) % 3;
+            draw_chatsel(true);
+            break;
+        case NAV_CENTER:
+            if (s_chatsel_sel == 2) {
+                s_page = MU_PAGE_SCENARIO;
+                s_scenario_sel = 0;
+                draw_scenario(false);
+            } else {
+                chat_enter(s_chatsel_sel, 0);
+            }
+            break;
+        case NAV_SET:
+            s_page = MU_PAGE_MAIN;
+            draw_main(false);
+            break;
+        case NAV_RST:
+            menu_ui_exit_restore();
+            break;
+        default: break;
+        }
+        break;
+
+    case MU_PAGE_SCENARIO:
+        /* 场景列表（A1）：上/下循环（6 项滑动窗口），中=进入场景
+         * 对话，SET 返回上级模式页，RST 退出 */
+        switch (id) {
+        case NAV_UP:
+            s_scenario_sel = (s_scenario_sel + MU_SCENARIO_COUNT - 1) %
+                             MU_SCENARIO_COUNT;
+            draw_scenario(true);
+            break;
+        case NAV_DOWN:
+            s_scenario_sel = (s_scenario_sel + 1) % MU_SCENARIO_COUNT;
+            draw_scenario(true);
+            break;
+        case NAV_CENTER:
+            chat_enter(2, s_scenario_sel);
+            break;
+        case NAV_SET:
+            s_page = MU_PAGE_CHATSEL;
+            draw_chatsel(false);
+            break;
+        case NAV_RST:
+            menu_ui_exit_restore();
+            break;
+        default: break;
+        }
+        break;
+
+    case MU_PAGE_REVIEW:
+        /* 对话周报页（A3）：只读——OK 态上/下（中）翻页，加载/空/败
+         * 态按键忽略；SET 返回主列表，RST 退出（INFO 页同款） */
+        switch (id) {
+        case NAV_UP:
+            if (s_review_state == MU_REVIEW_OK && review_page_count() > 1) {
+                s_review_page = (s_review_page + review_page_count() - 1) %
+                                review_page_count();
+                draw_review(true);
+            }
+            break;
+        case NAV_DOWN:
+        case NAV_CENTER:
+            if (s_review_state == MU_REVIEW_OK && review_page_count() > 1) {
+                s_review_page = (s_review_page + 1) % review_page_count();
+                draw_review(true);
+            }
             break;
         case NAV_SET:
             s_page = MU_PAGE_MAIN;

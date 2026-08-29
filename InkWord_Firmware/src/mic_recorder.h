@@ -1,10 +1,10 @@
 /**
  * @file mic_recorder.h
- * @brief INMP441 麦克风录音 + 发音评测上传 (P1，2026-08-24)
+ * @brief ES8311 ADC 麦克风录音 + 发音评测上传 (P1，2026-08-24；ES8311 接入同日)
  *
  * AI 后端化红线：设备只采集/上传/消费评分。录音期重配 I2S0 为
- * 16kHz 全双工（SCK/WS 与 MAX98357 共线，WIRING §2.7），录完恢复
- * 播放配置；采样缓冲 PSRAM（≤96KB）录完即释，不动 WordEntry。
+ * 16kHz 全双工（BCLK/WS 与 ES8311 DAC 播放共线，WIRING §2.7），
+ * 录完恢复播放配置；采样缓冲 PSRAM（≤96KB）录完即释，不动 WordEntry。
  *
  * 协议冻结见 docs/AI_SPEECH_ASSESSMENT.md §2：
  * POST /api/device/pronunciation?wordId={Guid}，multipart 字段名 "file"，

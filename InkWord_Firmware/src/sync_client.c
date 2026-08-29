@@ -375,6 +375,101 @@ int sync_fetch_weather(weather_info_t *out)
     return ret;
 }
 
+/* A3 对话周报：GET /api/device/chat-review（weather 同构；404 单列=
+ * 尚无周报，屏显文案与网络失败区分） */
+static char s_review_buf[1280];
+
+int sync_fetch_chat_review(chat_review_t *out)
+{
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device/chat-review", s_base_url);
+
+    recv_ctx_t ctx = { .buf = s_review_buf, .buf_size = sizeof(s_review_buf),
+                       .offset = 0 };
+    s_pull_ctx = &ctx;
+
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 10000);
+    cfg.event_handler = pull_event_handler;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_set_method(client, HTTP_METHOD_GET);
+    set_common_headers(client);
+
+    esp_err_t err = esp_http_client_perform(client);
+    s_pull_ctx = NULL;
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || status != 200 || ctx.offset <= 0) {
+        if (status == 404) return 1;   /* 周报未生成（Job 未跑/无对话） */
+        LOG_E("fetch chat-review failed: err=%s status=%d",
+              esp_err_to_name(err), status);
+        return -1;
+    }
+    s_review_buf[ctx.offset] = '\0';
+
+    /* 信封 { code, data:{ weekStart, turnCount, review:{ summary,
+     * topics[], highlights[], suggestion, reviewWords[] } } }——设备端
+     * 只取三段（topics/highlights 屏显克制不消费） */
+    int ret = -1;
+    cJSON *root = cJSON_Parse(s_review_buf);
+    if (!root) {
+        LOG_E("chat-review json parse failed");
+        return -1;
+    }
+
+    cJSON *code = cJSON_GetObjectItem(root, "code");
+    cJSON *data = cJSON_GetObjectItem(root, "data");
+    if (cJSON_IsNumber(code) && code->valueint == 0 && data) {
+        cJSON *jws = cJSON_GetObjectItem(data, "weekStart");
+        cJSON *jtc = cJSON_GetObjectItem(data, "turnCount");
+        cJSON *jrv = cJSON_GetObjectItem(data, "review");
+        if (cJSON_IsString(jws) && jws->valuestring &&
+            cJSON_IsNumber(jtc)) {
+            if (strlen(jws->valuestring) >= 10)
+                strncpy(out->week_start, jws->valuestring, 10); /* ISO 截日期 */
+            else
+                memcpy(out->week_start, "----00-00", 10); /* 异常占位（menu 端 +5 免越界） */
+            out->turn_count = jtc->valueint;
+            if (cJSON_IsObject(jrv)) {
+                cJSON *jsum = cJSON_GetObjectItem(jrv, "summary");
+                cJSON *jsug = cJSON_GetObjectItem(jrv, "suggestion");
+                if (cJSON_IsString(jsum) && jsum->valuestring)
+                    strncpy(out->summary, jsum->valuestring,
+                            sizeof(out->summary) - 1);
+                if (cJSON_IsString(jsug) && jsug->valuestring)
+                    strncpy(out->suggestion, jsug->valuestring,
+                            sizeof(out->suggestion) - 1);
+                cJSON *jwords = cJSON_GetObjectItem(jrv, "reviewWords");
+                if (cJSON_IsArray(jwords)) {
+                    size_t off = 0;
+                    cJSON *jw;
+                    cJSON_ArrayForEach(jw, jwords) {
+                        if (!cJSON_IsString(jw) || !jw->valuestring ||
+                            !jw->valuestring[0])
+                            continue;
+                        int n = snprintf(out->words + off,
+                                         sizeof(out->words) - off,
+                                         off ? " · %s" : "%s",
+                                         jw->valuestring);
+                        if (n < 0 || (size_t)n >= sizeof(out->words) - off)
+                            break;   /* 截断即止（≤5 词屏显余量） */
+                        off += (size_t)n;
+                    }
+                }
+            }
+            ret = 0;
+        }
+    }
+
+    cJSON_Delete(root);
+    if (ret != 0) LOG_E("chat-review payload invalid");
+    return ret;
+}
+
 /* ============================================================
  * HTTP Date 头校时（设备主时间源，替代被运营商 UDP 123 劫持废掉的 SNTP）
  * ============================================================ */

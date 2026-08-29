@@ -363,7 +363,7 @@ void study_mode_exit_collection(void)
     LOG_I("left collection");
 }
 
-bool study_mode_enter_chat(void)
+bool study_mode_enter_chat(const chat_request_t *req)
 {
     /* 前置：对话全程依赖网络（上传/下载）与 SD（回复 MP3 落盘播放）；
      * 不满足由调用方（快捷菜单）给边界反馈，不进入 */
@@ -379,7 +379,7 @@ bool study_mode_enter_chat(void)
     s_current = MODE_CHAT;
     s_cursor = 0;
     s_reveal = true;
-    chat_mode_enter();          /* 启动常驻对话任务（失败自退标志） */
+    chat_mode_enter(req);   /* 启动常驻对话任务（A1 模式透传；失败自退） */
     if (!chat_mode_is_active()) return false;
     LOG_I("entered chat mode");
     return true;

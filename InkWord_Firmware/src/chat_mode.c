@@ -14,6 +14,11 @@
  * 回复 MP3 落 /sdcard/audio/chat_tmp.mp3 走 audio_play_file()（零新
  * 播放路径），播完即删；audioUrl 为空（后端 TTS 失败降级）仅屏显
  * 文本，语音链路降级不熔断。
+ *
+ * A3 生词命中：响应 wordHits[{text,cloudId}] ≤5 条缓存（idle 态计数
+ * 行屏显），SET 短按置收藏触发位——逐条推 /sync/collect 在任务上下
+ * 文串行执行（按键回调零阻塞，同轮次触发位范式）；三色屏无局刷时
+ * 仅震动反馈。
  */
 #include "chat_mode.h"
 #include "debug_log.h"
@@ -44,9 +49,10 @@ static const char *TAG = "CHAT";
 #define CHAT_UPLOAD_TIMEOUT_MS (45000) /* 含后端 ASR+LLM+TTS 全链路 */
 #define CHAT_DL_TIMEOUT_MS  (15000)
 #define CHAT_MP3_MAX_BYTES  (512 * 1024) /* 回复 ≤2 句 ≤40 词，超此为异常 */
-#define CHAT_PLAY_MAX_MS    (30000) /* 播放等待兜底（打断/超时出循环） */
+#define CHAT_PLAY_MAX_MS    (30000) /* 播放等待兑底（打断/超时出循环） */
 #define CHAT_TMP_PATH       (AUDIO_DIR "/chat_tmp.mp3")
-#define CHAT_RESP_MAX       (1536)  /* reply 260 + audioUrl + 信封余量 */
+#define CHAT_RESP_MAX       (2304)  /* reply 256 + warmup 192 + audioUrl + wordHits 5×(text+Guid) + 信封余量 */
+#define CHAT_URL_MAX        (192)   /* base_url + 路径 + mode/scenario query */
 
 /* ---- 模块状态（单写者=对话任务，按键上下文仅写触发/取消位） ---- */
 static volatile bool s_active    = false; /* 模式在（任务生命周期域） */
@@ -56,14 +62,25 @@ static volatile bool s_send_now  = false; /* 录音手动断（说完即发，�
 static volatile bool s_stop_play = false; /* 播放打断位 */
 static volatile chat_state_t s_state = CHAT_STATE_IDLE;
 static char s_reply[CHAT_REPLY_MAX];      /* 末句回复（屏显驻留） */
+static char s_warmup[CHAT_WARMUP_MAX];    /* 场景首轮预热（speaking 态屏显） */
+static chat_request_t s_req;              /* 模式请求（enter 拷入，任务读） */
+static int  s_hits_n = 0;                 /* A3 生词命中数（任务写，渲染读） */
+static char s_hits_text[CHAT_HIT_MAX][CHAT_HIT_TEXT_MAX];
+static char s_hits_cloud[CHAT_HIT_MAX][CHAT_HIT_CLOUD_MAX];
+static volatile bool s_collect_req = false; /* SET 收藏触发位（按键置位） */
 
 /* main.cpp 导出（C++ → C，ui_render_pron 同款先例） */
 extern void ui_render_chat(chat_state_t st, const char *text);
 
-/* ---- 后端响应子集（transcript 设备端不消费，屏显克制） ---- */
+/* ---- 后端响应子集（transcript 设备端不消费，屏显克制；A1 增 warmup，
+ *      A3 增 wordHits） ---- */
 typedef struct {
     char reply[CHAT_REPLY_MAX];
     char audio_url[160];       /* "/api/device/audio/chat_{ts}.mp3" */
+    char warmup[CHAT_WARMUP_MAX]; /* 场景首轮中文预热（其余轮空串） */
+    int  hits_n;               /* 生词命中数（wordHits 实收，≤CHAT_HIT_MAX） */
+    char hits_text[CHAT_HIT_MAX][CHAT_HIT_TEXT_MAX];
+    char hits_cloud[CHAT_HIT_MAX][CHAT_HIT_CLOUD_MAX];
 } chat_resp_t;
 
 /* 按 URL 前缀选传输：http: 明文 TCP，其余 TLS + 证书包（项目第 5 处同款） */
@@ -104,19 +121,30 @@ static void net_fail(void)
 }
 
 /* ---- 上传 WAV 对话（multipart 三段流式写，mic_recorder_upload 同构；
- *      响应信封 { code, data:{ transcript, reply, engine, audioUrl } }） ---- */
+ *      响应信封 { code, data:{ transcript, reply, engine, audioUrl,
+ *      mode?, warmup? } }；A1 模式经 query 携带，mode 空 = 不拼 query
+ *      （老固件/后端行为与现状一致）） ---- */
 static int chat_upload(const uint8_t *wav, size_t len, chat_resp_t *out)
 {
     static const char BND[] = "InkWordChat1886";
     static char resp[CHAT_RESP_MAX];
 
-    char head[192], tail[48], url[192], ctype[64];
+    char head[192], tail[48], url[CHAT_URL_MAX], ctype[64];
     int hl = snprintf(head, sizeof(head),
         "--%s\r\n"
         "Content-Disposition: form-data; name=\"file\"; filename=\"chat.wav\"\r\n"
         "Content-Type: audio/wav\r\n\r\n", BND);
     int fl = snprintf(tail, sizeof(tail), "\r\n--%s--\r\n", BND);
     snprintf(url, sizeof(url), "%s/api/device/chat", sync_get_base_url());
+    if (s_req.mode[0]) {
+        /* 模式 query：?mode=x[&scenarioId=y]（URL 已含路径，追加即可） */
+        strlcat(url, "?mode=", sizeof(url));
+        strlcat(url, s_req.mode, sizeof(url));
+        if (s_req.scenario[0]) {
+            strlcat(url, "&scenarioId=", sizeof(url));
+            strlcat(url, s_req.scenario, sizeof(url));
+        }
+    }
     snprintf(ctype, sizeof(ctype),
              "multipart/form-data; boundary=%s", BND);
 
@@ -166,6 +194,31 @@ static int chat_upload(const uint8_t *wav, size_t len, chat_resp_t *out)
             if (cJSON_IsString(jurl) && jurl->valuestring)
                 strncpy(out->audio_url, jurl->valuestring,
                         sizeof(out->audio_url) - 1);
+            /* warmup 可选（A1 场景首轮中文预热，其余轮缺省/空） */
+            cJSON *jwarm = data ? cJSON_GetObjectItem(data, "warmup") : NULL;
+            if (cJSON_IsString(jwarm) && jwarm->valuestring)
+                strncpy(out->warmup, jwarm->valuestring,
+                        sizeof(out->warmup) - 1);
+            /* wordHits 可选（A3 生词命中 [{text,cloudId}]，超上限截断） */
+            cJSON *jhits = data ? cJSON_GetObjectItem(data, "wordHits") : NULL;
+            if (cJSON_IsArray(jhits)) {
+                cJSON *jh;
+                cJSON_ArrayForEach(jh, jhits) {
+                    if (out->hits_n >= CHAT_HIT_MAX) break;
+                    cJSON *jt = cJSON_GetObjectItem(jh, "text");
+                    cJSON *jc = cJSON_GetObjectItem(jh, "cloudId");
+                    if (cJSON_IsString(jt) && jt->valuestring &&
+                        jt->valuestring[0] &&
+                        cJSON_IsString(jc) && jc->valuestring &&
+                        jc->valuestring[0]) {
+                        strncpy(out->hits_text[out->hits_n],
+                                jt->valuestring, CHAT_HIT_TEXT_MAX - 1);
+                        strncpy(out->hits_cloud[out->hits_n],
+                                jc->valuestring, CHAT_HIT_CLOUD_MAX - 1);
+                        out->hits_n++;
+                    }
+                }
+            }
             rc = 0;
         }
         cJSON_Delete(root);
@@ -240,6 +293,7 @@ static void run_round(void)
 {
     if (!wifi_is_connected()) { net_fail(); return; }
 
+    s_hits_n = 0;                           /* 新一轮：旧命中作废 */
     set_state(CHAT_STATE_RECORDING, NULL);
     haptic_event(HAPTIC_KEYPRESS);          /* 录音起一短震 */
 
@@ -260,15 +314,25 @@ static void run_round(void)
     }
 
     set_state(CHAT_STATE_UPLOADING, NULL);
-    chat_resp_t resp;
+    static chat_resp_t resp;                /* 栈节流（+wordHits ~330B），任务串行独占 */
     rc = chat_upload(wav, wav_len, &resp);
     free(wav);
     if (!s_active) return;
     if (rc != 0) { net_fail(); return; }
 
-    /* 末句回复缓存（屏显驻留）；回复到达两短震 */
+    /* 末句回复缓存（屏显驻留）；场景首轮预热单独缓存（speaking 态
+     * 屏显，用后即清——仅首轮可见，后续轮驻留 reply） */
     strncpy(s_reply, resp.reply, sizeof(s_reply) - 1);
     s_reply[sizeof(s_reply) - 1] = '\0';
+    strncpy(s_warmup, resp.warmup, sizeof(s_warmup) - 1);
+    s_warmup[sizeof(s_warmup) - 1] = '\0';
+    for (int i = 0; i < resp.hits_n; i++) { /* A3 生词命中缓存（IDLE 计数行） */
+        strncpy(s_hits_text[i], resp.hits_text[i], CHAT_HIT_TEXT_MAX - 1);
+        s_hits_text[i][CHAT_HIT_TEXT_MAX - 1] = '\0';
+        strncpy(s_hits_cloud[i], resp.hits_cloud[i], CHAT_HIT_CLOUD_MAX - 1);
+        s_hits_cloud[i][CHAT_HIT_CLOUD_MAX - 1] = '\0';
+    }
+    s_hits_n = resp.hits_n;
 
     if (!resp.audio_url[0]) {                /* TTS 降级：文本已到即反馈 */
         haptic_event(HAPTIC_PASS);
@@ -281,7 +345,7 @@ static void run_round(void)
     if (!s_active) { remove(CHAT_TMP_PATH); return; }
     if (rc != 0) { net_fail(); return; }
 
-    set_state(CHAT_STATE_PLAYING, NULL);
+    set_state(CHAT_STATE_PLAYING, s_warmup[0] ? s_warmup : NULL);
     haptic_event(HAPTIC_PASS);
     if (audio_play_file(CHAT_TMP_PATH) == 0) {
         int waited = 0;
@@ -299,15 +363,44 @@ static void run_round(void)
         }
     }
     remove(CHAT_TMP_PATH);                   /* 播完即删（零残留） */
-    LOG_I("chat round done: reply=%.32s", s_reply);
+    s_warmup[0] = '\0';                      /* 预热仅首轮 speaking 态可见 */
+    LOG_I("chat round done: mode=%s reply=%.32s",
+          s_req.mode[0] ? s_req.mode : "free", s_reply);
 
     if (s_active) set_state(CHAT_STATE_IDLE, NULL);
+}
+
+/* ---- A3 生词收藏：SET 触发位拾起，逐条推 /sync/collect（云端收藏，
+ *      App/下次同步可见；命中词不一定在当前词书，本地收藏列表一期
+ *      不建 cloudId→index 映射）；成功清零防重复，失败一长震不重试
+ *      （下次对话再收） ---- */
+static void collect_hits(void)
+{
+    char msg[48];
+    int n = s_hits_n, ok = 0;
+    for (int i = 0; i < n && s_active; i++)
+        if (sync_push_collect(s_hits_cloud[i], true) == 0) ok++;
+    if (!s_active) return;
+    if (ok == n && n > 0) {
+        haptic_event(HAPTIC_PASS);
+        s_hits_n = 0;                        /* 防重复收藏 */
+        snprintf(msg, sizeof(msg), "已收藏 %d 词", n);
+    } else {
+        haptic_event(HAPTIC_ERROR);
+        snprintf(msg, sizeof(msg), "收藏失败 %d/%d · 稍后再试", ok, n);
+    }
+    set_state(CHAT_STATE_IDLE, msg);
 }
 
 static void chat_task(void *arg)
 {
     (void)arg;
     while (s_active) {
+        if (s_collect_req) {                 /* A3 SET 收藏（任务串行推） */
+            s_collect_req = false;
+            collect_hits();
+            continue;
+        }
         if (!s_round_req) {
             vTaskDelay(pdMS_TO_TICKS(20));   /* 轮询触发位（延迟无感） */
             continue;
@@ -324,13 +417,22 @@ static void chat_task(void *arg)
 
 /* ---- 公共 API ---- */
 
-void chat_mode_enter(void)
+void chat_mode_enter(const chat_request_t *req)
 {
     if (s_active) return;                    /* 幂等 */
     s_active = true;
     s_state = CHAT_STATE_IDLE;
     s_reply[0] = '\0';
+    s_warmup[0] = '\0';
+    s_hits_n = 0;
+    memset(&s_req, 0, sizeof(s_req));
+    if (req) {
+        strlcpy(s_req.mode, req->mode, sizeof(s_req.mode));
+        strlcpy(s_req.scenario, req->scenario, sizeof(s_req.scenario));
+        strlcpy(s_req.title, req->title, sizeof(s_req.title));
+    }
     s_round_req = s_cancel = s_send_now = s_stop_play = false;
+    s_collect_req = false;
     if (xTaskCreate(chat_task, "chat", CHAT_TASK_STACK, NULL,
                     CHAT_TASK_PRIO, NULL) != pdPASS) {
         s_active = false;
@@ -357,6 +459,15 @@ bool chat_mode_on_button(nav_key_t id, button_event_t event)
         return false;                        /* 交编排层执行退出 */
 
     if (event != BUTTON_EVENT_SHORT_PRESS) return true;  /* 其余长按忽略 */
+    /* A3 SET 收藏：idle/netfail 态且有命中时置位（任务串行推，按键零阻塞） */
+    if (id == NAV_SET) {
+        if ((s_state == CHAT_STATE_IDLE || s_state == CHAT_STATE_NETFAIL) &&
+            s_hits_n > 0 && !s_collect_req) {
+            s_collect_req = true;
+            haptic_event(HAPTIC_KEYPRESS);
+        }
+        return true;
+    }
     if (id != NAV_CENTER) return true;                   /* 其余短按忽略 */
 
     switch (s_state) {
@@ -386,3 +497,6 @@ bool chat_mode_on_button(nav_key_t id, button_event_t event)
 bool chat_mode_is_active(void)          { return s_active; }
 chat_state_t chat_mode_state(void)      { return s_state; }
 const char *chat_mode_reply(void)       { return s_reply; }
+const char *chat_mode_warmup(void)      { return s_warmup; }
+const char *chat_mode_title(void)      { return s_req.title[0] ? s_req.title : "AI Chat"; }
+int chat_mode_wordhit_count(void)      { return s_hits_n; }

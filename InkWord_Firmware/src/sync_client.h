@@ -122,6 +122,25 @@ typedef struct {
  */
 int sync_fetch_weather(weather_info_t *out);
 
+/** A3 对话周报（LLM 复盘五段 JSON 的设备端消费子集，字段截断保屏显安全） */
+typedef struct {
+    char week_start[16];   /**< "2026-08-25"（ISO 日期前十位） */
+    int  turn_count;       /**< 聚合轮数 */
+    char summary[96];      /**< 本周对话概况 */
+    char suggestion[96];   /**< 建议练习场景/方向 */
+    char words[96];        /**< 推荐复习词（reviewWords 以 " · " 拼接） */
+} chat_review_t;
+
+/**
+ * @brief 拉取 AI 对话周报（A3）。
+ *        GET /api/device/chat-review（周报 Job 周日 05:00 写 Redis/表，
+ *        双通道下发）；响应 data.review 为 LLM 结构化 JSON，设备端仅
+ *        消费 summary/suggestion/reviewWords 三段。
+ * @param out 输出结构体。
+ * @return 0 成功；1 尚无周报（HTTP 404，周报未生成）；<0 网络/解析失败。
+ */
+int sync_fetch_chat_review(chat_review_t *out);
+
 /**
  * @brief 经 HTTP Date 响应头校时（设备主时间源）。
  *        GET generate_204 探测页（无 body 流量最小），解析 Date 头返回 Unix 秒；

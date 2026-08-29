@@ -1720,13 +1720,30 @@ extern "C" void ui_render_chat(chat_state_t st, const char *text)
                       epd_gfx_height() - UI_STATUS_H, EPD_GFX_WHITE);
 
     switch (st) {
-    case CHAT_STATE_IDLE:
-        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "AI Chat",
-                          EPD_GFX_BLACK,
-                          ui_fit_font("AI Chat", 4, UI_BODY_MAX_W));
+    case CHAT_STATE_IDLE: {
+        /* A1 标题参数化：free/翻译/场景各异（chat_mode_title 缺省
+         * "AI Chat"）；中文标题走点阵（FreeSans 无汉字），ASCII
+         * 大字自适应路径不变 */
+        const char *title = chat_mode_title();
+        if (cjk_text_has_wide(title))
+            cjk_text_draw(UI_MARGIN_X, UI_WORD_BASE, UI_MEAN_LEVEL,
+                          title, EPD_GFX_BLACK);
+        else
+            epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, title,
+                              EPD_GFX_BLACK,
+                              ui_fit_font(title, 4, UI_BODY_MAX_W));
         cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
                       "按中键说话 · 长按中键退出", EPD_GFX_BLACK);
+        /* A3 生词命中计数行（新一轮起清零，SET 收藏成功后清零） */
+        if (chat_mode_wordhit_count() > 0) {
+            char hbuf[40];
+            snprintf(hbuf, sizeof(hbuf), "本轮生词 %d · SET 短按收藏",
+                     chat_mode_wordhit_count());
+            cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP + UI_BODY_LH,
+                          UI_MEAN_LEVEL, hbuf, EPD_GFX_BLACK);
+        }
         break;
+    }
     case CHAT_STATE_RECORDING:
         epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Listening...",
                           EPD_GFX_BLACK, 2);
