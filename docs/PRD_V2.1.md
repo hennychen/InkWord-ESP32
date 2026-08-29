@@ -81,13 +81,13 @@
 │   ├── LLM 词库内容增强（路径 B）             ✅（Ollama 可切云 API；分级例句/词根
 │   │    助记/易混辨析生成→管理端人工 diff 审核→写入 Example/Root）
 │   ├── 发音评测协议（路径 C 后端）            ✅（POST /api/device/pronunciation，
-│   │    固件待 INMP441 接线）
+│   │    ES8311 模块已集成 2026-08-29，待实机验收）
 │   └── AI 语音查词（说词定位学习起点）        ◐（POST /api/device/voice-search
 │         2026-08-28 全链路落地，见 docs/CATALOG_BROWSE_VOICE_SEARCH.md；待上机）
 │
 ├── 🔊 音视频交互
 │   ├── 单词发音（SD 卡 WAV/MP3）             ✅（功放待接线验证）
-│   ├── 语音跟读评测（INMP441）               ◐（后端协议已冻结 08-22，见 docs/AI_SPEECH_ASSESSMENT.md；固件待接线）
+│   ├── 语音跟读评测（ES8311 ADC）            ◐（后端协议已冻结 08-22，见 docs/AI_SPEECH_ASSESSMENT.md；ES8311 模块已集成 2026-08-29，待实机验收）
 │   ├── 触觉反馈（震动马达 GPIO41）           ◐（haptic.c 就绪，待接线）
 │   └── 提示音（经扬声器播放，蜂鸣器取消）     🔨
 │

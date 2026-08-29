@@ -331,7 +331,7 @@ NVS blob = {magic "LR03", count, used, lr_sparse_t[used]}
 | haptic 事件表 | haptic.c | （需马达接线后） |
 | 词条音频同步 | audio_sync.c | 菜单「音频同步」缺 N/总 M 徽标，后台串行下载，网络熔断 |
 | 跟读评测（听-跟一体流） | mic_recorder.c + pron_task | 中键播完自动进跟读，三态屏 + 震动映射（待 ES8311 实机） |
-| AI 对话模式 | chat_mode.c（MODE_CHAT） | 五态状态机：中键三义（说话/发送/重说），三色屏纯语音降级（待 ES8311 实机） |
+| AI 对话模式 | chat_mode.c（MODE_CHAT） | 五态状态机 + 三模式二级菜单（自由/英中翻译/场景 6 选）：中键三义、SET 短按收藏生词，三色屏纯语音降级（待 ES8311 实机）；协议 docs/AI_CHAT_MODE.md §7 |
 
 ### 11.2 待硬件接线（固件就绪）
 | 项 | 接线 | 固件入口 |
