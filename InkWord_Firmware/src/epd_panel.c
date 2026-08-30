@@ -30,7 +30,7 @@ extern const epd_panel_desc_t g_panel_wf0270;
  * 24Pin；2026-08-22 真机 bring-up 完成：原判 WF0270 型号有误，实物
  * IL91874/EK79652 家族，GxEPD2_270c 序列点亮，全刷 14720ms） */
 extern const epd_panel_desc_t g_panel_gdew027c44;
-/* 以下三块 2026-08-23 新增骨架（屏在途）：几何/档位已定，驱动序列
+/* 以下两块 2026-08-23 新增骨架（屏在途）：几何/档位已定，驱动序列
  * 待真机 bring-up（§十六 SOP）；ops 为 fail-safe 桩（init 拒绝） */
 /* panels/panel_wft0290.cpp（2.9" 128x296 BW 竖屏，WFT0290CZ10，
  * LAYOUT_TINY 档；控制器 UC8253/SSD1680 待实测判定） */
@@ -39,7 +39,7 @@ extern const epd_panel_desc_t g_panel_wft0290;
  * 标签，LAYOUT_TINY 档；控制器疑似 SSD1680 待实证） */
 extern const epd_panel_desc_t g_panel_opm021eb;
 /* panels/panel_e042a13bw.cpp（4.2" 400x300 BW，HINK-E042A13-A0 黑白
- * 版，LAYOUT_MID 档；初判 SSD1619，三色兄弟屏实证同族） */
+ * 版，LAYOUT_MID 档；SSD1619，三色兄弟屏同族，2026-08-30 bring-up 完成） */
 extern const epd_panel_desc_t g_panel_e042a13bw;
 
 static const epd_panel_desc_t *const s_registry[] = {
