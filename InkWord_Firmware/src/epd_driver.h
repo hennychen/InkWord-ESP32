@@ -166,12 +166,16 @@ const epd_panel_desc_t *epd_panel_desc(void);
 /** @brief 单平面帧字节数（panel_w/8 x panel_h；LAN 上传协议帧大小） */
 size_t epd_fb_size(void);
 /** @brief 全平面整帧字节数（epd_fb_size() x plane_count；外部直刷
- *         缓冲容量，多平面色彩面板含红平面） */
+ *         缓冲容量，多平面色彩面板含 accent 平面（红/黄）） */
 size_t epd_fb_total(void);
 /** @brief 面板物理宽（像素；LAN 上传页画布尺寸注入用） */
 int epd_panel_width(void);
 /** @brief 面板物理高（像素） */
 int epd_panel_height(void);
+/** @brief 第三色 RGB（desc.accent_rgb 透传：红屏 0xFF0000 /
+ *         BW 面板 0；LAN 上传页量化调色板
+ *         注入用，未初始化退 0） */
+uint32_t epd_panel_accent_rgb(void);
 
 #ifdef __cplusplus
 }

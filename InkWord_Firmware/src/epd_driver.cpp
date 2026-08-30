@@ -779,6 +779,11 @@ int epd_panel_width(void)
     return s_panel ? s_panel->panel_w : 0;
 }
 
+uint32_t epd_panel_accent_rgb(void)
+{
+    return s_panel ? s_panel->accent_rgb : 0;
+}
+
 int epd_panel_height(void)
 {
     return s_panel ? s_panel->panel_h : 0;

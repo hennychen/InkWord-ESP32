@@ -62,6 +62,9 @@ typedef struct epd_panel_desc {
     epd_color_mode_t    color_mode;
     uint8_t             plane_count;    /* BW=1 / 3C,4C=2 / 6C=2~3 */
     uint8_t             palette[16];    /* 逻辑色→平面位掩码（§9.2） */
+    uint32_t            accent_rgb;     /* 第三色 RGB（多平面面板：红屏
+                                         * 0xFF0000；BW 面板缺省 0。
+                                         * LAN 上传页量化调色板注入源 */
     epd_fb_location_t   fb_location;    /* 默认 AUTO：>128KB 阈值落 PSRAM（§十） */
 
     /* —— 时序 —— */

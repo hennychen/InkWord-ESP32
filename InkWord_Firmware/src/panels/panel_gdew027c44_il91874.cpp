@@ -382,6 +382,7 @@ const epd_panel_desc_t g_panel_gdew027c44 = {
         [EPD_GFX_ACCENT] = 0x02,   /* (0,1) → 红（真强调色可用） */
         [EPD_GFX_AUX]    = 0x00,   /* 3C 无第四色 → 退化黑（§9.2） */
     },
+    .accent_rgb = 0xFF0000,    /* 红（LAN 量化调色板注入） */
     .fb_location = EPD_FB_AUTO,   /* 双帧+画布 ~35KB < 128KB → 全 SRAM
                                    * （§10.2；与 WiFi/BLE 共存余量足） */
     .rst_pulse_ms = 20,           /* GxEPD2 默认复位脉宽（真机验证） */

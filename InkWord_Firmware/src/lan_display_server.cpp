@@ -8,14 +8,18 @@
  *                       字体渲染，几何按当前面板运行期注入 —— Phase 6
  *                       多面板）；文本/图片均支持旋转（自动/0/90/180/270°），
  *                       可选横屏排布满幅显示
- *   POST /api/display   协议 v2 双长度（2026-08-22 彩色传图）：
+ *   POST /api/display   协议 v2 双长度（2026-08-22 彩色传图；v2.1
+ *                       2026-08-29 accent 泛化：[1] 平面色随面板
+ *                       desc.accent_rgb 注入——红屏红，
+ *                       上传页量化调色板同源）：
  *                       v1 单平面 epd_fb_size() 字节（行宽 PW/8，MSB
- *                       first，bit=1 白）——多平面面板余平面（红）设备侧
- *                       补零，旧客户端/脚本兼容，行为与历史版一致；
- *                       v2 双平面 epd_fb_total() 字节（[0]=B/W bit=1
- *                       白 + [1]=红 bit=1 红，与面板 plane 布局直通），
- *                       三色面板彩色传图；两者均 epd_full_refresh 整帧
- *                       直刷。BW 面板两长度相等自然退化 v1
+ *                       first，bit=1 白）——多平面面板余平面（accent）
+ *                       设备侧补零，旧客户端/脚本兼容，行为与历史版
+ *                       一致；v2 双平面 epd_fb_total() 字节（[0]=B/W
+ *                       bit=1 白 + [1]=accent bit=1 置色，与面板 plane
+ *                       布局直通），三色面板彩色传图；两者均
+ *                       epd_full_refresh 整帧直刷。BW 面板两长度相等
+ *                       自然退化 v1
  *   GET  /wifi          Wi-Fi 配网页：扫描列表选 SSID + 密码输入（两种模式均可用）
  *   GET  /api/wifi/scan|status、POST /api/wifi/connect（异步连接，状态轮询）
  *   GET  /api/decks     词书列表（v1.3 T3.4 App 换书）：id/name/count/active
@@ -137,7 +141,7 @@ button{padding:12px 24px;font-size:16px;width:100%}
 </select>
 <span id="tcRow" style="display:none">　字色：
 <label><input type="radio" name="tc" value="0" checked onchange="render()">黑</label>
-<label><input type="radio" name="tc" value="1" onchange="render()">红</label>
+<label><input type="radio" name="tc" value="1" onchange="render()"><span id="tcAccent">红</span></label>
 </span></div>
 </div>
 <div id="imgPanel" class="row" style="display:none">
@@ -149,7 +153,7 @@ button{padding:12px 24px;font-size:16px;width:100%}
 <label><input type="checkbox" id="inv" onchange="render()">反色</label>
 </div>
 <div class="row" id="colRow" style="display:none">
-<label><input type="checkbox" id="col" checked onchange="render()">彩色（黑白红最近色量化）</label>
+<label><input type="checkbox" id="col" checked onchange="render()">彩色（黑白<span id="colAccent">红</span>最近色量化）</label>
 </div>
 <div class="row"><canvas id="cv"></canvas></div>
 <div class="row">设备视角（横持设备时的效果）：<br>
@@ -158,6 +162,10 @@ button{padding:12px 24px;font-size:16px;width:100%}
 <div id="st">预览上方画布（__PW__x__PH__）→ 点击发送</div>
 <script>
 var W=__PW__,H=__PH__,GW=__GW__,GH=__GH__,BPR=W/8,COLOR=__COLOR__;
+/* 第三色随面板注入（desc.accent_rgb：红屏 [255,0,0]；
+ * BW 面板 [0,0,0] 不显现）；文案/预览/量化调色板同源 */
+var ACC=[__ACC__];
+var ACSS='rgb('+ACC.join(',')+')';
 var cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 var dv=document.getElementById('dv');
 cv.width=W;cv.height=H;dv.width=GW;dv.height=GH;
@@ -191,7 +199,7 @@ function renderText(){
   var fs=+document.getElementById('fs').value;
   ctx.font=fs+'px sans-serif';
   var tc=document.querySelector('input[name=tc]:checked');
-  ctx.fillStyle=(COLOR&&tc&&tc.value=='1')?'#f00':'#000';
+  ctx.fillStyle=(COLOR&&tc&&tc.value=='1')?ACSS:'#000';
   var r=curRot(),vw=W,vh=H;
   if(r==90||r==270){vw=H;vh=W;}
   var maxW=vw-16,lh=fs*1.3,li,ci;
@@ -253,7 +261,7 @@ function quantize(){
   var inv=document.getElementById('inv').checked;
   var dith=document.getElementById('dith').checked;
   var bw=new Uint8Array(BPR*H),rd=new Uint8Array(BPR*H);
-  var PAL=[[0,0,0],[255,255,255],[255,0,0]];
+  var PAL=[[0,0,0],[255,255,255],ACC];
   var q=document.createElement('canvas');q.width=W;q.height=H;
   var qc=q.getContext('2d'),im=qc.createImageData(W,H);
   for(var y=0;y<H;y++)for(var x=0;x<W;x++){
@@ -334,7 +342,7 @@ function send(){
   var st=document.getElementById('st');
   st.textContent='发送中...';
   var body;
-  if(colOn()){ /* 协议 v2：双平面（B/W bit=1 白 + 红 bit=1 红）拼接 */
+  if(colOn()){ /* 协议 v2：双平面（B/W bit=1 白 + accent bit=1 置色）拼接 */
     quantize();
     body=new Uint8Array(s_quant.bw.length+s_quant.rd.length);
     body.set(s_quant.bw,0);body.set(s_quant.rd,s_quant.bw.length);
@@ -449,18 +457,22 @@ scan();
 
 /* 上传页几何占位符替换（Phase 6 多面板）：__PW__/__PH__ 面板物理尺寸
  * （浏览器画布与帧格式），__GW__/__GH__ GFX 几何（设备视角预览），
- * __COLOR__ 色彩能力（fb_total>fb_size 即多平面，彩色 UI 注入）。
- * 单遍扫描就地展开；缓冲预留 32B 余量（5 个占位符均短） */
+ * __COLOR__ 色彩能力（fb_total>fb_size 即多平面，彩色 UI 注入），
+ * __ACC__ 第三色 RGB 三元组（v2.1 2026-08-29：desc.accent_rgb，
+ * "255,0,0" 形式——红屏；量化调色板
+ * 与文案同源）。
+ * 单遍扫描就地展开；缓冲预留 64B 余量（6 个占位符均短，__ACC__
+ * 最长 11B 展开增量） */
 static size_t page_subst(const char *tpl, char *out, size_t out_cap,
-                         const char *vals[5])
+                         const char *vals[6])
 {
-    static const char *const tags[5] =
-        {"__PW__", "__PH__", "__GW__", "__GH__", "__COLOR__"};
+    static const char *const tags[6] =
+        {"__PW__", "__PH__", "__GW__", "__GH__", "__COLOR__", "__ACC__"};
     size_t o = 0, i = 0;
     while (tpl[i] && o + 1 < out_cap) {
         int sub = -1;
         if (tpl[i] == '_') {
-            for (int k = 0; k < 5; k++) {
+            for (int k = 0; k < 6; k++) {
                 if (strncmp(tpl + i, tags[k], strlen(tags[k])) == 0) { sub = k; break; }
             }
         }
@@ -481,16 +493,24 @@ static size_t page_subst(const char *tpl, char *out, size_t out_cap,
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
     /* 按当前面板组装页面（GET / 请求频率低，逐次分配可接受） */
-    char pw[8], ph[8], gw[8], gh[8], col[8];
+    char pw[8], ph[8], gw[8], gh[8], col[8], acc[16];
     snprintf(pw, sizeof(pw), "%d", epd_panel_width());
     snprintf(ph, sizeof(ph), "%d", epd_panel_height());
     snprintf(gw, sizeof(gw), "%d", epd_gfx_width());
     snprintf(gh, sizeof(gh), "%d", epd_gfx_height());
     snprintf(col, sizeof(col), "%d",
              epd_fb_total() > epd_fb_size() ? 1 : 0); /* 多平面=彩色 */
-    const char *vals[5] = {pw, ph, gw, gh, col};
+    {
+        const uint32_t rgb = epd_panel_accent_rgb(); /* BW/异常退黑不影响
+                                                      * 隐藏 UI */
+        snprintf(acc, sizeof(acc), "%u,%u,%u",
+                 (unsigned)((rgb >> 16) & 0xFF),
+                 (unsigned)((rgb >> 8) & 0xFF),
+                 (unsigned)(rgb & 0xFF));
+    }
+    const char *vals[6] = {pw, ph, gw, gh, col, acc};
 
-    const size_t cap = sizeof(PAGE_HTML) + 32;
+    const size_t cap = sizeof(PAGE_HTML) + 64;
     char *page = (char *)malloc(cap);
     if (!page) {
         httpd_resp_set_status(req, "500 Internal Server Error");
@@ -663,7 +683,7 @@ static esp_err_t display_post_handler(httpd_req_t *req)
     if (req->content_len != frame_bytes && !color_frame) {
         char msg[96];
         snprintf(msg, sizeof(msg),
-                 "body must be %u (1bpp bw) or %u bytes (bw+red planes)",
+                 "body must be %u (1bpp bw) or %u bytes (bw+accent planes)",
                  (unsigned)frame_bytes, (unsigned)total_bytes);
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_set_type(req, "text/plain");
@@ -696,7 +716,7 @@ static esp_err_t display_post_handler(httpd_req_t *req)
         }
         received += r;
     }
-    /* v1 单平面 → 多平面面板余平面（红）清零；v2 双平面已填满直通 */
+    /* v1 单平面 → 多平面面板余平面（accent）清零；v2 双平面已填满直通 */
     if (!color_frame && total_bytes > frame_bytes)
         memset(s_frame + frame_bytes, 0x00, total_bytes - frame_bytes);
 

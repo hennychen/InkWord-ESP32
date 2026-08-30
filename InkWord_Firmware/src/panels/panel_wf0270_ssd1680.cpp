@@ -267,6 +267,7 @@ const epd_panel_desc_t g_panel_wf0270 = {
         [EPD_GFX_ACCENT] = 0x02,   /* (0,1) → 红 */
         [EPD_GFX_AUX]    = 0x00,   /* 3C 无第四色 → 退化黑（§9.2） */
     },
+    .accent_rgb = 0xFF0000,    /* 红（LAN 量化调色板注入） */
     .fb_location = EPD_FB_AUTO,   /* 双帧+画布 ~34.8KB << 128KB → 全 SRAM
                                    * （5,808B x2 平面 x2 帧 x~1.5；与
                                    * WiFi/BLE 共存余量最宽裕） */
