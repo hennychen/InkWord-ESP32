@@ -163,7 +163,8 @@ bool epd_gfx_partial_supported(void);
  *         字段（如 partial_count_full_refresh 保养阈值，避免再
  *         硬编码与 desc 脱钩） */
 const epd_panel_desc_t *epd_panel_desc(void);
-/** @brief 单平面帧字节数（panel_w/8 x panel_h；LAN 上传协议帧大小） */
+/** @brief 单平面帧字节数（ceil(panel_w/8) x panel_h；行宽向上取整，
+ *         非 8 整除宽面板如 OPM021EB 122px → 16B/行；LAN 上传协议帧大小） */
 size_t epd_fb_size(void);
 /** @brief 全平面整帧字节数（epd_fb_size() x plane_count；外部直刷
  *         缓冲容量，多平面色彩面板含 accent 平面（红/黄）） */

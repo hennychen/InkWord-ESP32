@@ -247,10 +247,12 @@ let BOLD = true
  * 100 = 覆盖率 ≥40% 保留（2026-08-23，原 128 丢弃抗锯齿边缘致细笔断续） */
 let INK_THRESHOLD = 100
 
-func fontForCell(_ cell: Int) -> (name: String, bold: Bool, dilate: Bool) {
+func fontForCell(_ cell: Int) -> (name: String, bold: Bool) {
     let (name, bold) = cell < 24 ? smallFont : largeFont
-    return (name, bold, BOLD && !bold)
-}
+    return (name, bold)
+}   /* 二十四轮（2026-08-31）膨胀重构：dilate 语义从字体选择移出（原
+    BOLD && !bold 只在无真 Bold 时膨胀，PingFang/Kaiti 有真字重故全库
+    从未膨胀）；改为主循环在闭环外按级统一膨胀（见 dilateBits） */
 
 /* 音标字符专属渲染字体（2026-08-23）：主链 PingFang 缺 IPA 全套，
  * CTLine 级联不可控（ˈ 级联渲染为空白，实测）。显式分派 STHeitiSC-Medium
@@ -276,13 +278,13 @@ func phonFont(_ size: CGFloat) -> CTFont {
 }
 
 func fontLabel(_ cell: Int) -> String {
-    let (name, bold, _) = fontForCell(cell)
+    let (name, bold) = fontForCell(cell)
     return name + (bold ? " Bold" : "")
 }
 let fontsDesc = "16/20px \(fontLabel(16)) + 24px \(fontLabel(24))"
 
 func makeFont(_ size: CGFloat, _ cell: Int) -> CTFont {
-    let (name, bold, _) = fontForCell(cell)
+    let (name, bold) = fontForCell(cell)
     var f = CTFontCreateWithName(name as CFString, size, nil) as CTFont
     if bold,
        let b = CTFontCreateCopyWithSymbolicTraits(
@@ -330,12 +332,13 @@ func measureGlyph(_ ch: Character, _ f: CTFont, cell: Int) -> (l: CGFloat, r: CG
 }
 
 func renderGlyph(_ ch: Character, _ f: CTFont, cell: Int, stride: Int,
-                 textX: CGFloat, baseline: CGFloat, dilate: Bool) -> [UInt8] {
-    /* 音标字符分派专属字体（Medium 真字重，dilate 不参与）；分派后主字体
-     * 若无 Bold 已在调用方 dilate，这里对 phon 字体禁用膨胀防过粗 */
+                 textX: CGFloat, baseline: CGFloat) -> [UInt8] {
+    /* 音标字符分派专属字体（STHeitiSC-Medium 真字重）。二十四轮（2026-08-31）
+     * 膨胀重构：dilate 移出本函数——闭环内膨胀会被 edgeTouch 检出伪贴边 →
+     * 缩字号 → 再膨胀再贴边的恶性互搏（2026-08-23 Bold 漏检事故同机理），
+     * 改为主循环在闭环/降级/合成全部结束后按级统一膨胀（dilateBits） */
     let isPhon = phonSet.contains(ch)
     let f = isPhon ? phonFont(CTFontGetSize(f)) : f
-    let dilate = isPhon ? false : dilate
     var buf = [UInt8](repeating: 255, count: cell * cell)   // 灰度，白底
     let ctx = CGContext(data: &buf, width: cell, height: cell,
                         bitsPerComponent: 8, bytesPerRow: cell,
@@ -360,28 +363,34 @@ func renderGlyph(_ ch: Character, _ f: CTFont, cell: Int, stride: Int,
         }
     }
 
-    /* 无 Bold 变体时的机械加粗：3x3 膨胀（按级，小字级无 Bold 才启用） */
-    if dilate {
-        var out = bits
-        func bit(_ y: Int, _ x: Int) -> Bool {
-            bits[y * stride + x / 8] & UInt8(0x80 >> (x % 8)) != 0
-        }
-        for gy in 0..<cell {
-            for gx in 0..<cell where bit(gy, gx) {
-                for dy in -1...1 {
-                    for dx in -1...1 {
-                        let y = gy + dy, x = gx + dx
-                        if y >= 0 && y < cell && x >= 0 && x < cell {
-                            out[y * stride + x / 8] |= UInt8(0x80 >> (x % 8))
-                        }
+    return bits
+}
+
+/* 3x3 膨胀（位图级机械加粗，从原 renderGlyph 提出）：二十四轮（2026-08-31）
+ * 曾对 20px 级启用，真机实测晕染回滚——Semibold 基础上再膨胀，密笔画
+ * 汉字（量/赢/疆类，笔画间隙 1~2px）间隙被填死糊成墨块，低对比度灰底
+ * 上墨块边缘发虚加重晕染感。教训：低对比度屏小字可读性 ≠ 无限加粗，
+ * 笔画间隙的存留比墨迹浓度更重要；常规字重 + 足够字号才是正解 */
+func dilateBits(_ bits: [UInt8], cell: Int, stride: Int) -> [UInt8] {
+    var out = bits
+    func bit(_ y: Int, _ x: Int) -> Bool {
+        bits[y * stride + x / 8] & UInt8(0x80 >> (x % 8)) != 0
+    }
+    for gy in 0..<cell {
+        for gx in 0..<cell where bit(gy, gx) {
+            for dy in -1...1 {
+                for dx in -1...1 {
+                    let y = gy + dy, x = gx + dx
+                    if y >= 0 && y < cell && x >= 0 && x < cell {
+                        out[y * stride + x / 8] |= UInt8(0x80 >> (x % 8))
                     }
                 }
             }
         }
-        bits = out
     }
-    return bits
+    return out
 }
+/* 二十四轮回滚：膨胀不再调用（函数保留供后续温和变体实验，如右下 2x2） */
 
 /* stderr 报告通道（必须先于 level 渲染循环初始化：swift JIT 顶层代码
  * 按序执行，循环内 say() 若早于此定义调用，会捕获尚未初始化的 err
@@ -412,7 +421,7 @@ func edgeTouch(_ b: [UInt8], cell: Int, stride: Int) -> Int {
 /* 单字形自适应降级：从 baseSize 起独立两遍法居中渲染、贴边则缩 1pt 直至
  * 装下（字号不同基线不同，不能用整级基线）。cell 制点阵按格对齐，
  * 降级字形仅比同级略小、无基线错乱（2026-08-23） */
-func renderGlyphFit(_ ch: Character, cell: Int, stride: Int, baseSize: CGFloat, dilate: Bool) -> [UInt8] {
+func renderGlyphFit(_ ch: Character, cell: Int, stride: Int, baseSize: CGFloat) -> [UInt8] {
     var size = baseSize
     var last: [UInt8] = []
     while size >= 8 {
@@ -421,7 +430,7 @@ func renderGlyphFit(_ ch: Character, cell: Int, stride: Int, baseSize: CGFloat, 
         let baseline = ((CGFloat(cell) + (-m.b) - m.t) / 2).rounded()
         let textX = ((CGFloat(cell) - m.l - m.r) / 2).rounded()
         let b = renderGlyph(ch, f, cell: cell, stride: stride,
-                            textX: textX, baseline: baseline, dilate: dilate)
+                            textX: textX, baseline: baseline)
         if edgeTouch(b, cell: cell, stride: stride) == 0 { return b }
         last = b
         size -= 1
@@ -465,7 +474,8 @@ for cell in LEVELS {
     let stride = (cell + 7) / 8
     var out = LevelOut(cell: cell, stride: stride)
     var fontSize = FONT_SIZE_HINT[cell] ?? CGFloat(cell - 2)
-    let dilate = fontForCell(cell).dilate
+    /* 二十四轮：膨胀不在此层（闭环内膨胀会被 edgeTouch 检出伪贴边 → 恶性
+     * 缩字）；20px 级在下方 synthModifier 替换后统一 dilateBits */
     /* 贴边容忍：整级渲染后残余贴边 ≤ 此像素值不缩整级，改走 per-glyph
      * 降级（renderGlyphFit）。原闭环追求绝对归零，为 1~2 个极端墨迹字
      * 缩整级 1pt，三级各白损 6~8% 字面（2026-08-23 实测 16px 级因此
@@ -494,7 +504,7 @@ for cell in LEVELS {
             out.fontSize = fontSize
             for ch in sortedChars {
                 let b = renderGlyph(ch, font, cell: cell, stride: stride,
-                                    textX: textX, baseline: baseline, dilate: dilate)
+                                    textX: textX, baseline: baseline)
                 out.bits.append(b)
             }
             out.touched = out.bits.reduce(0) { $0 + edgeTouch($1, cell: cell, stride: stride) }
@@ -511,7 +521,7 @@ for cell in LEVELS {
     for (i, ch) in sortedChars.enumerated()
     where edgeTouch(out.bits[i], cell: cell, stride: stride) > 0 {
         out.bits[i] = renderGlyphFit(ch, cell: cell, stride: stride,
-                                     baseSize: fontSize - 1, dilate: dilate)
+                                     baseSize: fontSize - 1)
         out.demoted += 1
     }
     if out.demoted > 0 {
@@ -525,6 +535,8 @@ for cell in LEVELS {
             out.bits[i] = s
         }
     }
+    /* 二十四轮（2026-08-31）回滚：原 20px 级统一膨胀块删除——真机实测
+     * 晕染（见 dilateBits 注释），恢复 Semibold/STHeitiSC-Medium 原样位图 */
     levelOuts.append(out)
 }
 

@@ -169,18 +169,28 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
  * 右栏 7 字/行阅读体验差，416x240 全宽 21 字/行提升 3 倍）；
  * 字号档位派生：TINY/SMALL 16px / MID+ 20px */
 #define UI_MEAN_LEVEL   (layout_profile_get()->kind <= LAYOUT_SMALL \
-                         ? (settings_font_mode() >= 1 ? 1 : 0) \
+                         ? (settings_font_mode() >= 1 ? 1 \
+                            : (epd_gfx_width() <= 122 ? 1 : 0)) \
                          : (settings_font_mode() >= 1 ? 2 : 1))  /* 正文字号级：
  * 档位默认 TINY/SMALL 16px / MID+ 20px；大字/特大档（set_font>=1）
  * 整体 +1 级（20/24px），行距与几何全部由本宏派生自适应。2026-08-27
  * P1a 三档化：意图相对档位表达（set_rot 同哲学）——TINY 屏宽 122~
  * 128px 下 24px 每行仅 3~4 字 / SMALL 横屏 176 高正文行数趋零，
- * 特大档(2)在 TINY/SMALL 钳位至 20px（渲染等价大字，语义不漂移） */
+ * 特大档(2)在 TINY/SMALL 钳位至 20px（渲染等价大字，语义不漂移）。
+ * 2026-08-30 OPM021EB 真机补充：2.13" 122 宽（0.1943mm 像素距
+ * ≈135DPI）16px 字物理仅 3.1mm，音标/释义/标签实测发虚看不清
+ * （单词大字清晰对比佐证），默认提 20px；2.9" 128 宽（90DPI）
+ * 保持 16px（WFT0290 真机验收通过口径） */
 #define UI_WORD_BASE    (UI_STATUS_H + (UI_TINY ? 24 \
                          : (UI_MEAN_LEVEL ? 36 : 32)))  /* 单词基线（68/64/48） */
 #define UI_PHON_TOP     (UI_WORD_BASE + (UI_TINY ? 6 : 9))     /* 音标行 16px 点阵顶（77/73/54） */
-#define UI_BODY_TOP     (UI_PHON_TOP + 16 + (UI_TINY ? 4 : 11)) /* 正文流首行顶（104/100/74） */
-#define UI_BODY_LH      (UI_MEAN_LEVEL ? 24 : 20)  /* 正文行距：字级 +4（reader 惯例） */
+#define UI_BODY_TOP     (UI_PHON_TOP + (UI_AUX_LEVEL ? 20 : 16) + (UI_TINY ? 4 : 11)) /* 正文流首行顶：音标行高随辅助级 */
+#define UI_BODY_LH      (UI_TINY ? (UI_MEAN_LEVEL ? 26 : 20) : (UI_MEAN_LEVEL ? 24 : 20))  /* 正文行距：字级 +4（reader 惯例）；二十四轮（2026-08-31）TINY 档 20px 级膨胀加粗后 24→26：笔画变粗视觉更满，行间空隙 4→6px 防粘连（低对比度屏稀疏化），每页行数 6→5 */
+#define UI_AUX_LEVEL    (epd_gfx_width() <= 122 ? UI_MEAN_LEVEL : 0)
+                                   /* 辅助小字级（音标/标签行）：
+ * 2.13" 122 宽（135DPI）跟随正文级（20px），其余屏（含 2.9" 128
+ * 宽）保持 16px 原口径。2026-08-30 OPM021EB 真机：16px 音标/标签
+ * 与单词大字清晰度对比悬殊，主诉“显示不清” */
 /* 行数按屏高派生：底部预留 30 = 标签行 + 余量（末行文字底与标签顶
  * 错开，MID 末行底 196 < 标签顶 206）；416x240=4 行、400x300=6、
  * 264x176=2、122x250 竖屏=7、128x296 竖屏=9（TINY 预留收至 26） */
@@ -190,7 +200,7 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
  * 极端几何（窄屏高字号叠加）防御，正文区至少 1 行可翻页（P1a） */
 #define UI_BODY_MAX_W   (epd_gfx_width() - 2 * UI_MARGIN_X)   /* 全宽正文（392/232/106/112） */
 #define UI_FOOT_BASE    (epd_gfx_height() - 16)        /* 底部标签基线：底边距 16（224） */
-#define UI_FOOT_TOP     (UI_FOOT_BASE - 18)             /* 中文 tag 16px 点阵顶：基线上 16+2（206） */
+#define UI_FOOT_TOP     (UI_FOOT_BASE - (UI_AUX_LEVEL ? 22 : 18)) /* tag 点阵顶：字高+2（208/206） */
 /* ---- v1.4 T4.3 poem-card 头部几何：诗行（正文字号大一级，绝句两句
  * 内）+ 拼音行（16px），译文区从拼音行下 8px 起（ui_mean_geom 派生）；
  * MID 默认档 124 起可容 5 行译文，SMALL 1 行/页分页翻 ---- */
@@ -1126,7 +1136,7 @@ static void ui_draw_foot(const WordEntry *w, int max_w)
     if (foot[0]) {
         if (cjk_text_has_wide(foot))
             cjk_text_draw_wrap(UI_MARGIN_X, UI_FOOT_TOP, max_w,
-                               /*level*/0, 0, 1, foot, EPD_GFX_BLACK);
+                               /*level*/UI_AUX_LEVEL, 0, 1, foot, EPD_GFX_BLACK);
         else
             epd_gfx_draw_text(UI_MARGIN_X, UI_FOOT_BASE, foot,
                               EPD_GFX_BLACK, 1);
@@ -1345,12 +1355,12 @@ static void ui_draw_content(const WordEntry *w)
         if (w->phonetic[0]) {
             /* 词典惯例斜杠包裹：裸 IPA 补 / /，自带包裹符（/[）不双包 */
             if (w->phonetic[0] == '/' || w->phonetic[0] == '[')
-                cjk_text_draw(UI_MARGIN_X, UI_PHON_TOP, 0,
+                cjk_text_draw(UI_MARGIN_X, UI_PHON_TOP, UI_AUX_LEVEL,
                               w->phonetic, EPD_GFX_BLACK);
             else {
                 char ph[WORD_PHONETIC_MAX + 4];
                 snprintf(ph, sizeof(ph), "/%s/", w->phonetic);
-                cjk_text_draw(UI_MARGIN_X, UI_PHON_TOP, 0,
+                cjk_text_draw(UI_MARGIN_X, UI_PHON_TOP, UI_AUX_LEVEL,
                               ph, EPD_GFX_BLACK);
             }
         }
@@ -1360,9 +1370,9 @@ static void ui_draw_content(const WordEntry *w)
      * 点阵 ASCII 与音标行同 16px 级，2026-08-23 随音标行点阵化统一）；
      * 听写遮蔽态照画（无拼写信息量） */
     if (learning_state_is_collected(study_mode_current_word_index())) {
-        int sw = cjk_text_width(0, "*");
+        int sw = cjk_text_width(UI_AUX_LEVEL, "*");
         cjk_text_draw(epd_gfx_width() - UI_MARGIN_X - sw, UI_PHON_TOP,
-                      0, "*", EPD_GFX_BLACK);
+                      UI_AUX_LEVEL, "*", EPD_GFX_BLACK);
     }
 
     /* 正文：cjk 点阵混排（中文按字断/ASCII 按词断，超宽自动换行），

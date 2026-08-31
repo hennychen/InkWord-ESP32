@@ -83,10 +83,17 @@ static GFXcanvas1 *s_canvas_ac = NULL;
  * （多平面连续布局，§6.2），AUTO 阈值规则见 epd_fb_alloc */
 static uint8_t *s_port_new  = NULL;
 static uint8_t *s_port_prev = NULL;
-static size_t   s_fb_size   = 0;      /* 单平面单帧 = panel_w/8 x panel_h */
+static size_t   s_fb_size   = 0;      /* 单平面单帧 = panel_stride x panel_h */
 static bool     s_fb_in_psram = false; /* 诊断日志：帧缓冲实际落点 */
 
 static bool s_inited = false;
+
+/* 面板竖屏行宽字节（字节粒度向上取整）：OPM021EB 122px → 16B/行
+ * 为首个非 8 整除宽面板（2026-08-30），SSD1680 RAM 物理行宽同 16B
+ * （122px 有效 + 6 位无源极线不显示）；8 整除面板 (w+7)/8 == w/8，
+ * 全部既有面板零行为差异 */
+static inline int panel_stride(const epd_panel_desc_t *p)
+    { return (p->panel_w + 7) / 8; }
 
 static const char *TAG = "EPD"; /* debug_log 宏依赖 */
 
@@ -171,7 +178,7 @@ static void transpose_to_plane(const GFXcanvas1 *cv, uint8_t *plane)
     const uint8_t *src = cv->getBuffer();
     const int gw = cv->width(), gh = cv->height();
     const int stride = (gw + 7) / 8;          /* 画布行宽字节 */
-    const int pstride = s_panel->panel_w / 8; /* 面板竖屏行宽字节 */
+    const int pstride = panel_stride(s_panel); /* 面板竖屏行宽字节 */
     const int rot = s_rot;
     for (int cy = 0; cy < gh; cy++) {
         const uint8_t *row = src + cy * stride;
@@ -387,10 +394,10 @@ int epd_driver_init(void)
         return -1;
     }
 
-    /* 5. 双帧 + 画布按 desc 动态分配（Phase 2，§6.2：单帧 = panel_w/8
-     *    x panel_h x plane_count；BW 3.7" = 12,480B x2 全 SRAM，
-     *    与静态数组时代水位一致） */
-    s_fb_size = (size_t)(s_panel->panel_w / 8) * s_panel->panel_h;
+    /* 5. 双帧 + 画布按 desc 动态分配（Phase 2，§6.2：单帧 =
+     *    panel_stride x panel_h x plane_count；BW 3.7" = 12,480B x2
+     *    全 SRAM，与静态数组时代水位一致） */
+    s_fb_size = (size_t)panel_stride(s_panel) * s_panel->panel_h;
     const size_t plane_bytes = s_fb_size * s_panel->plane_count;
     s_port_new  = epd_fb_alloc(plane_bytes);
     s_port_prev = epd_fb_alloc(plane_bytes);
@@ -408,7 +415,7 @@ int epd_driver_init(void)
 
     s_canvas = new GFXcanvas1(gw, gh);
     if (!s_canvas || !s_canvas->getBuffer()) {
-        LOG_E("canvas alloc failed (%d bytes)", gw * gh / 8);
+        LOG_E("canvas alloc failed (%d bytes)", (gw * gh + 7) / 8);
         return -1;
     }
     s_canvas->fillScreen(CANVAS_WHITE);   /* 画布白底（与旧全刷首帧行为一致） */
@@ -436,7 +443,7 @@ int epd_driver_init(void)
           EPD_SCK_PIN, EPD_MOSI_PIN);
     LOG_I("FB: %u B x2 (%s) + canvas %dx%d %u B x%d",
           (unsigned)plane_bytes, s_fb_in_psram ? "PSRAM" : "SRAM",
-          gw, gh, (unsigned)(gw * gh / 8), s_canvas_ac ? 2 : 1);
+          gw, gh, (unsigned)((gw * gh + 7) / 8), s_canvas_ac ? 2 : 1);
 #if defined(INKWORD_BOARD_V14)
     LOG_I("Booster: v1.4 on-board self-managed boost (decoupled from COG GDR), no MCU PWM");
 #else
@@ -763,14 +770,15 @@ const epd_panel_desc_t *epd_panel_desc(void)
 
 size_t epd_fb_size(void)
 {
-    /* 单平面帧字节（LAN 协议帧大小）；未初始化返回 0 */
-    return s_panel ? (size_t)(s_panel->panel_w / 8) * s_panel->panel_h : 0;
+    /* 单平面帧字节（LAN 协议帧大小；行宽字节向上取整，OPM021EB
+     * 122px → 4,000B）；未初始化返回 0 */
+    return s_panel ? (size_t)panel_stride(s_panel) * s_panel->panel_h : 0;
 }
 
 size_t epd_fb_total(void)
 {
     /* 全平面整帧字节（外部直刷缓冲容量，多平面色彩面板含红平面） */
-    return s_panel ? (size_t)(s_panel->panel_w / 8) * s_panel->panel_h
+    return s_panel ? (size_t)panel_stride(s_panel) * s_panel->panel_h
                      * s_panel->plane_count : 0;
 }
 
