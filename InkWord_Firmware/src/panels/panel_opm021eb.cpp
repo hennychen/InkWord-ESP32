@@ -284,17 +284,20 @@ static int uc_refresh_bw(const uint8_t *frame /* NULL = 全白 */)
     return 0;
 }
 
-/* —— 打断法快刷证伪记录（三十一/三十二轮，2026-08-31）——
- * 探针 probe_opm_abort：OTP 全刷波形执行中 0x02 POF 打断可行，
- * 棋盘目验可见；但正式固件翻词实测推翻 —— 第一次下翻后旧词灰蒙蒙
- * （清屏相位冲淡），第二次下翻后才显示第一次的词（滞后一帧）。
- * 机制实锤：本 COG 为断点续刷型（ESL 价签核心特性：刷一半掉电，
- * 换电池后续刷完）——打断时波形目标快照与进度冻结，下一 0x12 为
- * 续跑信号而非重启，打断期间写入的 0x13 成为再下一次会话的目标。
- * 推论：显示任意新帧所需波形时间恒定 ~2965ms，分段打断无法缩时
- * （数学上无解）。探针棋盘「可见」是多轮打断累计效应，误导性
- * 结论 —— 单帧单打断不显示目标。快刷三重锁死：REG LUT 硅锁 +
- * OTP 无快档 + 波形时间恒定，彻底终局 */
+/* —— 打断法快刷翻案史（三十一~四十一轮）——
+ * 31/32 轮（单写 0x13 时代）：POF 打断流程层可行但真机翻词滞后
+ * 一帧，误判“断点续刷型 COG / 波形时间恒定 2965ms 数学无解”证伪。
+ * 38 轮定案滞后真因 = DTM1(0x10) 未写（双 RAM 差分引擎需双有效，
+ * 单写屏显恒滞后一帧）——误判根基拔除。40 轮探针
+ * （probe_opm_dw_abort）双写+打断组合实测：X=250/500/1000/2000ms
+ * 四档条带图全部逐帧正确显示当前帧（无滞后），POF 后 boost 余量
+ * 驱动使实际对比度远超标称打断点。“波形时间恒定”推论作废。
+ * 快刷终局重写：REG LUT 硅锁 + OTP 无快档仍在（无寄存器级快刷），
+ * 但打断法在双写序列下成立（全刷波形截短，ED057TC1 同源） */
+#define K_ABORT_MS 250                 /* 打断点：波形执行 0.25s 处 POF。
+                                        * 四十三轮定档：1000/500/250ms
+                                        * 阶梯降档真机文字均清晰，取
+                                        * 探针 40 轮最低可辨档（~0.65s/帧）*/
 
 /* —— ops —— */
 
@@ -349,17 +352,37 @@ static int panel_write_full(const uint8_t *frame)
     return panel_full_refresh(frame);
 }
 
-/* panel_partial 已简化（三十九轮）：38 轮探针证明窗口链/0x21 对/
- * 寄存器组/LUT 写入均非必要（H1 组纯双写序列完美），partial 与 full
- * 唯一正确形态都是双写全刷 —— 直接转发，删除全部窗口链代码史
- *（35~37 轮恢复/加回的实验成分，git 可溯） */
+/* 打断法快刷（四十一轮，2026-09-01）：双写序列（同 39 轮口径）+
+ * 0x12 波形执行 K_ABORT_MS 处 0x02 POF 打断。40 轮探针实证四档
+ * 全部逐帧正确显示当前帧；POF 后寄存器不丢（31 轮 POF/PON 轮转
+ * 实证），每帧 PON 重升压。打断截断清屏相位会积累残影 —— 由
+ * refresh_scheduler 阈值保养全刷（局刷 8 次强制 1 次完整全刷）清，
+ * 架构现成。prev 不参与（差分由 COG DTM1 承担，同帧双写） */
 static int panel_partial(const uint8_t *prev, const uint8_t *new_,
                          uint8_t passes)
 {
     (void)prev;
-    (void)passes;
+    if (passes < 1) passes = 1;
     if (!s_ready && uc_init() != 0) return -1;
-    return uc_refresh_bw(new_);       /* 双写全刷（0x10+0x13+0x12） */
+
+    const uint32_t t0 = millis();
+    for (uint8_t p = 0; p < passes; p++) {
+        epd_cmd(0x04);                 /* PON：POF 态后重升压 */
+        wait_idle_level(g_panel_opm021eb.busy_level,
+                        g_panel_opm021eb.busy_timeout_ms);
+        epd_cmd(0x10);                 /* DTM1 old（同帧，差分基准） */
+        write_ram_frame(new_);
+        epd_cmd(0x13);                 /* DTM2 new */
+        write_ram_frame(new_);
+        epd_cmd(0x12);
+        delay(K_ABORT_MS);             /* 波形执行 Xms 处 */
+        epd_cmd(0x02);                 /* POF 打断（不等波形完成） */
+        wait_idle_level(g_panel_opm021eb.busy_level, 1000);
+    }
+    Serial.printf("[OPM] partial abort %ux%ums took %ums\n",
+                  passes, (unsigned)K_ABORT_MS,
+                  (unsigned)(millis() - t0));
+    return 0;
 }
 
 static void panel_power_off(void)
@@ -416,11 +439,11 @@ const epd_panel_desc_t g_panel_opm021eb = {
     .full_ms    = 3200,            /* 二轮实测 3,117ms（含上电/
                                     * 关电，波形 2,970ms 稳定复现
                                     * 四次）+ 余量 */
-    .partial_ms = 3200,            /* partial==full：双写全刷 ~3s（快刷
-                                    * 四重锁死，物理极限） */
-    .partial_enabled = true,       /* partial 转发双写全刷（三十九轮：
-                                    * 0x10+0x13 双写是 DRF 正确语义，
-                                    * 换词正确；速度无收益） */
+    .partial_ms = 650,             /* 打断法快刷：K_ABORT_MS=250 +
+                                    * 传输/POF 开销（四十三轮最低档） */
+    .partial_enabled = true,       /* 打断法快刷（四十三轮定档）：双写
+                                    * + 250ms POF 打断 ~0.65s/帧；真机
+                                    * 1000/500/250 三档文字均清晰 */
     .passes     = 1,
     .partial_count_full_refresh = 4, /* 局刷计数保养（OTP 全刷波形
                                     * 自带清屏相位，残影轻，4 次保守） */
