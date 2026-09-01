@@ -303,7 +303,7 @@ VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `i
 | **音频播放** | [`audio_player`](src/audio_player.h) + `src/mp3/`（libhelix 内嵌） | I2S + ES8311 CODEC DAC, WAV/MP3 异步任务队列播放（提交即返、重按打断重播；P0A）；MP3 帧级采样率动态切换 8k~48k（2026-08-27），音量 0~100 经 es8311 数字音量（见 §1.3） |
 | **音频同步** | [`audio_sync`](src/audio_sync.h) | 云端词条音频补齐：`{cloud_id}.mp3` 缺失串行下载（tmp+rename 防半文件），功能菜单入口 + 「缺 N/总 M」徽标（P0C） |
 | **麦克风录音** | [`mic_recorder`](src/mic_recorder.h) | ES8311 ADC 全双工录音（板载/FPC 模拟麦→DOUT=GPIO11；录音期 TX 持续写静音零样本）；3s 跟读/10s 对话双档（send_now 说完即发、尾静音提前断），PSRAM 缓冲录完即释、就地组 WAV 头（P1/P2B） |
-| **AI 对话** | [`chat_mode`](src/chat_mode.h) | MODE_CHAT 五态状态机（录音→上传→下载→播放；常驻任务+触发位），录音复用 mic_recorder、播放走 audio_play_file 零新路径，三色屏降级纯语音+震动（P2B，docs/AI_CHAT_MODE.md） |
+| **AI 对话** | [`chat_mode`](src/chat_mode.h) | MODE_CHAT 五态状态机（录音→上传→读流→句级流水线播放；常驻任务+触发位），录音复用 mic_recorder、播放走 audio_play_file 零新路径，三色屏降级纯语音+震动；P0-1 流式：NDJSON 增量读 + barge-in 3s 拾起（abort 截后端生成）+ replay 重播 + 老后端首行探测回退（docs/AI_CHAT_MODE.md §2b/§4） |
 | **按键** | [`button_handler`](src/button_handler.h) | 五向导航开关轮询去抖, 区分短按 / 长按 (1.5s) |
 | **存储** | [`storage_manager`](src/storage_manager.h) | SD 卡 SPI 挂载至 `/sdcard`, 文件读写 |
 | **刷新调度** | [`refresh_scheduler`](src/refresh_scheduler.h) | 局刷计数, 达阈值例行全刷（学习页阈值 8；待机页引文轮换阈值 12 低频保养） |
