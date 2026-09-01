@@ -356,3 +356,62 @@ POST /api/device/chat?mode={free|scenario|translate}&scenarioId={code}
 > 注：§8 上表 DeepSeek free 端到端 3.0s 系 piper 缺席 audioUrl=null
 > 的文本链路实测；含 TTS 全链路整段值为预估。流式附带收益：打断即时
 > 截断未完成的 LLM token 与 TTS 句合成（省算力）。
+
+## 9. 真机联调故障链排查与修复（2026-09-01）
+
+> 背景：真机从菜单进 AI 对话被静默回退学习页 → 以此为线索系统性审查
+> 菜单→页面路由与对话全链路，共挖出 **8 个叠加问题**（设备 4 + 后端
+> 4），逐个修复后 curl 全链路复测全绿（NDJSON meta→s×N→end，s 句带
+> MP3 URL 且可下载）。真机端到端验收待补（设备空闲入睡等待操作）。
+
+### 9.1 故障链（8 问题）
+
+| # | 层 | 问题与根因 | 修复 |
+|--|--|--|--|
+| 1 | 固件 | `study_mode_enter_chat` 前置失败（Wi-Fi/Key/SD）静默回学习页，用户不知原因 | 返回错误码 1-4；菜单二级页留页提示原因（menu_ui `s_hint_override`） |
+| 2 | 固件 | 开机首次注册要等 10 分钟（background_task 首周期），新设备必被 key=0 拒 | LAN 就绪即 `sync_try_register()`（幂等，已注册零开销） |
+| 3 | 固件 | **platformio.ini 子 env `build_flags` 覆盖语义**踢掉 `[env]` 全部 flags：I/W 级日志编译期被裁（串口只剩 E）+ `HAVE_LIBHELIX_MP3` 被裁（MP3 播放路径消失） | `${env.build_flags}` 继承；`ARDUINO_USB_MODE redefined` 警告回归即继承生效证据 |
+| 4 | 后端 | Ollama 调用走系统代理（Clash 7897 未跑）→ LLM 全部 Connection refused | `new HttpClient(new SocketsHttpHandler{UseProxy=false})`（localhost 永不走代理） |
+| 5 | 后端 | `Asr:Provider="none"`（生产兜底值）→ ASR 恒 503 | appsettings.Development.json 覆盖 `sherpa`（模型在位） |
+| 6 | 后端 | 配置模型 `qwen2.5:7b` 本机不存在（仅 1.5b）→ LLM 502 | Development.json 覆盖 `qwen2.5:1.5b` |
+| 7 | 后端 | piper 二进制本机缺失（配置是 Docker 容器路径）；GitHub release 直连卡死/ghproxy 失效 | **pip venv 安装 piper-tts**（清华镜像）+ wrapper 脚本转义 `--voice→--model` + 音色 63MB 从 hf-mirror 下载（§8 注：此前实测一直系 piper 缺席文本链路） |
+| 8 | 固件 | 录音期页面静默：用户无从得知 mic 是否正常（诊断三盲区：无电平日志/无识别回显/日志被裁） | 见 9.2 录音反馈闭环 |
+
+### 9.2 录音反馈闭环（不违反录音期禁刷铁律）
+
+物理约束：mic_recorder I2S DMA 缓冲 8×256 样本=128ms < 窗口局刷
+~100-300ms，**录音期间任何屏刷必丢样本**——录音中不能实时转写，
+反馈全部落在录音结束后瞬间：
+
+1. **UPLOADING 态**：「已录 X.X 秒 · 发送中」——本地时长零网络依赖
+   （`chat_mode_rec_ms()`）
+2. **THINKING 态**：「你说：…」——meta.transcript 到达即回显
+   （后端早已下发、固件此前未解析；`chat_mode_heard()`，NULL=meta
+   未到/空串=后端判无话音显示「未听到内容」）；同态重入 `set_state`
+   触发重刷，涟漪动画不受影响
+3. **mic 峰值诊断**（mic_recorder）：`record_pcm` 输出全程峰值
+   dBFS——`peak≤-60dB`=哑麦（硬件）；说话但 `-35` 附近=VAD 阈值
+   失配（ES8311 噪声底与 INMP441 标定值差异，TODO VAD_CALIB 实测依据）
+
+### 9.3 本地开发环境配置（Development.json 三覆盖）
+
+```json
+"Asr": { "Provider": "sherpa" },
+"Ai":  { "Model": "qwen2.5:1.5b" },
+"Tts": { "PiperPath": "<项目>/data/piper/piper",
+         "PiperVoice": "<项目>/data/piper/voices/en_US-lessac-medium.onnx" }
+```
+
+- piper 安装：`data/piper/venv`（pip piper-tts）；`data/piper/piper`
+  为 wrapper（参数名转义）；音色 voices/ 下 en_US 已配，**zh_CN
+  （A2 中文播报）未配**，需时从 hf-mirror 补 `zh_CN-huayan-medium.onnx`
+- 主 appsettings.json 的 none/Docker 路径是生产兜底，不动
+
+### 9.4 遗留事项
+
+- 真机端到端验收（§5 清单 8 项）待设备旁操作（固件/后端均已就绪）
+- platformio.ini 实测临时段（`INKWORD_API_BASE` 指本机）测完删除
+  恢复生产地址，**不入库**
+- VAD 阈值复标：真机录音 peak 日志积累后定档（-30~-40 扫描）
+- 深睡循环疑云已解除：`rst:0x5` 系 silent_heartbeat_session 定时心跳
+  会话（校时/心跳/回睡 ~8s），正常省电设计非 bug
