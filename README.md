@@ -26,7 +26,7 @@
 | A：FSRS 替换 SM-2 | 后端 FsrsService 影子运行 + 对比看板；固件 srs_engine 已换 FSRS-4.5（LR03），双端共享对拍向量全绿 | ✅ 影子运行中 |
 | C：语音跟读评测 | 发音评测端到端（固件听-跟一体流 + heuristic 引擎，GOP 升级路径已就绪）；待 ES8311 实机（docs/AI_SPEECH_ASSESSMENT.md） | ◐ 待实机 |
 | 发音音频闭环 | Piper TTS 批量合成 + 按需下发 + SD 自动同步（P0A/B/C；中键真实发音，libhelix MP3 异步播放） | ✅ 代码完成（待硬件实机） |
-| AI 语音对话 | ASR(sherpa-onnx)+LLM+TTS 单端点编排（P2A）；固件 MODE_CHAT 五态状态机、语音优先/三色屏降级（P2B，docs/AI_CHAT_MODE.md） | ◐ 待 ES8311 实机 |
+| AI 语音对话 | ASR(sherpa-onnx)+LLM+TTS 单端点编排（P2A）；固件 MODE_CHAT 五态状态机、语音优先/三色屏降级（P2B）；P0-1 流式化：NDJSON 句级流水线 + barge-in abort + replay 命令 + 会话摘要压缩（docs/AI_CHAT_MODE.md §2b） | ◐ 待 ES8311 实机 |
 
 ### 1.2 里程碑（对照 PRD §九）
 
@@ -272,7 +272,8 @@ cd InkWord_Firmware
 | 管理 | GET/POST | `/api/admin/words/ai-pending[/count]` `/ai-apply/{id}` `/ai-reject/{id}` | AI 建议审核（人工 diff 比对通过后才落词库字段，防幻觉红线）；`ai-reject` 兼复位生成失败词（AiStatus 3→0 重入队列） |
 | 设备 | POST | `/api/device/pronunciation` | 发音评测（WAV 16kHz/mono≤3s → 总分+音素明细，M5 路径 C） |
 | 设备 | GET | `/api/device/audio/{file}` | 词条/chat 音频下发（Piper TTS 产物，流式返回，X-Device-Key） |
-| 设备 | POST | `/api/device/chat` | AI 语音对话（WAV ≤10s/512KB → ASR+LLM+TTS 单端点 → reply/audioUrl，P2A） |
+| 设备 | POST | `/api/device/chat` | AI 语音对话（WAV ≤10s/512KB → ASR+LLM+TTS 单端点 → reply/audioUrl，P2A；`?stream=1` NDJSON 句级流式，P0-1） |
+| 设备 | POST | `/api/device/chat/abort?roundId=` | 对话轮中止（barge-in 截断 LLM/TTS，fire-and-forget，P0-1） |
 
 > 统一响应包装 `ApiResponse{code=0 成功, message, data}`——前端判定 `code === 0`（非 200）。
 
@@ -331,7 +332,7 @@ NVS blob = {magic "LR03", count, used, lr_sparse_t[used]}
 | haptic 事件表 | haptic.c | （需马达接线后） |
 | 词条音频同步 | audio_sync.c | 菜单「音频同步」缺 N/总 M 徽标，后台串行下载，网络熔断 |
 | 跟读评测（听-跟一体流） | mic_recorder.c + pron_task | 中键播完自动进跟读，三态屏 + 震动映射（待 ES8311 实机） |
-| AI 对话模式 | chat_mode.c（MODE_CHAT） | 五态状态机 + 三模式二级菜单（自由/英中翻译/场景 6 选）：中键三义、SET 短按收藏生词，三色屏纯语音降级（待 ES8311 实机）；协议 docs/AI_CHAT_MODE.md §7 |
+| AI 对话模式 | chat_mode.c（MODE_CHAT） | 五态状态机 + 三模式二级菜单（自由/英中翻译/场景 6 选）：中键三义、SET 短按收藏生词，三色屏纯语音降级；P0-1 流式消费（NDJSON 读流 + 句级流水线播放 + barge-in 3s 拾起 + 老后端首行探测回退）；协议 docs/AI_CHAT_MODE.md §2b/§7 |
 
 ### 11.2 待硬件接线（固件就绪）
 | 项 | 接线 | 固件入口 |

@@ -11,6 +11,10 @@
 > **三云端到端实测通过（2026-08-29）**：DeepSeek/Qwen/智谱三云全链路
 > 验证（§8，含 emoji 剧显缺陷修复，单测 113/113 绿）；**双语 ASR
 > 同日部署达标（§7.3：中文 20 句 CER 1.3%，中→英闭环实测通过）**。
+> **P0-1/P1 流式化交付（2026-08-30）**：NDJSON 句级流式 + barge-in
+> abort + replay 命令 + 会话摘要压缩（§2b/§3/§4）；单测 131/131 绿、
+> 固件 8 env 构建零新增警告；实机首响/打断实测待 ES8311 bring-up
+> 后记录。
 > 关联：后端 `ChatService.cs` / `AsrService.cs` / `DeviceController.Chat`；
 > 固件 `chat_mode.c` / `study_mode_machine.c`（MODE_CHAT）/ `main.cpp`
 > （ui_render_chat / on_button 转发）。
@@ -60,7 +64,7 @@ file= [wav 二进制文件字段（字段名固定 "file"，与 pronunciation �
 |:--|:--|
 | `transcript` | ASR 转写（固件不消费，屏显克制） |
 | `reply` | LLM 回复文本（已过黑名单/长度护栏） |
-| `engine` | ASR 引擎标识（`sherpa`；`none` 时端点 503） |
+| `engine` | LLM 模型标识（Ai:Model，如 qwen2.5:7b；实测勘误 2026-08-31：自 P2A 起即模型名，原文档误写 ASR 引擎） |
 | `audioUrl` | 回复 MP3 相对路径，GET 复用 P0B `/api/device/audio/{file}`（X-Device-Key）；**TTS 失败降级为 null**（仅文本回复） |
 
 ### 错误码（信封 code 与 HTTP 状态一致）
@@ -71,6 +75,32 @@ file= [wav 二进制文件字段（字段名固定 "file"，与 pronunciation �
 | 413 | >512KB | 同上（固件录音上限天然不触发） |
 | 503 | ASR 不可用（Provider=none/缺模型） | 同上 |
 | 502 | LLM 不可用 | 同上 |
+
+### 2b. 流式协议（P0-1，2026-08-30：`?stream=1` 协商，向后兼容）
+
+请求同 §2/§7.1 仅追加 `&stream=1`；响应 `Content-Type:
+application/x-ndjson` 逐行 JSON（每行即 flush；响应自带
+`X-Accel-Buffering: no`，反代侧需确认该 location 未整包缓冲）：
+
+```
+{"t":"meta","roundId":"b3f1...","engine":"sherpa","lang":"en","warmup":null}
+{"t":"s","i":0,"x":"I love cats!","u":"/api/device/audio/chat_1724470400123_s0.mp3"}
+{"t":"s","i":1,"x":"They are soft.","u":null}
+{"t":"end","wordHits":[],"emotion":"neutral","commands":[]}
+```
+
+| 行型 | 说明 |
+|:--|:--|
+| `meta` | 首行：roundId（abort 用）+ LLM 模型标识（同 §2 engine）+ TTS 语言路由；warmup 同 §7.2 |
+| `s` | 第 i 句：x=句文本（已过逐句护栏：StripEmoji+黑名单+词数截流）；u=句 MP3 相对路径（GET 同 §2 audioUrl），**TTS 失败 null 降级**（文本照发） |
+| `end` | wordHits 同 §7.2；emotion=praising/encouraging/neutral（规则表，设备端 P1 预留不消费）；commands `[{"a":"replay"}]`（transcript 整句匹配 again/repeat/pardon/say it again/one more time） |
+| `err` | `{"t":"err","code":502,"m":"..."}`：LLM 崩/空回等（已发句保留播放） |
+
+- **abort 端点**：`POST /api/device/chat/abort?roundId={guid}`（X-Device-Key
+  同鉴权；fire-and-forget：未知 roundId 200 no-op；单实例内存注册表
+  `ConcurrentDictionary<roundId,CTS>`，多实例化时需演进 Redis 共享）
+- **兼容矩阵**：老固件（不带 query）→ §2 整包信封原样；新固件 + 老后端
+  → 首行无 t 字段即回退保留的旧整段路径（直接解析已到响应，零重传）
 
 ## 3. 后端编排（ChatService 七步）
 
@@ -86,7 +116,15 @@ file= [wav 二进制文件字段（字段名固定 "file"，与 pronunciation �
    截断 ≤2 句 ≤40 词（TTS 时长约束）
 6. TTS（P0B `TtsService.SaveClipAsync`）落 `chat_{ts}.mp3`；失败
    audioUrl=null 降级
-7. 回写上下文（>24 条裁头）
+7. 回写上下文（P1-2 摘要压缩：>24 条时头部 12 条 LLM 摘为一条
+   assistant 消息（Temperature 0.3），失败/空回降级直接裁头——
+   长程记忆有损、近因无损）
+
+流式变体（P0-1 `ConverseStreamAsync`）：第 1-3 步同源；第 4 步改
+`GetStreamingResponseAsync` 句界切句（`. ! ? 。！？`）逐句护栏 +
+逐句 TTS（`chat_{ts}_s{i}.mp3`）经 emitLine 逐行下发；end 行补全量
+wordHits/emotion/commands；abort 注册表 + `AbortRound` 截断未完成的
+LLM token 与 TTS 句合成（省算力）。
 
 清理：Hangfire `ChatAudioCleanupJob`（Cron.Hourly）回收 `chat_*` 超
 1 小时文件；词条音频 `{guid}.mp3` 命名不冲突不误删。
@@ -110,7 +148,7 @@ volumes:
 
 ```
 idle → recording(≤10s，VAD 断/中键说完即发) → uploading
-     → thinking(下载回复 MP3) → playing → idle
+     → thinking(NDJSON 读流) → playing(句级流水线) → idle
                                     ↑ 网络失败：长震+「网络不可用」→ idle（不退模式）
 ```
 
@@ -134,22 +172,52 @@ idle → recording(≤10s，VAD 断/中键说完即发) → uploading
   局刷（状态词 AI Chat/Listening/Sending/Thinking/Speaking/Offline +
   末句回复 ≤2 行）；**三色面板（`epd_gfx_partial_supported()=false`）
   零渲染纯语音+震动**（与待机页轮换停用同款 UX 降级）。
+- **P0-1 流式流水线**（`run_round_stream`）：上传（+stream=1）→ 3s
+  短超时增量读 NDJSON 行（超时回环查打断位）；meta 记 roundId；首句
+  s 下载落地即起播（首响红利：LLM 首句 + TTS 单句后即出声）；
+  PLAYING 期读流+下载续句，TCP 反压天然限流（下载时不 read）；
+  end 后续播至完删净句文件（`chat_{ts}_s*.mp3`，CleanupChatClips
+  兑底）。老后端首行无 t 字段 → 解析整包走保留旧后半段（零重传）。
+- **barge-in（P0-1）**：THINKING（读流）/PLAYING 期中键打断 3s 内拾起
+  → 关流（后端 RequestAborted 截断）+ audio_stop + POST /chat/abort
+  （3s 封顶失败忽略）+ 清句文件 + 置新轮触发（单任务串行不变）。
+- **P1-1 replay**：end 行 commands 含 replay 且本轮播完 → 重播已落地
+  句文件（删除推迟到重播后；新轮/打断/退出统一作废）。
 - **电源零改动**：对话期每次按键 `power_note_activity()` 自然续期，
   退出 10 分钟后正常入睡；HTTP 单回合 <50s 不会跨越无操作窗口。
 
 ## 5. 验收清单（实机，ES8311 模块已集成，待 bring-up）
 
-- [ ] 局域网 5 轮连续对话首响 ≤3s（录音 VAD 断 → 出声）
+- [ ] 局域网流式首响 ≤2.5s（录音 VAD 断 → 出声；对照原整段 ≤3s 基线）
+- [ ] THINKING 期中键打断 3s 内可开说新录音（barge-in，后端 abort 截断）
+- [ ] 「say it again」整句触发 replay 重播（P1-1）
+- [ ] 老后端回退：无 stream 支持后端时整段路径照常（首行探测回退）
 - [ ] 播放中按中键打断并直接重说（新录音不被旧回合干扰）
 - [ ] 三色屏 env（inkword-s3-e042）纯震动模式可用（无屏显无卡死）
 - [ ] 网络失败：长震 + 提示，回 idle 不退模式；恢复后可立即重试
 - [ ] 深睡唤醒后对话正常（audio 懒初始化往返无残留）
 - [x] 后端：curl 上传 WAV → 3-6s 返回 reply + audioUrl 可下载播放
       （P2A 单测 + Release 构建绿；全链路延迟实测待实机记录）
+- [x] P0-1/P1 后端：流式管线/abort/replay/摘要压缩单测 131/131 绿
+      + Release 构建绿；固件 8 env 零新增警告（2026-08-30）
+- [x] P0-1 curl 实测逐行到达（2026-08-31，本机 sherpa-zh-en +
+      qwen2.5:1.5b 流式，piper 缺席 u=null 降级）：暖轮 **meta 0.18s /
+      首句 1.08s / end 1.24s**（首轮含模型加载 1.91/3.13/3.24s）；
+      老路径回归（无 stream → JSON 信封原样）✅；abort 未知 roundId
+      200 no-op ✅；「say it again」→ end commands=[replay] ✅；实测
+      修复：首行前异常 ContentType 未复位致 406 吞错（controller 层，
+      单测盲区）；实测勘误：engine 字段自 P2A 起即 LLM 模型名（§2）
+- [x] P1-2 摘要压缩实测（2026-09-01，Redis 预灌 23 条 → 对话 25 条
+      触发）：压缩后 14 条 = 1 条真实 LLM 摘要 + old 12-22 近因无损 +
+      本轮 2 条；TTL 1800s 续期 ✅。附：灌历史须用 hash data 字段
+      （IDistributedCache StackExchange.Redis 存储格式，SET 灌入会
+      WRONGTYPE 双向降级）
 
 ## 6. 二期增强
 
-- 流式 chunked 回传（当前整句回传，首响受 TTS 全长制约）
+- ~~流式 chunked 回传~~ → 已交付（P0-1，2026-08-30，§2b：NDJSON 句级
+  流式 + barge-in abort + 会话摘要压缩；首响从 LLM 全量+TTS 全量缩短
+  为 LLM 首句+TTS 单句，预期 2.2-3.3s 待实机实测）
 - 云 ASR / 云 TTS（接口已留 `Asr:Provider` / `Tts:Provider` 切换位）
 - ~~对话历史落库与学习分析~~ → 已交付（A3，2026-08-29，§7.4）
 - ~~双语 ASR 基准验收~~ → 已达标（2026-08-29，§7.3：中文 20 句平均
@@ -273,3 +341,18 @@ POST /api/device/chat?mode={free|scenario|translate}&scenarioId={code}
   rune 过滤 U+1F000-1FAFF/2600-27BF/2B00-2BFF + VS16/ZWJ，空格收敛，
   CJK 原样保留）+ 3 条单测；修复后 Qwen 三轮复验干净。弯引号 U+201C/D
   在中文字体覆盖内，暂不处理（实测 Qwen 修复后输出正常）
+
+### 延迟模型对比（P0-1 流式化，2026-08-30；实机实测待 ES8311 bring-up 后填入）
+
+| 链路段 | 整段（改造前） | 流式（预期） |
+|:--|:--|:--|
+| 上传 WAV | 0.3s（局域网 320KB） | 同左（不变） |
+| ASR | 0.5s | 同左（不变） |
+| LLM | 全量 1.5-3s | **首句 0.8-1.5s**（句界切分即发） |
+| TTS | 全量 1-2s | **首句 0.4-0.8s**（逐句合成） |
+| 首句下载+起播 | 0.3s + 起播 | 0.1s + 0.1s（单句 MP3 ~30-80KB） |
+| **首响合计** | **3.7-6.2s** | **2.2-3.3s** |
+
+> 注：§8 上表 DeepSeek free 端到端 3.0s 系 piper 缺席 audioUrl=null
+> 的文本链路实测；含 TTS 全链路整段值为预估。流式附带收益：打断即时
+> 截断未完成的 LLM token 与 TTS 句合成（省算力）。
