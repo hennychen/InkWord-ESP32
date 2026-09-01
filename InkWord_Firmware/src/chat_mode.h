@@ -95,6 +95,19 @@ chat_state_t chat_mode_state(void);
 /** 末句回复文本（空串=尚无回合；屏显驻留用）。 */
 const char *chat_mode_reply(void);
 
+/** 全句拼接回复（IDLE 回看：空格连接整轮句文本，老路径即整包回复）。 */
+const char *chat_mode_full_reply(void);
+
+/** 当前播放句号（1 基；0=未开播，PLAYING 进度指示）。 */
+int chat_mode_sentence_no(void);
+
+/** 本轮 ASR 识别文本（meta.transcript 回显）：meta 未到返回 NULL，
+ *  到则返回串（空串=后端判无话音）——THINKING 态「你说：…」屏显源 */
+const char *chat_mode_heard(void);
+
+/** 本轮录音时长 ms（UPLOADING 态「已录 X.X 秒」屏显源；0=未知） */
+int chat_mode_rec_ms(void);
+
 /** 当前场景预热文案（空串=非场景/非首轮；首轮 speaking 态屏显） */
 const char *chat_mode_warmup(void);
 

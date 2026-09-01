@@ -130,7 +130,9 @@ void study_mode_exit_collection(void);
  * @param req 对话请求（mode/scenario/title；NULL=free 缺省）。
  * @return true 成功；false 前置不满足（未进入，无副作用）。
  */
-bool study_mode_enter_chat(const chat_request_t *req);
+/** 进入 AI 对话（前置预检：Wi-Fi/设备 Key/SD）。
+ *  @return 0=成功；1=无网络；2=设备未注册；3=无 SD 卡（菜单层据此留页提示） */
+int study_mode_enter_chat(const chat_request_t *req);
 
 /**
  * @brief 退出 AI 对话回闪卡模式（模式内长按中 / RST）：停对话任务、

@@ -54,8 +54,9 @@ static const char *TAG = "CHAT";
 #define CHAT_RESP_MAX       (2304)  /* reply 256 + warmup 192 + audioUrl + wordHits 5×(text+Guid) + 信封余量 */
 #define CHAT_URL_MAX        (192)   /* base_url + 路径 + mode/scenario query */
 /* ---- P0-1 流式（2026-08-30）：NDJSON 增量读 + 句级流水线 ---- */
-#define CHAT_STREAM_READ_MS   (3000)  /* 读流超时：周期回环查打断位（首行前 LLM 首~1.5s，句间 TTS <5s） */
-#define CHAT_STREAM_IDLE_MAX  (15)    /* 连续超时上限（×3s=45s，对齐老上传超时兑底） */
+#define CHAT_STREAM_READ_MS   (500)  /* 读流短超时：回环查打断位（barge-in 0.5s 拾起）
+                                          * + 驱动 THINKING 涟漪帧（ui_chat_anim_tick） */
+#define CHAT_STREAM_IDLE_MAX  (90)    /* 连续超时上限（×500ms=45s，对齐老上传超时兑底） */
 #define CHAT_STREAM_PLAY_MAX_MS (120000) /* 续播等待兑底（translate ≤6 句，打断/超时出循环） */
 #define CHAT_ABORT_TIMEOUT_MS (3000)  /* abort 上报封顶（fire-and-forget，失败忽略） */
 #define CHAT_SENT_MAX       (8)      /* 落地句文件表（后端护栏 ≤6 句，余量） */
@@ -91,6 +92,28 @@ static bool s_replay_req;
 
 /* main.cpp 导出（C++ → C，ui_render_pron 同款先例） */
 extern void ui_render_chat(chat_state_t st, const char *text);
+extern void ui_chat_anim_tick(void);          /* THINKING 涟漪帧（main.cpp） */
+
+/* 全句拼接（IDLE 回看：墨水屏静态驻留红利，2026-09-01 最优方案）
+ * + 当前播放句号（PLAYING 进度指示） */
+static char s_full_reply[CHAT_RESP_MAX];
+static int  s_sent_no;
+
+/* 本轮录音反馈（2026-09-01 真机实测：录音期禁刷屏，说话中页面无任何
+ * 动静，用户无从得知 mic 是否正常——反馈全部落在录音结束后）：
+ *   s_rec_ms 录音时长（UPLOADING 态「已录 X.X 秒」屏显，零网络依赖）；
+ *   s_heard  后端 ASR 识别文本（meta.transcript，THINKING 态「你说：…」
+ *           回显——mic 正常与否的最强证据）；s_meta_got 区分
+ *           「meta 未到」(NULL) 与「到而空串」(未听到内容) */
+static char s_heard[128];
+static bool s_meta_got;
+static int  s_rec_ms;
+
+const char *chat_mode_full_reply(void) { return s_full_reply; }
+int chat_mode_sentence_no(void) { return s_sent_no; }
+/* meta 未到返回 NULL；到则返回串（可能为空串=后端判无话音） */
+const char *chat_mode_heard(void) { return s_meta_got ? s_heard : NULL; }
+int chat_mode_rec_ms(void) { return s_rec_ms; }
 
 /* ---- 后端响应子集（transcript 设备端不消费，屏显克制；A1 增 warmup，
  *      A3 增 wordHits） ---- */
@@ -378,6 +401,7 @@ static int stream_play_next(chat_stream_t *st)
     snprintf(path, sizeof(path), AUDIO_DIR "/%s", st->files[st->played]);
     if (audio_play_file(path) == 0) {
         st->played++;
+        s_sent_no = st->played;             /* PLAYING 进度：已播句号（1 基） */
         return 0;
     }
     LOG_W("audio_play_file s%d failed", st->played);
@@ -407,6 +431,16 @@ static int stream_line_dispatch(char *line, bool first, chat_stream_t *st,
         cJSON *jr = cJSON_GetObjectItem(root, "roundId");
         if (cJSON_IsString(jr) && jr->valuestring)
             strncpy(st->round_id, jr->valuestring, sizeof(st->round_id) - 1);
+        /* 识别文本回显（meta 携带，ASR 后即发）：THINKING 态重刷
+         * 「你说：…」——录音期页面静默的补偿反馈（mic 闭环证据） */
+        cJSON *jtr = cJSON_GetObjectItem(root, "transcript");
+        if (cJSON_IsString(jtr) && jtr->valuestring) {
+            strncpy(s_heard, jtr->valuestring, sizeof(s_heard) - 1);
+            s_heard[sizeof(s_heard) - 1] = '\0';
+            s_meta_got = true;
+            if (s_active && s_state == CHAT_STATE_THINKING)
+                set_state(CHAT_STATE_THINKING, NULL);   /* 同态重入=重刷 */
+        }
         /* warmup 可选（scenario 首轮中文预热，首句起播屏显用后即清） */
         cJSON *jw = cJSON_GetObjectItem(root, "warmup");
         if (cJSON_IsString(jw) && jw->valuestring) {
@@ -435,6 +469,10 @@ static int stream_line_dispatch(char *line, bool first, chat_stream_t *st,
         /* 末句驻留逐句更新（屏显克制：句句覆盖，end 后即末句） */
         strncpy(s_reply, x, sizeof(s_reply) - 1);
         s_reply[sizeof(s_reply) - 1] = '\0';
+        /* 全句拼接（IDLE 回看）：空格连接，缓冲顶则截断（护栏 ≤6 句） */
+        if (s_full_reply[0])
+            strlcat(s_full_reply, " ", sizeof(s_full_reply));
+        strlcat(s_full_reply, x, sizeof(s_full_reply));
         if (!st->started) {
             if (have_audio) {
                 st->started = true;
@@ -551,6 +589,7 @@ static int run_round_stream(const uint8_t *wav, size_t len, chat_resp_t *legacy)
             return 2;
         }
         int n = esp_http_client_read(client, rbuf, sizeof(rbuf));
+        ui_chat_anim_tick();                  /* 超时回环点驱动涟漪（内部节拍防抖） */
         if (n > 0) {
             dead = 0;
             for (int i = 0; i < n && verdict == 0; i++) {
@@ -635,6 +674,11 @@ static void run_round(void)
     s_hits_n = 0;                           /* 新一轮：旧命中作废 */
     s_stop_play = false;                    /* 新一轮：旧打断位作废（兼修老路径
                                                漏清：打断重说后新回复被立即静音杀） */
+    s_full_reply[0] = '\0';                 /* 新一轮：全句拼接/句号归零 */
+    s_sent_no = 0;
+    s_heard[0] = '\0';                      /* 新一轮：识别回显/时长归零 */
+    s_meta_got = false;
+    s_rec_ms = 0;
     replay_purge();                         /* 新一轮：遗留 replay 句文件作废 */
     set_state(CHAT_STATE_RECORDING, NULL);
     haptic_event(HAPTIC_KEYPRESS);          /* 录音起一短震 */
@@ -656,6 +700,10 @@ static void run_round(void)
     }
 
     set_state(CHAT_STATE_UPLOADING, NULL);
+    s_rec_ms = (int)((wav_len - 44) * 1000 / (16000 * 2));  /* 16bit/mono */
+    if (!s_send_now)
+        haptic_event(HAPTIC_KEYPRESS);      /* VAD 自动断句：触觉确认（录音期
+                                               禁刷屏，屏幕不能给反馈） */
     static chat_resp_t resp;                /* 栈节流（+wordHits ~330B），任务串行独占 */
     /* P0-1 流式优先：NDJSON 增量读 + 句级流水线；首行无 t 字段 =
      * 老后端整包 JSON 信封，直接解析已到响应走老后半段（零重传） */
@@ -675,6 +723,7 @@ static void run_round(void)
      * 屏显，用后即清——仅首轮可见，后续轮驻留 reply） */
     strncpy(s_reply, resp.reply, sizeof(s_reply) - 1);
     s_reply[sizeof(s_reply) - 1] = '\0';
+    strlcpy(s_full_reply, resp.reply, sizeof(s_full_reply)); /* 回看同步 */
     strncpy(s_warmup, resp.warmup, sizeof(s_warmup) - 1);
     s_warmup[sizeof(s_warmup) - 1] = '\0';
     for (int i = 0; i < resp.hits_n; i++) { /* A3 生词命中缓存（IDLE 计数行） */

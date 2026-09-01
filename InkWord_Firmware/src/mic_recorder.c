@@ -124,18 +124,24 @@ static int i2s_install_duplex(void)
 /**
  * 采集 PCM 到 pcm 缓冲。
  * @return 0 录满/提前断（正常）；-1 I2S 失败；-2 取消；-3 无话音
+ * @param out_peak_db 全程块能量峰值 dBFS（可 NULL）——mic 可用性诊断：
+ *         峰值 ≤-60dB 量级=采集链路死（哑麦/未供偏），说话但 -35 附近
+ *         =VAD 阈值失配需复标（TODO: VAD_CALIB 的实测依据）
  */
 static int record_pcm(int16_t *pcm, volatile bool *cancel,
                       volatile bool *send_now, int *out_samples,
-                      int max_samples)
+                      int max_samples, double *out_peak_db)
 {
     int total = 0, silent_ms = 0;
     bool ever_voiced = false;
+    double peak_db = -99.0;
+    if (out_peak_db) *out_peak_db = -99.0;
 
     while (total < max_samples) {
         if (cancel && *cancel) return -2;
         if (send_now && *send_now) {          /* 手动断：说完即发 */
             *out_samples = total;
+            if (out_peak_db) *out_peak_db = peak_db;
             return ever_voiced ? 0 : -3;
         }
 
@@ -165,6 +171,7 @@ static int record_pcm(int16_t *pcm, volatile bool *cancel,
         int elapsed_ms = total * 1000 / MIC_SAMPLE_RATE;
         double rms = sqrt((double)acc / (double)n);
         double db = 20.0 * log10(rms / 32768.0 + 1e-9);
+        if (db > peak_db) peak_db = db;
 
         if (db >= VAD_SILENCE_DB) {
             ever_voiced = true;
@@ -173,11 +180,13 @@ static int record_pcm(int16_t *pcm, volatile bool *cancel,
             silent_ms += chunk_ms;
             if (silent_ms >= VAD_TAIL_MS) {
                 *out_samples = total;
+                if (out_peak_db) *out_peak_db = peak_db;
                 return ever_voiced ? 0 : -3;
             }
         }
     }
     *out_samples = total;
+    if (out_peak_db) *out_peak_db = peak_db;
     return ever_voiced ? 0 : -3;
 }
 
@@ -210,16 +219,21 @@ int mic_recorder_record(uint8_t **out_wav, size_t *out_len,
         /* ES8311 ADC 起录：PGA 增益档 3（18dB，板载麦/外接麦均适用） */
         es8311_adc_start(3);
         int samples = 0;
+        double peak_db = -99.0;
         rc = record_pcm((int16_t *)(buf + 44), cancel, send_now,
-                        &samples, max_samples);
+                        &samples, max_samples, &peak_db);
         es8311_adc_stop();
         i2s_driver_uninstall(MIC_I2S_PORT);
         if (rc == 0) {
             wav44_build(buf, (uint32_t)samples * 2);
             *out_wav = buf;
             *out_len = 44 + (size_t)samples * 2;
-            LOG_I("recorded %d samples (%d ms)", samples,
-                  samples * 1000 / MIC_SAMPLE_RATE);
+            LOG_I("recorded %d samples (%d ms) peak=%.0f dBFS",
+                  samples, samples * 1000 / MIC_SAMPLE_RATE, peak_db);
+        } else if (rc == -3) {
+            /* 无话音诊断：峰值 vs 阈值对比直接区分哑麦/阈值失配 */
+            LOG_W("no voice: peak=%.0f dBFS vs VAD %.0f (mic dead or "
+                  "threshold miscalib)", peak_db, VAD_SILENCE_DB);
         }
     }
 

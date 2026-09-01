@@ -363,26 +363,30 @@ void study_mode_exit_collection(void)
     LOG_I("left collection");
 }
 
-bool study_mode_enter_chat(const chat_request_t *req)
+int study_mode_enter_chat(const chat_request_t *req)
 {
     /* 前置：对话全程依赖网络（上传/下载）与 SD（回复 MP3 落盘播放）；
-     * 不满足由调用方（快捷菜单）给边界反馈，不进入 */
-    if (!wifi_is_connected() || !sync_has_device_key()) {
-        LOG_W("chat enter rejected: wifi=%d key=%d",
-              wifi_is_connected(), sync_has_device_key());
-        return false;
+     * 错误码供菜单层留页提示原因（2026-09-01 真机实测：静默回学习页
+     * 用户无法得知拒绝原因） */
+    if (!wifi_is_connected()) {
+        LOG_W("chat enter rejected: no wifi");
+        return 1;
+    }
+    if (!sync_has_device_key()) {
+        LOG_W("chat enter rejected: no device key");
+        return 2;
     }
     if (mkdir(AUDIO_DIR, 0775) != 0 && errno != EEXIST) {
         LOG_W("chat enter rejected: no SD (errno=%d)", errno);
-        return false;
+        return 3;
     }
     s_current = MODE_CHAT;
     s_cursor = 0;
     s_reveal = true;
     chat_mode_enter(req);   /* 启动常驻对话任务（A1 模式透传；失败自退） */
-    if (!chat_mode_is_active()) return false;
+    if (!chat_mode_is_active()) return 4;   /* 任务创建失败（内存） */
     LOG_I("entered chat mode");
-    return true;
+    return 0;
 }
 
 void study_mode_exit_chat(void)

@@ -1719,6 +1719,61 @@ extern "C" void ui_render_pron(pron_state_t st, int total, const char *engine)
  * 策略，环路内禁全刷红线。语音优先、屏幕克制：仅状态词 + 末句回复
  * ≤2 行（听不清时看屏）。三色面板 partial_enabled=false 零渲染，
  * 纯语音+震动（与待机页轮换停用同款 UX 降级先例） */
+/* ===== AI 对话 Siri 球（聆听/思考状态页中央图标，2026-09-01） =====
+ * 版式仅 MID+ 档（TINY/SMALL 内容区高度不足，保持纯文字版式同先例
+ * 降级）；动画仅 THINKING 期（读流循环 ui_chat_anim_tick 驱动涟漪
+ * ~2fps）；RECORDING 期零刷屏——I2S RX DMA 缓冲 128ms，任何局刷
+ * 阻塞都会丢样本（音频保真红线），静态球页在 adc_start 前刷就 */
+static int ui_chat_isqrt(int v)
+{
+    int r = 0;
+    while ((r + 1) * (r + 1) <= v) r++;
+    return r;
+}
+
+/* 行扫描实心圆（GFX 无圆 API，r<=30 场景微秒级） */
+static void ui_chat_fill_circle(int cx, int cy, int r, uint16_t color)
+{
+    for (int dy = -r; dy <= r; dy++) {
+        int dx = ui_chat_isqrt(r * r - dy * dy);
+        epd_gfx_fill_rect(cx - dx, cy + dy, 2 * dx + 1, 1, color);
+    }
+}
+
+#define CHAT_ORB_R     18                        /* 球半径（MID+ 档） */
+#define CHAT_ORB_RIP   7                         /* 涟漪环步距（phase 0..2） */
+#define CHAT_ORB_WIN   (CHAT_ORB_R + 2 * CHAT_ORB_RIP + 5) /* 动画窗半边=37 */
+#define CHAT_ORB_OK    (layout_profile_get()->kind >= LAYOUT_MID) /* 档位门槛 */
+
+static int ui_chat_orb_cx(void) { return epd_gfx_width() / 2; }
+static int ui_chat_orb_cy(void)               /* 内容区 36% 线（球窗下方 */
+{                                             /* 留状态词+辅助行两行） */
+    return UI_STATUS_H + (epd_gfx_height() - UI_STATUS_H) * 9 / 25;
+}
+
+/* 画球到帧缓冲（不 flush）：phase -1 静态球；0..2 涟漪帧（环
+ * r=R+4+phase*RIP，3px 线宽）。窗口整擦保证环移动无残帧 */
+static void ui_chat_orb_draw(int phase)
+{
+    int cx = ui_chat_orb_cx(), cy = ui_chat_orb_cy();
+    epd_gfx_fill_rect(cx - CHAT_ORB_WIN, cy - CHAT_ORB_WIN,
+                      2 * CHAT_ORB_WIN, 2 * CHAT_ORB_WIN, EPD_GFX_WHITE);
+    ui_chat_fill_circle(cx, cy, CHAT_ORB_R, EPD_GFX_BLACK);
+    if (phase >= 0) {
+        int rr = CHAT_ORB_R + 4 + phase * CHAT_ORB_RIP;
+        ui_chat_fill_circle(cx, cy, rr + 2, EPD_GFX_BLACK);
+        ui_chat_fill_circle(cx, cy, rr - 1, EPD_GFX_WHITE);
+    }
+}
+
+/* 居中状态词（cjk 测宽居中；越界钳到边距） */
+static void ui_chat_caption(int y, const char *s, int level)
+{
+    int x = (epd_gfx_width() - cjk_text_width(level, s)) / 2;
+    if (x < UI_MARGIN_X) x = UI_MARGIN_X;
+    cjk_text_draw(x, y, level, s, EPD_GFX_BLACK);
+}
+
 extern "C" void ui_render_chat(chat_state_t st, const char *text)
 {
     if (!epd_gfx_partial_supported()) return;   /* 三色降级：纯语音+震动 */
@@ -1731,49 +1786,127 @@ extern "C" void ui_render_chat(chat_state_t st, const char *text)
 
     switch (st) {
     case CHAT_STATE_IDLE: {
-        /* A1 标题参数化：free/翻译/场景各异（chat_mode_title 缺省
-         * "AI Chat"）；中文标题走点阵（FreeSans 无汉字），ASCII
-         * 大字自适应路径不变 */
-        const char *title = chat_mode_title();
-        if (cjk_text_has_wide(title))
+        /* 最优方案（2026-09-01）：title 删除（菜单已选，二次确认冗余）；
+         * MID+ 小球锚点（与过程态视觉语言连贯）+ 完整回复回看 3 行
+         * （静态驻留红利，中段句可回看）；TINY/SMALL 保持纯文字版式 */
+        if (CHAT_ORB_OK) {
+            int ocx = ui_chat_orb_cx();
+            int ocy = UI_STATUS_H +
+                      (epd_gfx_height() - UI_STATUS_H) * 6 / 25;
+            epd_gfx_fill_rect(ocx - 16, ocy - 16, 32, 32, EPD_GFX_WHITE);
+            ui_chat_fill_circle(ocx, ocy, 12, EPD_GFX_BLACK);
+            ui_chat_caption(ocy + 22, "按中键说话 · 长按退出", 2);
+            const char *fr = chat_mode_full_reply();
+            if (fr[0])
+                cjk_text_draw_wrap_page(UI_MARGIN_X, ocy + 54,
+                                        UI_BODY_MAX_W, UI_MEAN_LEVEL,
+                                        UI_BODY_LH, 3, 0, fr, EPD_GFX_BLACK);
+            if (chat_mode_wordhit_count() > 0) {
+                char hbuf[40];
+                snprintf(hbuf, sizeof(hbuf), "生词 %d · SET 收藏",
+                         chat_mode_wordhit_count());
+                cjk_text_draw(UI_MARGIN_X, ocy + 54 + 3 * UI_BODY_LH + 4,
+                              UI_MEAN_LEVEL, hbuf, EPD_GFX_BLACK);
+            }
+        } else {
             cjk_text_draw(UI_MARGIN_X, UI_WORD_BASE, UI_MEAN_LEVEL,
-                          title, EPD_GFX_BLACK);
-        else
-            epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, title,
-                              EPD_GFX_BLACK,
-                              ui_fit_font(title, 4, UI_BODY_MAX_W));
-        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
-                      "按中键说话 · 长按中键退出", EPD_GFX_BLACK);
-        /* A3 生词命中计数行（新一轮起清零，SET 收藏成功后清零） */
-        if (chat_mode_wordhit_count() > 0) {
-            char hbuf[40];
-            snprintf(hbuf, sizeof(hbuf), "本轮生词 %d · SET 短按收藏",
-                     chat_mode_wordhit_count());
-            cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP + UI_BODY_LH,
-                          UI_MEAN_LEVEL, hbuf, EPD_GFX_BLACK);
+                          "按中键说话 · 长按中键退出", EPD_GFX_BLACK);
+            if (chat_mode_wordhit_count() > 0) {
+                char hbuf[40];
+                snprintf(hbuf, sizeof(hbuf), "生词 %d · SET 收藏",
+                         chat_mode_wordhit_count());
+                cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
+                              hbuf, EPD_GFX_BLACK);
+            }
+            const char *fr = chat_mode_full_reply();
+            if (fr[0])
+                cjk_text_draw_wrap_page(UI_MARGIN_X, UI_BODY_TOP + UI_BODY_LH,
+                                        UI_BODY_MAX_W, UI_MEAN_LEVEL,
+                                        UI_BODY_LH, 2, 0, fr, EPD_GFX_BLACK);
         }
         break;
     }
     case CHAT_STATE_RECORDING:
-        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Listening...",
-                          EPD_GFX_BLACK, 2);
-        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
-                      "请说话 · 停顿即发送 / 中键立即发", EPD_GFX_BLACK);
+        if (CHAT_ORB_OK) {
+            ui_chat_orb_draw(-1);
+            ui_chat_caption(ui_chat_orb_cy() + CHAT_ORB_WIN + 6,
+                            "聆听中 · · ·", 2);
+            ui_chat_caption(ui_chat_orb_cy() + CHAT_ORB_WIN + 34,
+                            "请说话 · 停顿即发送", 1);
+        } else {
+            epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Listening...",
+                              EPD_GFX_BLACK, 2);
+            cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
+                          "请说话 · 停顿即发送 / 中键立即发", EPD_GFX_BLACK);
+        }
         break;
     case CHAT_STATE_UPLOADING:
-        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Sending...",
-                          EPD_GFX_BLACK, 2);
+        if (CHAT_ORB_OK) {
+            ui_chat_orb_draw(-1);
+            /* 录音时长即时反馈（本地可算零网络）：说话中页面静默的
+             * 首个补偿信号——至少确认采到了多长的音 */
+            char ucap[40];
+            int rms_ms = chat_mode_rec_ms();
+            if (rms_ms > 0)
+                snprintf(ucap, sizeof(ucap), "已录 %d.%d 秒 · 发送中",
+                         rms_ms / 1000, (rms_ms % 1000) / 100);
+            else
+                snprintf(ucap, sizeof(ucap), "发送中 · · ·");
+            ui_chat_caption(ui_chat_orb_cy() + CHAT_ORB_WIN + 6, ucap, 2);
+        } else {
+            epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Sending...",
+                              EPD_GFX_BLACK, 2);
+        }
         break;
     case CHAT_STATE_THINKING:
-        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Thinking...",
-                          EPD_GFX_BLACK, 2);
+        if (CHAT_ORB_OK) {
+            ui_chat_orb_draw(0);          /* 静态首帧；涟漪由 anim_tick 推进 */
+            ui_chat_caption(ui_chat_orb_cy() + CHAT_ORB_WIN + 6,
+                            "思考中 · · ·", 2);
+            /* 识别文本回显（meta.transcript 到达时 set_state 同态重入）：
+             * 「你说：…」= mic 正常的最强证据；空串=后端未听到 */
+            const char *heard = chat_mode_heard();
+            if (heard) {
+                char hbuf[160];
+                if (heard[0])
+                    snprintf(hbuf, sizeof(hbuf), "你说：%s", heard);
+                else
+                    snprintf(hbuf, sizeof(hbuf), "未听到内容");
+                cjk_text_draw_wrap_page(UI_MARGIN_X,
+                                        ui_chat_orb_cy() + CHAT_ORB_WIN + 32,
+                                        UI_BODY_MAX_W, UI_MEAN_LEVEL,
+                                        UI_BODY_LH, 2, 0, hbuf, EPD_GFX_BLACK);
+            }
+        } else {
+            epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Thinking...",
+                              EPD_GFX_BLACK, 2);
+            const char *heard = chat_mode_heard();
+            if (heard && heard[0])
+                cjk_text_draw_wrap_page(UI_MARGIN_X, UI_BODY_TOP,
+                                        UI_BODY_MAX_W, UI_MEAN_LEVEL,
+                                        UI_BODY_LH, 1, 0, heard,
+                                        EPD_GFX_BLACK);
+        }
         break;
-    case CHAT_STATE_PLAYING:
-        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Speaking",
-                          EPD_GFX_BLACK, 2);
+    case CHAT_STATE_PLAYING: {
+        /* 句进度（中途打断决策依据）：TTS 降级文本先行未开播（N=0）
+         * 只显状态词；TINY/SMALL 保持 FreeSans 原样 */
+        if (CHAT_ORB_OK) {
+            char cap[32];
+            int no = chat_mode_sentence_no();
+            if (no > 0)
+                snprintf(cap, sizeof(cap), "正在回答 · 第 %d 句", no);
+            else
+                snprintf(cap, sizeof(cap), "正在回答");
+            ui_chat_caption(UI_WORD_BASE, cap, 2);
+        } else {
+            epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Speaking",
+                              EPD_GFX_BLACK, 2);
+        }
         cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
                       "中键打断重说", EPD_GFX_BLACK);
         break;
+    }
     case CHAT_STATE_NETFAIL:
         epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Offline",
                           EPD_GFX_BLACK, 2);
@@ -1782,8 +1915,8 @@ extern "C" void ui_render_chat(chat_state_t st, const char *text)
         break;
     }
 
-    /* 末句回复 ≤2 行（状态词下方；text 空时跳过） */
-    if (text && text[0])
+    /* 当前句 ≤2 行（仅 PLAYING：IDLE 回看已自分档自画，过程态不画 */
+    if (text && text[0] && st == CHAT_STATE_PLAYING)
         cjk_text_draw_wrap_page(UI_MARGIN_X, UI_BODY_TOP + 2 * UI_BODY_LH,
                                 UI_BODY_MAX_W, UI_MEAN_LEVEL, UI_BODY_LH, 2,
                                 0, text, EPD_GFX_BLACK);
@@ -1791,6 +1924,28 @@ extern "C" void ui_render_chat(chat_state_t st, const char *text)
     epd_gfx_flush_window(0, UI_STATUS_H, epd_gfx_width(),
                          epd_gfx_height() - UI_STATUS_H);
     LOG_I("chat ui state=%d", (int)st);
+}
+
+/* THINKING 涟漪帧：chat_task 读流循环周期调用（500ms 读超时回环点），
+ * 内部 600ms 节拍防抖（n>0 连续到达时不加速）；非 THINKING 态/
+ * 顶层覆盖层期间 no-op。仅重刷球窗（74×74，A2 快刷 ~100ms） */
+extern "C" void ui_chat_anim_tick(void)
+{
+    static int64_t last_us = -1;
+    static int phase = 0;
+    if (!epd_gfx_partial_supported() || !CHAT_ORB_OK) return;
+    if (wifi_config_ui_is_active() || lan_server_is_active() ||
+        menu_ui_is_active())
+        return;
+    if (chat_mode_state() != CHAT_STATE_THINKING) return;
+    int64_t now = esp_timer_get_time();
+    if (last_us > 0 && now - last_us < 600000) return;
+    last_us = now;
+    ui_chat_orb_draw(phase);
+    int cx = ui_chat_orb_cx(), cy = ui_chat_orb_cy();
+    epd_gfx_flush_window(cx - CHAT_ORB_WIN, cy - CHAT_ORB_WIN,
+                         2 * CHAT_ORB_WIN, 2 * CHAT_ORB_WIN);
+    phase = (phase + 1) % 3;
 }
 
 /* P5 幻影按键吞除武装标志：按键唤醒的会话置位（setup），on_button 吞掉
@@ -2265,6 +2420,11 @@ static void background_task(void *arg)
             lan_server_start(); /* 幂等 */
         }
     }
+    /* 开机即注册（幂等）：原首个周期要等 10 分钟——新设备开机立即
+     * 进 AI 对话预检 key=0 被拒（2026-09-01 真机实测发现）；LAN 就绪
+     * 时 Wi-Fi 必已连，已注册设备此调用零网络开销 */
+    sync_try_register();
+    sync_flush_pending();
     const TickType_t period = pdMS_TO_TICKS(10 * 60 * 1000); /* 10 分钟 */
     int wx_poll_cnt = 2; /* 待机页天气轮询计数：初始 2 -> 首个周期即拉取 */
     while (1) {

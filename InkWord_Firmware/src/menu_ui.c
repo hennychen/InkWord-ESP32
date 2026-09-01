@@ -103,6 +103,7 @@ typedef struct {
 } mu_item_t;
 
 static bool      s_active = false;
+static const char *s_hint_override = NULL;  /* 预检失败原因等一次性提示 */
 static mu_page_t s_page   = MU_PAGE_MAIN;
 static int       s_sel    = 0;   /* 主列表选中（0 基；恒非组头） */
 static int       s_off    = 0;   /* 主列表滚动偏移 */
@@ -288,8 +289,9 @@ static void act_chat(void)
 }
 
 /* 对话确认进入（A1）：按二级页选择组 chat_request_t（mode/scenario/
- * title；free 留空串=URL 不携 query，与老固件请求逐字节一致），
- * 「先 exit 后 enter」纪律与预检失败反馈同 act_quiz 先例 */
+ * title；free 留空串=URL 不携 query，与老固件请求逐字节一致）；
+ * 「先 enter 后 exit」：预检失败留在二级页提示原因（2026-09-01
+ * 真机实测：key 未注册时静默回学习页，用户无从得知原因） */
 static void chat_enter(int chatsel, int scenario_sel)
 {
     chat_request_t req;
@@ -306,13 +308,19 @@ static void chat_enter(int chatsel, int scenario_sel)
     } else {
         strlcpy(req.title, "自由对话", sizeof(req.title));
     }
-    menu_ui_exit();
-    if (!study_mode_enter_chat(&req)) {
-        haptic_event(HAPTIC_ERROR);   /* 无网/未配 Key/无 SD：边界反馈 */
-        ui_render_current();
+    int rc = study_mode_enter_chat(&req);
+    if (rc != 0) {
+        haptic_event(HAPTIC_ERROR);      /* 边界反馈 + 留页提示原因 */
+        s_hint_override =
+            rc == 1 ? "无网络 · 先 Wi-Fi 配网" :
+            rc == 2 ? "设备未注册 · 联网后自动注册重试" :
+            rc == 3 ? "无 SD 卡 · 对话音频需落盘" :
+                      "对话任务启动失败 · 重试";
+        draw_chatsel(false);
         return;
     }
-    haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
+    menu_ui_exit();
+    haptic_event(HAPTIC_MODE);            /* 进入新模式 50ms（先例） */
     ui_render_current();
 }
 
@@ -605,7 +613,9 @@ static void draw_hint(void)
                        epd_gfx_width() - 2 * MU_MARGIN_X, EPD_GFX_BLACK);
     cjk_text_draw(MU_MARGIN_X,
                   epd_gfx_height() - MU_HINT_H + (MU_HINT_H - 16) / 2,
-                  0, "上/下 选择  中 确认  SET 返回", EPD_GFX_BLACK);
+                  0, s_hint_override ? s_hint_override
+                                     : "上/下 选择  中 确认  SET 返回",
+                  EPD_GFX_BLACK);
 }
 
 static void draw_flush(void)
@@ -1124,6 +1134,7 @@ void menu_ui_on_button(nav_key_t id, button_event_t event)
 {
     if (!s_active) return;
     if (event != BUTTON_EVENT_SHORT_PRESS) return;   /* 长按全部忽略 */
+    s_hint_override = NULL;                        /* 任意按键清一次性提示 */
 
     switch (s_page) {
     case MU_PAGE_MAIN:
