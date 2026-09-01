@@ -1,4 +1,7 @@
+using System.Collections.Concurrent;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using InkWord.Core.Entities;
 using InkWord.Infrastructure.Cache;
 using Microsoft.Extensions.AI;
@@ -24,6 +27,47 @@ public record ChatWordHit(string Text, string CloudId);
 
 /// <summary>词库快照条目（A3 wordHits 扫描源）</summary>
 public record VocabEntry(string Text, string CloudId);
+
+// ---- P0-1 流式协议事件（NDJSON 行，2026-08-30；短字段名省流量，
+//      cJSON 可选解析老固件零感知；字段语义见 AI_CHAT_MODE.md §2b） ----
+
+/// <summary>流首行：ASR 后即发——设备尽早拿到 roundId（后续任何时刻
+/// 打断都可 abort 截断后端生成）；warmup 仅 scenario 首轮非空</summary>
+public record ChatStreamMeta(
+    [property: JsonPropertyName("t")] string T,
+    [property: JsonPropertyName("roundId")] Guid RoundId,
+    [property: JsonPropertyName("transcript")] string Transcript,
+    [property: JsonPropertyName("engine")] string Engine,
+    [property: JsonPropertyName("warmup")] string? Warmup,
+    [property: JsonPropertyName("mode")] string? Mode);
+
+/// <summary>逐句事件：i=句序（0 起）；u=该句 MP3 相对路径（TTS 失败
+/// null 降级，文本照发不熔断——audioUrl=null 先例同语义）</summary>
+public record ChatStreamSentence(
+    [property: JsonPropertyName("t")] string T,
+    [property: JsonPropertyName("i")] int I,
+    [property: JsonPropertyName("x")] string X,
+    [property: JsonPropertyName("u")] string? U);
+
+/// <summary>流尾行：wordHits（A3 同款）/ lang（A2 同款）/ emotion
+/// （P2-2 规则枚举：praising/encouraging/neutral）/ commands（P1-1
+/// 动作指令，一期恒空数组）</summary>
+public record ChatStreamEnd(
+    [property: JsonPropertyName("t")] string T,
+    [property: JsonPropertyName("wordHits")] IReadOnlyList<ChatWordHit>? WordHits,
+    [property: JsonPropertyName("lang")] string? Lang,
+    [property: JsonPropertyName("emotion")] string Emotion,
+    [property: JsonPropertyName("commands")] IReadOnlyList<ChatStreamCommand> Commands);
+
+/// <summary>设备动作指令（P1-1）：a="replay"（重播本轮）等</summary>
+public record ChatStreamCommand([property: JsonPropertyName("a")] string A);
+
+/// <summary>流中途失败（meta 已发无法改状态码）：固件收到即中止本轮走
+/// 网络失败处置（长震+提示回 idle，同 4xx/5xx 语义）</summary>
+public record ChatStreamErr(
+    [property: JsonPropertyName("t")] string T,
+    [property: JsonPropertyName("code")] int Code,
+    [property: JsonPropertyName("m")] string M);
 
 /// <summary>对话轮异步落库出口（A3）：实现方承担 fire-and-forget 语义
 /// （Hangfire Enqueue），失败仅日志不影响对话响应；测试注入 null 即关闭</summary>
@@ -222,6 +266,247 @@ public class ChatService
 
         return new ChatReply(transcript, reply, _engine,
             saved is null ? null : $"/api/device/audio/{saved}", normMode, warmup, lang, wordHits);
+    }
+
+    // ---- P0-1 流式管线（2026-08-30）：NDJSON 逐句下发 + abort 截断 ----
+
+    /// <summary>abort 轮次注册表（单实例内存版；多实例部署需演进 Redis，
+    /// 部署约束见 AI_CHAT_MODE.md §2b）。roundId 由 meta 行下发，设备
+    /// 打断时 POST /chat/abort 截断未完成的 LLM token 与 TTS 句合成</summary>
+    private static readonly ConcurrentDictionary<Guid, CancellationTokenSource> _rounds = new();
+
+    /// <summary>设备打断上报：取消在途轮次（未知 roundId no-op；晚到/早退均安全）</summary>
+    public void AbortRound(Guid roundId)
+    {
+        if (_rounds.TryGetValue(roundId, out var cts)) cts.Cancel();
+    }
+
+    /// <summary>NDJSON 序列化选项：camelCase（API 层惯例）+ null 字段省略</summary>
+    private static readonly JsonSerializerOptions StreamJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    private static string Line<T>(T ev) => JsonSerializer.Serialize(ev, StreamJson);
+
+    /// <summary>句界分隔符（EnforceLimits 同款，流式切句复用）</summary>
+    private static readonly char[] SentenceSeps = ['.', '!', '?', '。', '！', '？'];
+
+    /// <summary>pending 缓冲内最后一个句界索引（-1 = 尚无完整句，剩余
+    /// 文本留待下一 token 或收尾尾句处理；回复 ≤300 字符扫描成本可忽略）</summary>
+    private static int LastSentenceBoundary(StringBuilder pending)
+    {
+        for (var i = pending.Length - 1; i >= 0; i--)
+            if (Array.IndexOf(SentenceSeps, pending[i]) >= 0) return i;
+        return -1;
+    }
+
+    /// <summary>逐句护栏决策（流式）：emoji 剥离（空句跳过）→ 黑名单
+    /// （首句命中替换 SafeReply 与老路径等价；后续句命中丢弃并截流——
+    /// 已发句不可收回，见 AI_CHAT_MODE.md 差异说明）→ 词上限（词边界
+    /// 截断 + 截流，剩余 token 丢弃）。返回 null = 丢弃；truncated = 停流</summary>
+    private static string? GateSentence(string raw, int sentCount, ref int usedWords,
+        ChatModeConfig cfg, out bool truncated)
+    {
+        truncated = false;
+        var sentence = StripEmoji(raw.Trim());
+        if (sentence.Length == 0) return null;
+        if (ContainsBlocked(sentence))
+        {
+            if (sentCount > 0) { truncated = true; return null; }
+            sentence = SafeReply;
+        }
+        var words = sentence.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (usedWords + words.Length > cfg.MaxWords)
+        {
+            var remain = cfg.MaxWords - usedWords;
+            if (remain <= 0) { truncated = true; return null; }
+            sentence = string.Join(' ', words.Take(remain - 1)) + "…";
+            words = sentence.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            truncated = true;
+        }
+        usedWords += words.Length;
+        return sentence;
+    }
+
+    /// <summary>emotion 规则枚举（P2-2 一期：关键词表，失败 merely 缺省
+    /// neutral——LLM 自由输出不可控，emoji 剧显前款不重演）</summary>
+    private static string DetectEmotion(string reply)
+    {
+        var r = reply.ToLowerInvariant();
+        if (r.Contains("great") || r.Contains("well done") || r.Contains("awesome")
+            || r.Contains("good job") || r.Contains("excellent") || r.Contains("wonderful"))
+            return "praising";
+        if (r.Contains("try again") || r.Contains("don't worry")
+            || r.Contains("almost") || r.Contains("keep going"))
+            return "encouraging";
+        return "neutral";
+    }
+
+    /// <summary>commands 规则引擎（P1-1 一期）：转写归一后命中重播语 →
+    /// replay（设备重播本轮句文件）；ASR 短语音场景整句匹配足够，
+    /// 误触由固件侧“本轮已播完才执行”兑底</summary>
+    private static IReadOnlyList<ChatStreamCommand> DetectCommands(string transcript)
+    {
+        var t = transcript.Trim().ToLowerInvariant()
+            .TrimEnd('.', '!', '?', '。', '！', '？', ' ');
+        if (t is "again" or "repeat" or "pardon" or
+            "say it again" or "one more time")
+            return [new ChatStreamCommand("replay")];
+        return [];
+    }
+
+    /// <summary>
+    /// 一轮对话（P0-1 流式，2026-08-30）：逐行回调 emitLine（已序列化
+    /// JSON，不含换行——端点补 \n）。事件序 meta（ASR 后即发，携带
+    /// roundId/warmup）→ s×N（逐句护栏+TTS，句文件 chat_{ts}_s{i}.mp3
+    /// 天然被 CleanupChatClips 回收）→ end（wordHits/lang/emotion/commands）。
+    ///
+    /// 与 ConverseAsync 七步同源：0-3 步原样复用；LLM 改流式按句切分，
+    /// 逐句 StripEmoji+黑名单+词/句上限截流（见 GateSentence）；TTS 语言
+    /// 路由句级化（free 模式中英混排逐句 en/zh——较老路径整段路由更自然；
+    /// translate 只合成首个非中文句，FirstNonChineseLine 语义流式等价）。
+    /// abort：注册表登记 roundId（链接外部 ct，设备断开同样截断）；取消
+    /// 后静默终止（不回写上下文、不发 end——设备已走无需收尾）。LLM 流
+    /// 中途异常：产出 err 行（code 502）终止；空回复同理（老路径 502
+    /// 等价）。首事件前异常（400/503）照常抛 ChatException——端点按
+    /// Response.HasStarted=false 走传统 JSON 错误信封。
+    /// </summary>
+    public async Task ConverseStreamAsync(Guid deviceId, byte[] wav, string? mode,
+        string? scenarioId, Func<string, Task> emitLine, CancellationToken ct)
+    {
+        // 0-2. 模式 / PCM / ASR（与老路径同源；此阶段异常 = 首行未发）
+        var (cfg, script, normMode) = ResolveMode(mode, scenarioId);
+        short[] samples;
+        try
+        {
+            samples = PronunciationService.ParsePcm(wav, MaxWavBytes);
+        }
+        catch (InvalidDataException ex)
+        {
+            throw new ChatException(400, ex.Message);
+        }
+        var transcript = _asr.Transcribe(samples);
+        if (transcript is null) throw new ChatException(503, "asr unavailable");
+        if (transcript.Length == 0) throw new ChatException(400, "no speech detected");
+
+        // 3. 上下文 + scenario 首轮 warmup（meta 行携带）
+        var cacheKey = $"chat:{deviceId:N}{cfg.ContextSuffix}";
+        var history = await TryGetHistoryAsync(cacheKey, ct);
+        string? warmup = null;
+        if (script is not null && history.Count == 0)
+        {
+            history.Add(new ChatMsg("assistant", script.OpeningLine));
+            warmup = script.WarmupIntro;
+        }
+
+        var roundId = Guid.NewGuid();
+        await emitLine(Line(new ChatStreamMeta("meta", roundId, transcript, _engine, warmup, normMode)));
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _rounds[roundId] = linked;
+        try
+        {
+            var sent = new List<string>();
+            var pending = new StringBuilder();
+            var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var idx = 0;
+            var usedWords = 0;
+            var truncated = false;
+            var translateTtsDone = false;
+
+            // 逐句管线：护栏 → TTS → s 行（本地函数捕获上方状态，
+            // 单线程顺序消费无竞态）
+            async Task EmitSentenceAsync(string raw)
+            {
+                var sentence = GateSentence(raw, sent.Count, ref usedWords, cfg, out var cut);
+                if (cut) truncated = true;
+                if (sentence is null) return;
+
+                // TTS 路由：free 逐句 en/zh；translate 只合成首个非中文句
+                string? url = null;
+                if (normMode != ModeTranslate || (!translateTtsDone && !ContainsCjk(sentence)))
+                {
+                    var lang = ContainsCjk(sentence) ? "zh" : "en";
+                    if (normMode == ModeTranslate) translateTtsDone = true;
+                    var saved = await _tts.SaveClipAsync($"chat_{ts}_s{idx}.mp3",
+                        sentence, lang, linked.Token);
+                    if (saved is not null) url = $"/api/device/audio/{saved}";
+                    else _logger.LogWarning("chat 流式 TTS 句失败 u 置空：s{Idx}", idx);
+                }
+
+                sent.Add(sentence);
+                await emitLine(Line(new ChatStreamSentence("s", idx, sentence, url)));
+                idx++;
+                if (!truncated && (sent.Count >= cfg.MaxSentences || usedWords >= cfg.MaxWords))
+                    truncated = true;
+            }
+
+            try
+            {
+                await foreach (var u in _chat.GetStreamingResponseAsync(
+                    BuildMessages(history, transcript, cfg.SystemPrompt),
+                    new ChatOptions { Temperature = cfg.Temperature }, linked.Token))
+                {
+                    pending.Append(u.Text);
+                    int b;
+                    while (!truncated && (b = LastSentenceBoundary(pending)) >= 0)
+                    {
+                        var raw = pending.ToString(0, b + 1);
+                        pending.Remove(0, b + 1);
+                        await EmitSentenceAsync(raw);
+                    }
+                    if (truncated) break;
+                }
+                if (!truncated && pending.Length > 0)
+                    await EmitSentenceAsync(pending.ToString());   // 尾句（无句界结尾）
+            }
+            catch (OperationCanceledException)
+            {
+                return;   // abort / 设备断开：静默终止，不回写不发 end
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "chat 流式 LLM 调用失败（ollama 未起/模型未拉?）");
+                await emitLine(Line(new ChatStreamErr("err", 502, "llm unavailable")));
+                return;
+            }
+
+            if (sent.Count == 0)
+            {
+                await emitLine(Line(new ChatStreamErr("err", 502, "empty llm reply")));
+                return;
+            }
+
+            // 5.5-8. 收尾（与老路径同源：命中/回写/落库）
+            var replyText = string.Join(normMode == ModeTranslate ? '\n' : ' ', sent);
+            IReadOnlyList<ChatWordHit>? wordHits = null;
+            if (_vocab is not null)
+            {
+                var vocab = await _vocab.GetWordsAsync(ct);
+                wordHits = MatchWordHits($"{transcript} {replyText}", vocab);
+            }
+            var lang = ContainsCjk(replyText) ? "zh" : "en";
+            history.Add(new ChatMsg("user", transcript));
+            history.Add(new ChatMsg("assistant", replyText));
+            await TrySaveHistoryAsync(cacheKey, history, ct);
+            _turnSink?.Enqueue(new ChatTurn
+            {
+                DeviceId = deviceId,
+                Mode = normMode,
+                ScenarioId = script?.Id,
+                Transcript = transcript,
+                Reply = replyText,
+                Ts = DateTime.UtcNow,
+            });
+            await emitLine(Line(new ChatStreamEnd("end", wordHits, lang,
+                DetectEmotion(replyText), DetectCommands(transcript))));
+        }
+        finally
+        {
+            _rounds.TryRemove(roundId, out _);
+        }
     }
 
     // ---- 模式配置（A1 参数化：七步编排同构，仅四处差异） ----
@@ -455,7 +740,7 @@ public class ChatService
     private async Task TrySaveHistoryAsync(string key, List<ChatMsg> history, CancellationToken ct)
     {
         if (history.Count > MaxContextMessages)
-            history.RemoveRange(0, history.Count - MaxContextMessages);
+            history = await CompactHistoryAsync(history, ct);
         try
         {
             await _cache.SetAsync(key, history, SessionTtl, ct);
@@ -464,5 +749,42 @@ public class ChatService
         {
             _logger.LogWarning(ex, "chat 上下文回写失败（本轮响应不受影响）");
         }
+    }
+
+    /// <summary>会话记忆摘要压缩（P1-2）：超限时头部 12 条（约 6 轮）压成
+    /// 一条 assistant 摘要消息（近因上下文原样保留，长程记忆有损摘要）；
+    /// LLM 失败/空回降级原有直接裁剪（全链路降级纪律：任何故障不阻断
+    /// 对话，仅损失长程记忆）。</summary>
+    private async Task<List<ChatMsg>> CompactHistoryAsync(List<ChatMsg> history, CancellationToken ct)
+    {
+        const int compactHead = 12;
+        var sb = new StringBuilder(
+            "Summarize the conversation below in 3 short sentences for a young English learner's chat memory. " +
+            "Keep names, topics and key facts.\n");
+        foreach (var m in history.Take(compactHead))
+            sb.Append(m.Role).Append(": ").AppendLine(m.Text);
+        try
+        {
+            var response = await _chat.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, sb.ToString())],
+                new ChatOptions { Temperature = 0.3f }, ct);
+            var summary = TruncateUtf8(StripEmoji(response.Text.Trim()), 800);
+            if (summary.Length > 0)
+            {
+                var compacted = new List<ChatMsg>(history.Count - compactHead + 1)
+                {
+                    new("assistant", $"[Earlier chat summary] {summary}"),
+                };
+                compacted.AddRange(history.Skip(compactHead));
+                return compacted;
+            }
+            _logger.LogWarning("chat 上下文摘要空回，降级直接裁剪");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "chat 上下文摘要压缩失败，降级直接裁剪");
+        }
+        history.RemoveRange(0, history.Count - MaxContextMessages);
+        return history;
     }
 }

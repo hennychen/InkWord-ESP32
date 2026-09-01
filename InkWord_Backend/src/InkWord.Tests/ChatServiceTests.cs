@@ -1,4 +1,6 @@
 using System.Text;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
 using InkWord.Core.Entities;
 using InkWord.Infrastructure.Cache;
 using InkWord.Services;
@@ -418,7 +420,7 @@ public class ChatServiceTests : IDisposable
     // ---- 会话上下文 ----
 
     [Fact]
-    public async Task Converse_SecondRound_CarriesHistoryAndTrims()
+    public async Task Converse_SecondRound_CarriesHistoryAndCompacts()
     {
         var device = Guid.NewGuid();
         _asr.NextText = "what is this";
@@ -426,7 +428,7 @@ public class ChatServiceTests : IDisposable
         _engine.NextResult = new byte[] { 1 };
 
         await _svc.ConverseAsync(device, Wav(1600), CancellationToken.None);
-        // 第二轮前预塞历史到上限：再加本轮应裁回 24 条（12 轮）
+        // 第二轮前预塞历史超上限：头部 12 条摘要压缩 + 近因保留（P1-2）
         var history = Enumerable.Range(0, 23)
             .Select(i => new ChatMsg(i % 2 == 0 ? "user" : "assistant", $"old {i}"))
             .ToList();
@@ -434,11 +436,321 @@ public class ChatServiceTests : IDisposable
 
         await _svc.ConverseAsync(device, Wav(1600), CancellationToken.None);
 
+        var stored = _redis.ReadStore<List<ChatMsg>>($"chat:{device:N}")!;
+        Assert.Equal(14, stored.Count);   // 23 预置 + 2 本轮 = 25 → 头 12 条压 1：1 + 13
+        Assert.Equal("assistant", stored[0].Role);
+        Assert.StartsWith("[Earlier chat summary] ", stored[0].Text);
+        Assert.Contains("pen", stored[0].Text);   // 摘要即 FakeChat 回复文本
+        Assert.Equal("old 12", stored[1].Text);   // 近因上下文原样保留（第 13 条起）
+        // 摘要调用收到含头部历史的压缩 prompt（LastMessages 被末次调用覆盖）
+        var prompt = Assert.Single(_chat.LastMessages!);
+        Assert.Equal(ChatRole.User, prompt.Role);
+        Assert.Contains("old 0", prompt.Text);
+        Assert.Contains("old 11", prompt.Text);          // 头 12 条全进摘要
+        Assert.DoesNotContain("old 12", prompt.Text);    // 近因条目不进摘要
+    }
+
+    // ---- 流式管线（P0-1，2026-08-30）----
+
+    /// <summary>跑一轮流式对话收集 NDJSON 行（emitLine 即“网络写出”）</summary>
+    private async Task<List<string>> StreamRound(Guid device, string? mode = null,
+        string? scenarioId = null)
+    {
+        var lines = new List<string>();
+        await _svc.ConverseStreamAsync(device, Wav(1600), mode, scenarioId,
+            l => { lines.Add(l); return Task.CompletedTask; }, CancellationToken.None);
+        return lines;
+    }
+
+    private static JsonElement Obj(string line) => JsonDocument.Parse(line).RootElement;
+    private static string Kind(JsonElement e) => e.GetProperty("t").GetString()!;
+
+    [Fact]
+    public async Task Stream_HappyPath_MetaThenSentencesThenEnd()
+    {
+        _asr.NextText = "hello teacher";
+        _chat.NextReply = "I love cats! They are soft.";   // 恰 2 句，护栏不截断
+        _engine.NextResult = new byte[] { 1, 2, 3 };
+        var device = Guid.NewGuid();
+
+        var lines = await StreamRound(device);
+
+        Assert.Equal(4, lines.Count);
+        var meta = Obj(lines[0]);
+        Assert.Equal("meta", Kind(meta));
+        Assert.Equal("hello teacher", meta.GetProperty("transcript").GetString());
+        Assert.Equal("qwen2.5:7b", meta.GetProperty("engine").GetString());
+        Assert.Equal("free", meta.GetProperty("mode").GetString());
+        Assert.NotEqual(Guid.Empty, meta.GetProperty("roundId").GetGuid());
+
+        var s0 = Obj(lines[1]);
+        Assert.Equal("s", Kind(s0));
+        Assert.Equal(0, s0.GetProperty("i").GetInt32());
+        Assert.Equal("I love cats!", s0.GetProperty("x").GetString());
+        var u = s0.GetProperty("u").GetString()!;
+        Assert.StartsWith("/api/device/audio/chat_", u);
+        Assert.True(File.Exists(Path.Combine(_dir, Path.GetFileName(u))));
+        Assert.Equal(1, Obj(lines[2]).GetProperty("i").GetInt32());
+        Assert.Equal("They are soft.", Obj(lines[2]).GetProperty("x").GetString());
+
+        var end = Obj(lines[3]);
+        Assert.Equal("end", Kind(end));
+        Assert.Equal("en", end.GetProperty("lang").GetString());
+        Assert.Equal("neutral", end.GetProperty("emotion").GetString());
+        Assert.Empty(end.GetProperty("commands").EnumerateArray());
+        Assert.False(end.TryGetProperty("wordHits", out _));   // vocab 未注入 → 字段省略
+        // 上下文回写 user+assistant 2 条；流式消息构建与老路径同源
         var stored = _redis.ReadStore<List<ChatMsg>>($"chat:{device:N}");
-        Assert.Equal(24, stored.Count);   // 23 预置 + 2 本轮 = 25 → 裁 1
-        // 第二轮 LLM 收到 system + 上下文 + 当前问句
-        Assert.True(_chat.LastMessages!.Count >= 3);
+        Assert.Equal(2, stored!.Count);
+        // 首轮无历史：system+user 两消息（流式与老路径同源构建）
+        Assert.Equal(2, _chat.LastMessages!.Count);
         Assert.Equal(ChatRole.System, _chat.LastMessages[0].Role);
+        Assert.Equal(ChatRole.User, _chat.LastMessages[1].Role);
+    }
+
+    [Fact]
+    public async Task Stream_FirstSentenceBlocked_ReplacedWithSafeReply()
+    {
+        _asr.NextText = "tell me a story";
+        _chat.NextReply = "Once there was a pirate with a gun. Then he ran away!";
+        _engine.NextResult = new byte[] { 1 };
+
+        var lines = await StreamRound(Guid.NewGuid());
+
+        Assert.Equal("Sorry, let's talk about something fun! What is your favorite animal?",
+            Obj(lines[1]).GetProperty("x").GetString());
+        Assert.Equal("Then he ran away!", Obj(lines[2]).GetProperty("x").GetString());
+        Assert.Equal("end", Kind(Obj(lines[^1])));
+    }
+
+    [Fact]
+    public async Task Stream_LaterSentenceBlocked_DroppedAndTruncated()
+    {
+        _asr.NextText = "hi";
+        _chat.NextReply = "Cats are cute. I have a gun here.";   // 第 2 句命中黑名单
+
+        var lines = await StreamRound(Guid.NewGuid());
+
+        Assert.Equal("Cats are cute.", Obj(lines[1]).GetProperty("x").GetString());
+        Assert.DoesNotContain(1, lines.Where(l => Kind(Obj(l)) == "s")
+            .Select(l => Obj(l).GetProperty("i").GetInt32()));   // 后续句丢弃截流：无 s1
+        // 已发句照常收尾：end 仍发
+        Assert.Equal("end", Kind(Obj(lines[^1])));
+    }
+
+    [Fact]
+    public async Task Stream_WordLimit_TruncatesAtWordBoundary()
+    {
+        _asr.NextText = "hi";
+        var longTail = string.Join(' ', Enumerable.Repeat("word", 45));
+        _chat.NextReply = $"Hi! {longTail}. Final tail sentence here.";
+
+        var lines = await StreamRound(Guid.NewGuid());
+
+        var sLines = lines.Where(l => Kind(Obj(l)) == "s").ToList();
+        Assert.Equal(2, sLines.Count);
+        Assert.Equal("Hi!", Obj(sLines[0]).GetProperty("x").GetString());
+        Assert.EndsWith("…", Obj(sLines[1]).GetProperty("x").GetString());   // 词边界截断
+        // 截流：长句截断后后续 token 丢弃，尾句不再产出 s2
+        Assert.Equal("end", Kind(Obj(lines[^1])));
+    }
+
+    [Fact]
+    public async Task Stream_TtsFailure_SentencesCarryNoUrl()
+    {
+        _asr.NextText = "hi";
+        _chat.NextReply = "Hello! Nice to see you.";
+        _engine.NextResult = null;   // 合成失败
+
+        var lines = await StreamRound(Guid.NewGuid());
+
+        var sLines = lines.Where(l => Kind(Obj(l)) == "s").ToList();
+        Assert.Equal(2, sLines.Count);
+        Assert.All(sLines, l => Assert.False(Obj(l).TryGetProperty("u", out _)));   // null 降级字段省略
+        Assert.Equal("end", Kind(Obj(lines[^1])));
+    }
+
+    [Fact]
+    public async Task Stream_EmptyReply_EmitsErr()
+    {
+        _asr.NextText = "hi";
+        _chat.NextReply = "";
+        var device = Guid.NewGuid();
+
+        var lines = await StreamRound(device);
+
+        Assert.Equal(2, lines.Count);
+        var err = Obj(lines[1]);
+        Assert.Equal("err", Kind(err));
+        Assert.Equal(502, err.GetProperty("code").GetInt32());
+        Assert.Equal("empty llm reply", err.GetProperty("m").GetString());
+        Assert.Null(_redis.ReadStore<List<ChatMsg>>($"chat:{device:N}"));   // err 路径不回写
+    }
+
+    [Fact]
+    public async Task Stream_LlmMidStreamError_EmitsErrAfterEmittedSentences()
+    {
+        _asr.NextText = "hi";
+        _chat.NextReply = "Hi there. More text is coming now.";
+        _chat.ChunkSize = 10;
+        _chat.StreamErrorAt = 10;   // 首句已产出后抛
+        _chat.StreamError = new InvalidOperationException("ollama crashed");
+
+        var lines = await StreamRound(Guid.NewGuid());
+
+        Assert.Equal(3, lines.Count);
+        Assert.Equal("Hi there.", Obj(lines[1]).GetProperty("x").GetString());
+        var err = Obj(lines[2]);
+        Assert.Equal("err", Kind(err));
+        Assert.Equal(502, err.GetProperty("code").GetInt32());
+    }
+
+    [Fact]
+    public async Task Stream_AbortMidRound_StopsSilently()
+    {
+        _asr.NextText = "hi";
+        _chat.NextReply = "Hello there my friend! How are you today?";
+        _chat.ChunkSize = 4;
+        _chat.StreamDelayMs = 15;   // 首“My句 6 片×15ms ≈90ms，留足 abort 窗口
+        var device = Guid.NewGuid();
+        var lines = new List<string>();
+        Guid roundId = Guid.Empty;
+
+        await _svc.ConverseStreamAsync(device, Wav(1600), null, null,
+            l =>
+            {
+                lines.Add(l);
+                var e = Obj(l);
+                if (Kind(e) == "meta")
+                {
+                    roundId = e.GetProperty("roundId").GetGuid();
+                    _ = Task.Run(async () => { await Task.Delay(20); _svc.AbortRound(roundId); });
+                }
+                return Task.CompletedTask;
+            }, CancellationToken.None);
+
+        Assert.Equal("meta", Kind(Obj(lines[0])));
+        Assert.DoesNotContain("end", lines.Select(l => Kind(Obj(l))));   // 静默终止无 end
+        Assert.Null(_redis.ReadStore<List<ChatMsg>>($"chat:{device:N}"));   // 未回写上下文
+        _svc.AbortRound(roundId);   // 注册表已清理：no-op 不炸
+    }
+
+    [Fact]
+    public async Task Stream_Translate_ChineseSkippedEnglishTtsOnly()
+    {
+        _asr.NextText = "我喜欢猫";
+        _chat.NextReply = "你喜欢猫。\nYou like cats.";
+        _engine.NextResult = new byte[] { 1 };
+        var device = Guid.NewGuid();
+
+        var lines = await StreamRound(device, mode: "translate");
+
+        var sLines = lines.Where(l => Kind(Obj(l)) == "s").ToList();
+        Assert.Equal(2, sLines.Count);
+        Assert.False(Obj(sLines[0]).TryGetProperty("u", out _));   // 中文句不合成
+        Assert.True(Obj(sLines[1]).TryGetProperty("u", out _));    // 首个英文句合成
+        Assert.Equal("en", _engine.LastLang);
+        Assert.Equal(1, _engine.Calls);
+        Assert.Equal("translate", Obj(lines[0]).GetProperty("mode").GetString());
+        Assert.Equal("zh", Obj(lines[^1]).GetProperty("lang").GetString());
+        var stored = _redis.ReadStore<List<ChatMsg>>($"chat:{device:N}:t");
+        Assert.Equal(2, stored!.Count);
+        Assert.Contains('\n', stored[1].Text);   // translate 两行 join 语义同源
+    }
+
+    [Fact]
+    public async Task Stream_EndEmotion_PraisingKeyword()
+    {
+        _asr.NextText = "good";
+        _chat.NextReply = "Great job! You know so many words.";
+        _engine.NextResult = null;
+
+        var lines = await StreamRound(Guid.NewGuid());
+
+        Assert.Equal("praising", Obj(lines[^1]).GetProperty("emotion").GetString());
+    }
+
+    [Theory]
+    [InlineData("again")]
+    [InlineData("Again.")]
+    [InlineData("say it again")]
+    [InlineData("Pardon?")]
+    public async Task Stream_ReplayCommand_ShortRetranscripts(string transcript)
+    {
+        _asr.NextText = transcript;
+        _chat.NextReply = "You like cats. They are soft.";
+        _engine.NextResult = null;
+
+        var lines = await StreamRound(Guid.NewGuid());
+
+        var cmds = Obj(lines[^1]).GetProperty("commands");
+        Assert.Single(cmds.EnumerateArray());
+        Assert.Equal("replay", cmds[0].GetProperty("a").GetString());
+    }
+
+    [Fact]
+    public async Task Stream_ReplayCommand_NormalTranscript_Empty()
+    {
+        _asr.NextText = "what is your favorite animal again maybe";
+        _chat.NextReply = "I love cats.";
+        _engine.NextResult = null;
+
+        var lines = await StreamRound(Guid.NewGuid());
+
+        var cmds = Obj(lines[^1]).GetProperty("commands");
+        Assert.Empty(cmds.EnumerateArray());   // 整句匹配：长句不误触
+    }
+
+    [Fact]
+    public async Task Stream_AsrFailure_ThrowsBeforeFirstLine()
+    {
+        _asr.Mode = 0;
+
+        var ex = await Assert.ThrowsAsync<ChatException>(() => StreamRound(Guid.NewGuid()));
+
+        Assert.Equal(503, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task Stream_HistoryOverflow_CompactsViaSummary()
+    {
+        _asr.NextText = "hello again";
+        _chat.NextReply = "I love cats! They are soft.";
+        _engine.NextResult = new byte[] { 1, 2, 3 };
+        var device = Guid.NewGuid();
+        var history = Enumerable.Range(0, 23)
+            .Select(i => new ChatMsg(i % 2 == 0 ? "user" : "assistant", $"old {i}"))
+            .ToList();
+        _redis.WriteStore($"chat:{device:N}", history);
+
+        var lines = await StreamRound(device);
+
+        Assert.Equal("end", Kind(Obj(lines[^1])));   // 对话不因摘要压缩阻断
+        var stored = _redis.ReadStore<List<ChatMsg>>($"chat:{device:N}")!;
+        Assert.Equal(14, stored.Count);               // 25 → 1 摘要 + 13 近因
+        Assert.StartsWith("[Earlier chat summary] ", stored[0].Text);
+        Assert.Contains("cats", stored[0].Text);      // 摘要即 FakeChat 回复文本
+    }
+
+    [Fact]
+    public async Task Stream_SummaryFailure_DegradesToTrim()
+    {
+        _asr.NextText = "hello again";
+        _chat.NextReply = "I love cats! They are soft.";
+        _engine.NextResult = new byte[] { 1, 2, 3 };
+        _chat.FailAtNonStreamCall = 1;                 // 摘要调用（首次非流式）失败
+        var device = Guid.NewGuid();
+        var history = Enumerable.Range(0, 23)
+            .Select(i => new ChatMsg(i % 2 == 0 ? "user" : "assistant", $"old {i}"))
+            .ToList();
+        _redis.WriteStore($"chat:{device:N}", history);
+
+        var lines = await StreamRound(device);
+
+        Assert.Equal("end", Kind(Obj(lines[^1])));   // 摘要失败不阻断对话
+        var stored = _redis.ReadStore<List<ChatMsg>>($"chat:{device:N}")!;
+        Assert.Equal(24, stored.Count);               // 降级：25 裁回 24（原裁剪路径）
+        Assert.Equal("old 1", stored[0].Text);        // 直接裁剪，无摘要前缀
     }
 
     // ---- helpers ----
@@ -495,13 +807,18 @@ public class ChatServiceTests : IDisposable
     {
         public string? NextReply;
         public Exception? NextError;
+        public int Calls;                    // GetResponseAsync 调用计数（P1-2 摘要失败注入用）
+        public int FailAtNonStreamCall = -1; // 第 N 次（1 起）非流式调用抛（摘要失败降级路径）
         public List<ChatMessage>? LastMessages;
         public ChatOptions? LastOptions;
 
         public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages,
             ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
+            Calls++;
             if (NextError is not null) throw NextError;
+            if (Calls == FailAtNonStreamCall)
+                throw new InvalidOperationException("injected non-stream failure");
             LastMessages = messages.ToList();
             LastOptions = options;
             if (NextReply is null) throw new InvalidOperationException("NextReply 未设置");
@@ -509,9 +826,36 @@ public class ChatServiceTests : IDisposable
                 new ChatMessage(ChatRole.Assistant, NextReply)));
         }
 
+        /// <summary>流式产出粒度/节奏/中途故障注入（P0-1）：ChunkSize
+        /// 字符一片、片间 StreamDelayMs（abort 用例留打断窗口）、产出至
+        /// StreamErrorAt 字符起抛 StreamError（模拟 LLM 中途崩）</summary>
+        public int ChunkSize = 4;
+        public int StreamDelayMs;
+        public int StreamErrorAt = -1;
+        public Exception? StreamError;
+
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages, ChatOptions? options = null,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default) =>
+            StreamCore(messages, options, cancellationToken);
+
+        private async IAsyncEnumerable<ChatResponseUpdate> StreamCore(
+            IEnumerable<ChatMessage> messages, ChatOptions? options,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            if (NextError is not null) throw NextError;
+            LastMessages = messages.ToList();
+            LastOptions = options;
+            if (NextReply is null) throw new InvalidOperationException("NextReply 未设置");
+            for (var i = 0; i < NextReply.Length; i += ChunkSize)
+            {
+                if (StreamDelayMs > 0) await Task.Delay(StreamDelayMs, ct);
+                ct.ThrowIfCancellationRequested();
+                if (StreamErrorAt >= 0 && i >= StreamErrorAt) throw StreamError!;
+                yield return new ChatResponseUpdate(ChatRole.Assistant,
+                    NextReply.Substring(i, Math.Min(ChunkSize, NextReply.Length - i)));
+            }
+        }
 
         public TService? GetService<TService>(object? serviceKey = null) where TService : class => null;
 

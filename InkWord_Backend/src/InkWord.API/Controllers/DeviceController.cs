@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 using InkWord.API.DTOs;
 using InkWord.API.Filters;
@@ -266,11 +267,16 @@ public class DeviceController : ControllerBase
     /// mode/未知场景 400、ASR 未配置 503、LLM 故障 502、超限 413。
     /// 会话上下文 Redis 按模式隔离（free=chat:{deviceId} 现状不变，
     /// scenario/translate 追加后缀），TTL 30 分钟；回复 MP3 落
-    /// data/audio/chat_*.mp3（ChatAudioCleanupJob 每小时回收超 1 小时文件）。</remarks>
+    /// data/audio/chat_*.mp3（ChatAudioCleanupJob 每小时回收超 1 小时文件）。
+    /// P0-1 流式（2026-08-30）：?stream=1 协商 NDJSON 逐行下发（meta→
+    /// s×N→end，协议见 AI_CHAT_MODE.md §2b）；不带 stream 的老固件
+    /// 逐字节走原 JSON 信封路径。流式错误：首行前异常走传统状态码
+    /// 错误信封（Response 未开始）；流中途 LLM 失败发 err 行。</remarks>
     [HttpPost("chat")]
     [ServiceFilter(typeof(DeviceAuthFilter))]
     public async Task<IActionResult> Chat([FromQuery] string? mode,
-        [FromQuery] string? scenarioId, IFormFile file, CancellationToken ct)
+        [FromQuery] string? scenarioId, [FromQuery] string? stream,
+        IFormFile file, CancellationToken ct)
     {
         var device = (Device)HttpContext.Items["Device"]!;
         if (file == null || file.Length == 0)
@@ -280,6 +286,11 @@ public class DeviceController : ControllerBase
 
         using var ms = new MemoryStream();
         await file.CopyToAsync(ms, ct);
+
+        // P0-1 流式分支：NDJSON 逐行写出（老后端兼容由固件端回退兑住，
+        // 本端不带 stream=1 的行为与现状逐字节一致）
+        if (stream == "1")
+            return await ChatStream(device.Id, ms.ToArray(), mode, scenarioId, ct);
 
         ChatReply reply;
         try
@@ -292,6 +303,55 @@ public class DeviceController : ControllerBase
         }
 
         return Ok(ApiResponse<ChatReply>.Ok(reply));
+    }
+
+    /// <summary>P0-1 流式写出：application/x-ndjson + X-Accel-Buffering:no
+    /// （反代禁缓冲，逐行到达）；行由 ConverseStreamAsync 序列化，
+    /// 此处只补 \n + Flush。首行前 ChatException（400/503）时响应未
+    /// 开始，走传统状态码错误信封（固件统一按 status!=200 处置）。</summary>
+    private async Task<IActionResult> ChatStream(Guid deviceId, byte[] wav,
+        string? mode, string? scenarioId, CancellationToken ct)
+    {
+        Response.StatusCode = 200;
+        Response.ContentType = "application/x-ndjson";
+        Response.Headers["X-Accel-Buffering"] = "no";
+        try
+        {
+            await _chatSvc.ConverseStreamAsync(deviceId, wav, mode, scenarioId,
+                async line =>
+                {
+                    await Response.Body.WriteAsync(Encoding.UTF8.GetBytes(line + "\n"), ct);
+                    await Response.Body.FlushAsync(ct);
+                }, ct);
+        }
+        catch (ChatException ex) when (!Response.HasStarted)
+        {
+            // 首行前异常：ContentType 已被设为 x-ndjson，不复位则错误信封
+            // 按 ndjson 协商 formatter 失败被吞成 406（curl 实测发现）
+            Response.ContentType = "application/json";
+            return StatusCode(ex.StatusCode, ApiResponse.Fail(ex.StatusCode, ex.Message));
+        }
+        catch (ChatException ex)   // 防御：理论上不可达（流内异常已转 err 行）
+        {
+            await Response.Body.WriteAsync(Encoding.UTF8.GetBytes(
+                System.Text.Json.JsonSerializer.Serialize(
+                    new { t = "err", code = ex.StatusCode, m = ex.Message }) + "\n"), ct);
+            await Response.Body.FlushAsync(ct);
+        }
+        return new EmptyResult();
+    }
+
+    /// <summary>P0-2 设备打断上报：fire-and-forget 截断在途轮次。</summary>
+    /// <remarks>设备播放中/等待中打断时携带 meta 行下发的 roundId 调用；
+    /// 未知/已结束 roundId 返回 200 no-op（晚到/早退均安全）。单实例
+    /// 内存注册表（多实例部署约束见 AI_CHAT_MODE.md §2b）。</remarks>
+    [HttpPost("chat/abort")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public IActionResult ChatAbort([FromQuery] Guid? roundId)
+    {
+        if (roundId is { } id)
+            _chatSvc.AbortRound(id);
+        return Ok(ApiResponse.Ok());
     }
 
     /// <summary>语音查词：multipart WAV（16kHz/16bit/mono ≤5s）→ ASR → 词库三级匹配。</summary>
