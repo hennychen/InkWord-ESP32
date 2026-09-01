@@ -94,8 +94,11 @@ if (string.Equals(aiCfg["Provider"], "openai", StringComparison.OrdinalIgnoreCas
 }
 else
 {
+    // localhost 出站禁走代理（2026-09-01 真机实测踩坑：裸 HttpClient 默认
+    // 读系统代理，Clash 7897 未跑时 Ollama 全部 Connection refused）
     builder.Services.AddSingleton<IChatClient>(_ => new OllamaChatClient(
-        new Uri(aiCfg["OllamaUrl"] ?? "http://localhost:11434"), aiModel, new HttpClient()));
+        new Uri(aiCfg["OllamaUrl"] ?? "http://localhost:11434"), aiModel,
+        new HttpClient(new SocketsHttpHandler { UseProxy = false }, disposeHandler: true)));
 }
 
 // ---- Hangfire 任务类（需 DI 注入） ----
