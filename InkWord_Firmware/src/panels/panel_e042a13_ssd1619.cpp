@@ -205,165 +205,18 @@ static int panel_write_planes(const uint8_t *const *planes)
  * →两段式先白后画→能量不对称锁死→跳 init 提速→去温度位→v7 单激活
  * 多相证伪（Rev 0.10 预发布 spec 与实测不符）→v8 回退 v6 定稿）。 */
 
-/* 归白 LUT（段1）：L2=VSH1 黑→白主驱动 8 帧（清残影短波形，
- * 白底到位率要求最低）；L0/L1 保持通道 VSS；L3 占位 */
-static const uint8_t k_lut_white[70] = {
-    /* L0 黑保持：VSS */
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    /* L1 白保持：VSS */
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    /* L2 黑→白：VSH1（全字节同值=通道整体电压，v7 实证分相无效） */
-    0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
-    /* L3 白→黑：VSL（段1 不触发，占位） */
-    0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
-    /* L4 VCOM：VSS */
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    /* G0：A 相 8 帧 */
-    0x08, 0x00, 0x00, 0x00, 0x00,
-    /* G1..G6 全跳过 */
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-};
-
-/* 出黑 LUT（段2）：L3=VSL 白→黑主驱动 40 帧——黑字粒子推到稳定
- * 端点锁死，撤场后不回弹（v3 回弹残影实证 16 帧不够） */
-static const uint8_t k_lut_dark[70] = {
-    /* L0 黑保持：VSS */
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    /* L1 白保持：VSS */
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    /* L2 黑→白：VSH1（段2 不触发，占位） */
-    0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
-    /* L3 白→黑：VSL（段2 主驱动，从纯白态出发） */
-    0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
-    /* L4 VCOM：VSS */
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    /* G0：A 相 40 帧 */
-    0x28, 0x00, 0x00, 0x00, 0x00,
-    /* G1..G6 全跳过 */
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-};
-
-/* 全屏 RAM 窗口 + 光标归零（局刷写整屏帧前重设；BW 兄弟屏实证：
- * 窗口残留会约束地址计数器行末回卷，整屏连续写入循环覆盖致花屏） */
-static void set_full_window(void)
-{
-    bus_cmd(0x44);
-    bus_dat(0x00);
-    bus_dat((uint8_t)(g_panel_e042a13.panel_w / 8 - 1));
-    bus_cmd(0x45);
-    bus_dat(0x00); bus_dat(0x00);
-    bus_dat((uint8_t)((g_panel_e042a13.panel_h - 1) & 0xFF));
-    bus_dat((uint8_t)((g_panel_e042a13.panel_h - 1) >> 8));
-    bus_cmd(0x4E); bus_dat(0x00);
-    bus_cmd(0x4F); bus_dat(0x00); bus_dat(0x00);
-}
-
-/* BW-only 差分局刷（0x26 old + 0x24 new + 0x32 寄存器 LUT +
- * 0x22/0xEC 激活，两段式先白后画）。三色屏 0x26 局刷期间被挪用为
- * old 帧——ACCENT 红内容退化为黑（BW 平面 bit=0），红需求走全刷
- * 路径（0xF7 OTP 波形自动重载，0x32 污染被洗掉，BW 兄弟屏 v5 实证） */
+/* 局刷回退为全刷（2026-09-02 终局结论）：
+ * A1-A10h 共 16 轮系统性尝试（Mode 1 LUT / Mode 2 LUT / 0x37 Display
+ * Option / 0x22 各种位组合），BUSY 始终 10-14s（= 全刷时间），自定义
+ * LUT 从未被消费。交叉验证：GxEPD2 作者明确标注 4.2" 3-color 不支持
+ * partial update；Arduino Forum "B/W/R 4.2" doesn't support partial
+ * refresh"；仁波切 SSD1677 Mode 2 方案针对 ESL 价签屏（OTP/膜组不同）。
+ * 结论：Hink E042A13-A0 三色屏硬件不支持局刷，partial ops 退化为全刷 */
 static int panel_partial(const uint8_t *prev, const uint8_t *new_, uint8_t passes)
 {
-    const int wb = g_panel_e042a13.panel_w / 8;
-    const int ph = g_panel_e042a13.panel_h;
-
-    /* diff 只看 B/W 平面（首平面）：红平面变化在 BW-only 局刷下
-     * 不可表达，视为无变化免刷（红需求走全刷） */
-    int dirty = 0;
-    for (int y = 0; y < ph && !dirty; y++)
-        if (memcmp(prev + (size_t)y * wb, new_ + (size_t)y * wb, wb) != 0)
-            dirty = 1;
-    if (!dirty) {
-        LOG_I("partial: clean, skip");
-        return 0;
-    }
-    LOG_I("partial: dirty, passes=%u", (unsigned)passes);
-
-    /* 并发防护（2026-09-01 A3 轮实锤双任务并发刷屏：boot 首帧全刷
-     * 期间另一路局刷序列交错，两 wait 同一 BUSY 各记假时长）：入口
-     * 先等上次波形收尾，再开则序列原子 */
-    if (digitalRead(EPD_BUSY_PIN) == g_panel_e042a13.busy_level)
-        LOG_I("partial: BUSY still high on entry, waiting");
-    bus_wait_idle(&g_panel_e042a13, g_panel_e042a13.busy_timeout_ms);
-
-    /* 局刷链路状态自持（0xEC 不关模拟，RAM/LUT 全量重写），跳过
-     * 硬复位+重配 ~500ms；关电/深睡后 s_ready=false 自动重配 */
-    if (!s_ready && panel_init() != 0) return -1;
-
-    /* 试验记录（2026-09-01/02 真机，单变量迭代）：
-     *   A1（0x21 双 0x00→单 0x00）证伪：吞命令假设排除；
-     *   A2/A4（0x22/0x04 纯 DISPLAY）：无并发纯净环境仍打满超时
-     *   上限挂死——此前 A2/A3 日志的 5429/5690/3869ms「LUT 生效」
-     *   全系并发等待假象（等首帧全刷波形尾段，A4 统一日志通道
-     *   后实锤：两条 wait 同毫秒释放）。
-     *   A5（裸 0x20）：波形真实运行不再挂死，#2 显示成功，但两段
-     *   各 14580/14589ms——与 OTP 全刷分毫不差：裸激活消费的是
-     *   首帧 0xF7 残留（Load Temperature/Waveform 位把 OTP 波形
-     *   载入波形引擎，0x32 LUT 被忽略）。
-     *   A6（EPaperDrive DKE42_3COLOR 启用链一比一 + 0xC7 预置）
-     *   挂死 35s——同族异果：EPD 的 DKE 屏（2020+ 批次 OTP）与
-     *   本屏（HINK 2017 批次）OTP 槽位不同，0xC7 多变量污染难
-     *   归因（0x2C/0x00 VCOM 越界或 0x37 五字节均存疑）。
-     *   A7（当前，spec 位表理论驱动）：SSD1619A §0x22 表实证
-     *   C7=CLK+ANalog+Mode1、CF=C7+bit3（Mode2）、F7=C7+0x30
-     *   （Load Temp/LUT from OTP）、EC 含 0x10（Load LUT，本屏
-     *   OTP 槽空挂死）、04 无 CLK/ANALOG 挂死——全部历史实验
-     *   归位。0xCF = CLK+ANALOG+DISPLAY Mode2，不含任何 OTP
-     *   载入位：波形引擎无仓可载，只能消费 0x32 寄存器 LUT；
-     *   Mode2 即 (0x26 old,0x24 new) 差分驱动模式。回 A5 基线
-     *   （无 0x2C/0x37/快档污染），唯一变量 = 0x22 预置 0xCF
-     *   A7（0xCF）实测：两段各打满 35s，但段1 后屏幕全白
-     *   ——波形真实执行（A2/A4 挂死是纹丝不动，本质不同）！
-     *   解读：Mode2 无 0x10 位时引擎消费旧/OTP 差分 WS（三色
-     *   红滤波波形超长），BUSY 35s 仍在跑波形而非挂死。
-     *   A8（0xEC，BW 屏同款）干净环境补测：仍 35s + 段1 后
-     *   全白——确证非并发假象，BW 屏经验不可移植（同控制器
-     *   异 OTP/膜）。
-     *   事实矩阵收敛：F7（含 0x10 LoadLUT）唯一 BUSY 正常释放
-     *   者，C7/CF/EC/04（均无 0x10）全挂 ≥35s —— BUSY 释放
-     *   必要条件 = 0x10 Load LUT 步骤。A5 的 14.58s 双解：载
-     *   入 OTP WS 覆盖，或本屏温度搜索失败 no-op（LUT 保持）。
-     *   A9（当前）：0xFC = LoadTemp+LoadLUT+Mode2+DISPLAY 全位
-     *   （无收尾）+ 0x32 已写——双解一锤定音：若快（8/40 帧）
-     *   则 0x10 在本屏 no-op 且 LUT 生效（完美局刷）；若慢但
-     *   BUSY 释放则 OTP 覆盖实锤，转 Plan B */
-    bus_cmd(0x21); bus_dat(0x00);
-    bus_cmd(0x22); bus_dat(0xFC);    /* A9：全位（0x10 释放+M2） */
-    const size_t plane_bytes = (size_t)wb * ph;
-
-    /* 段1：归白清残影（短 LUT）。0x26=prev（B/W 平面），0x24=全白。
-     * 裸 0x20（0x22 已预置 0xFC） */
-    LOG_I("partial: seg1 begin");
-    bus_cmd(0x32);
-    bus_dat_stream(k_lut_white, sizeof(k_lut_white));
-    set_full_window();
-    bus_cmd(0x26);
-    bus_dat_stream(prev, plane_bytes);
-    bus_cmd(0x24);
-    for (size_t i = 0; i < plane_bytes; i++) bus_dat(0xFF);
-    bus_cmd(0x20);                    /* 裸激活（0x22 预置 0xFC） */
-    bus_wait_busy(&g_panel_e042a13, g_panel_e042a13.busy_timeout_ms);
-
-    /* 段2：出新（长 LUT 锁死黑字），两段间重写 0x32 */
-    for (uint8_t p = 0; p < passes; p++) {
-        LOG_I("partial: seg2 begin (%u/%u)", (unsigned)(p + 1),
-              (unsigned)passes);
-        bus_cmd(0x32);
-        bus_dat_stream(k_lut_dark, sizeof(k_lut_dark));
-        set_full_window();
-        bus_cmd(0x26);
-        for (size_t i = 0; i < plane_bytes; i++) bus_dat(0xFF);
-        bus_cmd(0x24);
-        bus_dat_stream(new_, plane_bytes);
-        bus_cmd(0x20);                /* 裸激活，同段1（0x22 预置 0xFC） */
-        bus_wait_busy(&g_panel_e042a13, g_panel_e042a13.busy_timeout_ms);        /* A9 判据：快=LUT 生效；慢但
-                                     * 释放=OTP 覆盖 */
-    }
-    return 0;
+    (void)prev; (void)passes;
+    LOG_I("partial: fallback to full refresh (3C HW no partial)");
+    return do_refresh(new_, new_ + (size_t)(g_panel_e042a13.panel_w / 8) * g_panel_e042a13.panel_h);
 }
 
 static void panel_power_off(void)
@@ -420,15 +273,11 @@ const epd_panel_desc_t g_panel_e042a13 = {
     .power_off_ms = 30,
     .full_ms    = 15000,          /* 真机实测 14580ms（2026-08-22
                                    * boot10/11 四次全刷一致）+余量 */
-    .partial_ms = 1700,           /* BW-only 两段式差分局刷估算：波形
-                                   * 320+970ms（BW 兄弟屏定档）+ 4 遍
-                                   * RAM 逐字节 4MHz ~280ms；实测回填 */
-    .partial_enabled = true,      /* BW-only 差分局刷（2026-09-01，BW
-                                   * 兄弟屏 v8 定稿同构移植；0x26 挪用
-                                   * old 帧，局刷期间红退化黑，红需求
-                                   * 走全刷——§13.2「三色屏不支持局刷」
-                                   * 系厂商 OTP 口径，寄存器 LUT 路径
-                                   * 不在此限，本条为首例豁免） */
+    .partial_ms = 15000,          /* 局刷退化为全刷（3C 硬件不支持局刷），
+                                   * 与 full_ms 相同 */
+    .partial_enabled = true,      /* 退化为全刷（见 panel_partial 注释）：
+                                   * 上层调度仍走 partial 路径，实际执行全刷。
+                                   * 保持 enabled 以兼容调度逻辑，但无速度收益 */
     .passes     = 1,              /* 两段式内含归白+出黑双驱动，单次够 */
     .partial_count_full_refresh = 16, /* 两段式每轮主动清残影（BW 兄弟屏
                                    * v6 先例 8→16）；三色全刷 14.6s
