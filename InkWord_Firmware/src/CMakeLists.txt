@@ -67,6 +67,7 @@ idf_component_register(
         "study_mode_machine.c"
         "page_router.c"     # T1.4 页面路由：base+覆盖层栈（page_t 协议，双轨同步）
         "selftest_diff.c"   # T2.2 黄金帧 diff 纯函数（native-test 覆盖灵敏度）
+        "lan_proto.c"      # T2.3 LAN 直传协议 v2 帧分类/头解析（native-test 覆盖）
         "selftest_frame.c"  # T2.2 黄金帧自检（INKWORD_GOLDEN_FRAME 门控，
                             # 生产 env 空展开；双轨同步占位）
         "layout_profile.c"   # P5+Phase5：L4 布局档位层（档位→字库级映射）

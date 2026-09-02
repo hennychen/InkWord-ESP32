@@ -8,18 +8,20 @@
  *                       字体渲染，几何按当前面板运行期注入 —— Phase 6
  *                       多面板）；文本/图片均支持旋转（自动/0/90/180/270°），
  *                       可选横屏排布满幅显示
- *   POST /api/display   协议 v2 双长度（2026-08-22 彩色传图；v2.1
- *                       2026-08-29 accent 泛化：[1] 平面色随面板
- *                       desc.accent_rgb 注入——红屏红，
- *                       上传页量化调色板同源）：
- *                       v1 单平面 epd_fb_size() 字节（行宽 PW/8，MSB
- *                       first，bit=1 白）——多平面面板余平面（accent）
- *                       设备侧补零，旧客户端/脚本兼容，行为与历史版
- *                       一致；v2 双平面 epd_fb_total() 字节（[0]=B/W
- *                       bit=1 白 + [1]=accent bit=1 置色，与面板 plane
- *                       布局直通），三色面板彩色传图；两者均
- *                       epd_full_refresh 整帧直刷。BW 面板两长度相等
- *                       自然退化 v1
+ *   POST /api/display   T2.3 协议 v2 帧头 + v1/v1.5 双长度兼容（分类
+ *                       与头解析见 lan_proto.h 谱系）：v2 = 8B 头
+ *                       （'I''W' + ver2 + bpp + W/H 大端）+ body，
+ *                       错尺寸/坏版本 400 明确文案；v1.5 无头双平面
+ *                       epd_fb_total() 字节（[0]=B/W bit=1 白 + [1]
+ *                       =accent bit=1 置色，v2.1 2026-08-29 accent 随
+ *                       desc.accent_rgb 泛化）与 v1 无头单平面
+ *                       epd_fb_size() 字节（余平面补零，旧脚本兼容）
+ *                       按长度判别照收；均 epd_full_refresh 整帧直刷。
+ *                       BW 面板 v1.5/v2-color 自然退化 v1
+ *   GET  /api/device-info  设备能力 JSON（proto_ver:2）：panel/gfx
+ *                       几何、fb_size/fb_total、plane_count、
+ *                       accent_rgb 三元组；ETag 协商缓存（304），
+ *                       外部工具/上传页动态建画布数据源
  *   GET  /wifi          Wi-Fi 配网页：扫描列表选 SSID + 密码输入（两种模式均可用）
  *   GET  /api/wifi/scan|status、POST /api/wifi/connect（异步连接，状态轮询）
  *   GET  /api/decks     词书列表（v1.3 T3.4 App 换书）：id/name/count/active
@@ -51,6 +53,7 @@
 #include "lan_display_server.h"
 #include "debug_log.h"
 #include "epd_driver.h"
+#include "lan_proto.h"        /* T2.3：v2 帧分类/头解析（纯 C，native-test） */
 #include "esp_mac.h"          /* v2.0：stats 端点 mac 字段（App 绑定凭据） */
 #include "layout_profile.h"   /* 2026-08-25：TINY 档紧凑版式分派 */
 #include "refresh_scheduler.h"
@@ -188,9 +191,22 @@ var ACC=[__ACC__];
 var ACSS='rgb('+ACC.join(',')+')';
 var cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 var dv=document.getElementById('dv');
-cv.width=W;cv.height=H;dv.width=GW;dv.height=GH;
-cv.style.width=W+'px';dv.style.width=(GW/2)+'px';
+function applyGeom(){
+  cv.width=W;cv.height=H;dv.width=GW;dv.height=GH;
+  cv.style.width=W+'px';dv.style.width=(GW/2)+'px';
+}
+applyGeom();
 var img=null;
+/* T2.3 device-info 自适配：本设备页同源值等价 no-op；外部托管页
+ * （占位符无注入值）fetch 校正几何后重建画布重绘；fetch 失败静默
+ * 回退模板注入值（no-fetch 回退保留） */
+fetch('/api/device-info').then(function(r){return r.json()}).then(function(d){
+  if(d.panel_w!=W||d.panel_h!=H||d.gfx_w!=GW||d.gfx_h!=GH||(d.plane_count>1)!=(COLOR==1)){
+    W=d.panel_w;H=d.panel_h;GW=d.gfx_w;GH=d.gfx_h;BPR=W/8;
+    COLOR=d.plane_count>1?1:0;ACC=d.accent_rgb;ACSS='rgb('+ACC.join(',')+')';
+    applyGeom();setupColorUI();render();
+  }
+}).catch(function(){});
 function onMode(){
   var t=document.querySelector('input[name=mode]:checked').value=='text';
   document.getElementById('textPanel').style.display=t?'':'none';
@@ -361,12 +377,16 @@ function pack(){
 function send(){
   var st=document.getElementById('st');
   st.textContent='发送中...';
-  var body;
-  if(colOn()){ /* 协议 v2：双平面（B/W bit=1 白 + accent bit=1 置色）拼接 */
-    quantize();
-    body=new Uint8Array(s_quant.bw.length+s_quant.rd.length);
-    body.set(s_quant.bw,0);body.set(s_quant.rd,s_quant.bw.length);
-  }else body=pack();
+  /* T2.3 协议 v2 帧：8B 头 'I''W' + ver2 + bpp(1=BW/2=+accent) +
+   * W/H 大端 + body；设备侧 lan_frame_classify 按长度分流，
+   * v1/v1.5 旧客户端裸 body 仍兼容 */
+  if(colOn())quantize();
+  var bw=colOn()?s_quant.bw:pack();
+  var planes=colOn()?2:1;
+  var body=new Uint8Array(8+bw.length+(planes==2?s_quant.rd.length:0));
+  body[0]=0x49;body[1]=0x57;body[2]=2;body[3]=planes;
+  body[4]=W>>8;body[5]=W&255;body[6]=H>>8;body[7]=H&255;
+  body.set(bw,8);if(planes==2)body.set(s_quant.rd,8+bw.length);
   fetch('/api/display',{
     method:'POST',
     headers:{'Content-Type':'application/octet-stream'},
@@ -381,10 +401,12 @@ function send(){
 }
 document.getElementById('txt').oninput=render;
 document.getElementById('fs').onchange=render;
-if(COLOR){ /* 三色面板：彩色 UI 显现（BW 面板零变化） */
-  document.getElementById('colRow').style.display='';
-  document.getElementById('tcRow').style.display='';
+function setupColorUI(){ /* 三色面板：彩色 UI 显现（BW 面板零变化） */
+  var on=COLOR?'':'none';
+  document.getElementById('colRow').style.display=on;
+  document.getElementById('tcRow').style.display=on;
 }
+setupColorUI();
 render();
 </script>
 </body>
@@ -554,6 +576,40 @@ static esp_err_t wifi_page_get_handler(httpd_req_t *req)
     return httpd_resp_send(req, WIFI_HTML, sizeof(WIFI_HTML) - 1);
 }
 
+/* T2.3 设备能力 JSON（proto_ver:2）：面板/GFX 几何、帧缓冲尺寸、
+ * 平面数、accent_rgb 三元组。上传页与外部工具动态建画布数据源；
+ * ETag = 面板注册名 + 协议版（换面板注册表或升协议 → 值变），
+ * If-None-Match 命中回 304 省流量（频拉场景每次仅头部往返） */
+static esp_err_t device_info_get_handler(httpd_req_t *req)
+{
+    char etag[56];
+    snprintf(etag, sizeof(etag), "\"%s-p%d\"",
+             epd_panel_desc() ? epd_panel_desc()->name : "?", LAN_PROTO_VER);
+    char inm[56];
+    if (httpd_req_get_hdr_value_str(req, "If-None-Match", inm, sizeof(inm))
+            == ESP_OK && strcmp(inm, etag) == 0) {
+        httpd_resp_set_status(req, "304 Not Modified");
+        httpd_resp_set_hdr(req, "ETag", etag);
+        return httpd_resp_send(req, NULL, 0);
+    }
+    const size_t fb = epd_fb_size(), ft = epd_fb_total();
+    const uint32_t rgb = epd_panel_accent_rgb();
+    char json[192];
+    snprintf(json, sizeof(json),
+             "{\"panel_w\":%d,\"panel_h\":%d,\"gfx_w\":%d,\"gfx_h\":%d,"
+             "\"fb_size\":%u,\"fb_total\":%u,\"plane_count\":%d,"
+             "\"accent_rgb\":[%u,%u,%u],\"proto_ver\":%d}",
+             epd_panel_width(), epd_panel_height(),
+             epd_gfx_width(), epd_gfx_height(),
+             (unsigned)fb, (unsigned)ft, ft > fb ? 2 : 1,
+             (unsigned)((rgb >> 16) & 0xFF), (unsigned)((rgb >> 8) & 0xFF),
+             (unsigned)(rgb & 0xFF), LAN_PROTO_VER);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "ETag", etag);
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=0, must-revalidate");
+    return httpd_resp_send(req, json, strlen(json));
+}
+
 static esp_err_t wifi_scan_get_handler(httpd_req_t *req)
 {
     static wifi_ap_record_t aps[20];
@@ -658,6 +714,7 @@ static esp_err_t wifi_connect_post_handler(httpd_req_t *req)
 /* 词书/统计端点（定义见后「词书管理与学习统计」区块；catchall 先行分发） */
 static esp_err_t deck_list_get_handler(httpd_req_t *req);
 static esp_err_t stats_get_handler(httpd_req_t *req);
+static esp_err_t device_info_get_handler(httpd_req_t *req);
 
 /* GET 总入口（路径通配）：路径分发；未知路径 302（captive portal 探测域名重定向） */
 static esp_err_t catchall_get_handler(httpd_req_t *req)
@@ -673,6 +730,7 @@ static esp_err_t catchall_get_handler(httpd_req_t *req)
     if (strcmp(path, "/api/wifi/status") == 0)  return wifi_status_get_handler(req);
     if (strcmp(path, "/api/decks") == 0)        return deck_list_get_handler(req);
     if (strcmp(path, "/api/stats") == 0)        return stats_get_handler(req);
+    if (strcmp(path, "/api/device-info") == 0)  return device_info_get_handler(req);
 
     /* 其余：captive portal 探测域名（connectivitycheck.gstatic.com 等）
      * 或未知路径 → 302；手机连热点后系统探测被重定向到配网页 → 自动弹出 */
@@ -693,24 +751,67 @@ static esp_err_t display_post_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, "wifi config ui active");
         return ESP_OK;
     }
-    /* LAN 协议 v2 双长度（2026-08-22 彩色传图）：单平面 fb_size()（v1
-     * 兼容，多平面面板余平面补零）或双平面 fb_total()（[0]=B/W bit=1
-     * 白 + [1]=红 bit=1 红，与面板 plane 布局直通） */
+    /* T2.3 协议 v2 帧头 + v1/v1.5 双长度兼容：classify 按
+     * content_len 无歧义分流（8B 头恒多 8 字节，与裸长度无碰撞）；
+     * v1 单平面（余平面补零）/v1.5 双平面（[0]=B/W bit=1 白 +
+     * [1]=accent）行为与历史版一致 */
     const size_t frame_bytes = epd_fb_size();
     const size_t total_bytes = epd_fb_total();
-    const bool color_frame = req->content_len == (size_t)total_bytes &&
-                             total_bytes > frame_bytes;
-    if (req->content_len != frame_bytes && !color_frame) {
-        char msg[96];
+    const int plane_count = total_bytes > frame_bytes ? 2 : 1;
+    const lan_frame_kind_t kind =
+        lan_frame_classify((size_t)req->content_len, frame_bytes, total_bytes);
+    if (kind == LAN_FRAME_REJECT) {
+        char msg[144];
         snprintf(msg, sizeof(msg),
-                 "body must be %u (1bpp bw) or %u bytes (bw+accent planes)",
-                 (unsigned)frame_bytes, (unsigned)total_bytes);
+                 "body must be %u/%u (v1/v1.5 raw) or %u/%u bytes (v2, 8B header)",
+                 (unsigned)frame_bytes, (unsigned)total_bytes,
+                 (unsigned)(frame_bytes + 8), (unsigned)(total_bytes + 8));
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_set_type(req, "text/plain");
         httpd_resp_sendstr(req, msg);
         return ESP_OK;
     }
-    const size_t recv_len = color_frame ? total_bytes : frame_bytes;
+    const bool has_hdr = (kind == LAN_FRAME_V2_BW || kind == LAN_FRAME_V2_COLOR);
+    size_t recv_len;
+    if (has_hdr) { /* v2：先收 8B 头校验，再按头声明的 body 长收体 */
+        uint8_t hdr[8];
+        int got = 0;
+        while (got < 8) {
+            int r = httpd_req_recv(req, (char *)hdr + got, 8 - got);
+            if (r <= 0) {
+                LOG_E("display upload recv header failed");
+                httpd_resp_set_status(req, "500 Internal Server Error");
+                httpd_resp_set_type(req, "text/plain");
+                httpd_resp_sendstr(req, "recv failed");
+                return ESP_FAIL;
+            }
+            got += r;
+        }
+        const char *err = "";
+        size_t body_len = 0;
+        if (lan_v2_header_parse(hdr, epd_panel_width(), epd_panel_height(),
+                                plane_count, &body_len, &err) != 0) {
+            const int fw = (hdr[4] << 8) | hdr[5];
+            const int fh = (hdr[6] << 8) | hdr[7];
+            LOG_E("v2 header rejected: %s (frame %dx%d bpp %d, panel %dx%d planes %d)",
+                  err, fw, fh, hdr[3], epd_panel_width(), epd_panel_height(),
+                  plane_count);
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "v2 rejected: %s (frame %dx%d bpp %d, panel %dx%d planes %d)",
+                     err, fw, fh, hdr[3], epd_panel_width(), epd_panel_height(),
+                     plane_count);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_sendstr(req, msg);
+            return ESP_OK;
+        }
+        recv_len = body_len;
+    } else {
+        recv_len = (kind == LAN_FRAME_V15_COLOR) ? total_bytes : frame_bytes;
+    }
+    const bool color_frame =
+        (kind == LAN_FRAME_V15_COLOR || kind == LAN_FRAME_V2_COLOR);
 
     /* T0.3：选写入块（避开主任务正在直刷的 draining 块；双缓冲下必
      * 有可用块——若候选块恰为未消费的 pending，覆盖 = 丢旧保新） */

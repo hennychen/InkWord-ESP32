@@ -127,11 +127,16 @@ extern void test_epd_geom_rect_four_dirs(void);
 extern void test_epd_geom_rect_clamp(void);
 extern void test_epd_geom_palette_degrade(void);
 
-/* 黄金帧 diff 灵敏度（T2.2 selftest_diff 纯函数层）：同 runner 挂载 */
+/* 黄金帧 diff 灵敏度（T2.2 selftest_diff 纯函数层） ：同 runner 挂载 */
 extern void test_selftest_diff_identical(void);
 extern void test_selftest_diff_single_byte(void);
 extern void test_selftest_diff_multi_first_offset(void);
 extern void test_selftest_diff_null_off_safe(void);
+/* LAN 直传协议 v2 帧分类/头解析（T2.3 lan_proto 纯函数层） */
+extern void test_lan_classify_color_panel_paths(void);
+extern void test_lan_classify_bw_panel_degrades(void);
+extern void test_lan_v2_header_valid_bw_and_color(void);
+extern void test_lan_v2_header_rejections(void);
 
 /* poem 默写数据通路（v1.4 T4.4）：同 runner 挂载 */
 extern void test_word_parser_poem_dictation_fields(void);
@@ -227,5 +232,9 @@ int main(void)
     RUN_TEST(test_selftest_diff_single_byte);
     RUN_TEST(test_selftest_diff_multi_first_offset);
     RUN_TEST(test_selftest_diff_null_off_safe);
+    RUN_TEST(test_lan_classify_color_panel_paths);
+    RUN_TEST(test_lan_classify_bw_panel_degrades);
+    RUN_TEST(test_lan_v2_header_valid_bw_and_color);
+    RUN_TEST(test_lan_v2_header_rejections);
     return UNITY_END();
 }
