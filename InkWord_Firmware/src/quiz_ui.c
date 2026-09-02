@@ -44,22 +44,21 @@ extern void ui_render_word(study_mode_t mode, int index);
 extern void ui_render_current(void);
 extern void ui_force_full_refresh_next(void);
 
-/* ---- 布局宏（main.cpp 同步副本，T1.5 参数表收敛点）----
- * 来源与注释见 main.cpp L159-230；测验用子集，值原样搬运 */
+/* ---- 布局宏（档位参数经 layout_profile 字段引用，T1.5 收敛完成；
+ * 字号/行距派生式仍为本文件局部）---- */
 #define UI_TINY         (layout_profile_get()->kind == LAYOUT_TINY)
-#define UI_STATUS_H     (UI_TINY ? 24 : 32)  /* 状态栏高度 */
-#define UI_MARGIN_X     (UI_TINY ? 8 : 16)   /* 左右留白 */
+#define UI_STATUS_H     (layout_profile_get()->status_h)  /* 状态栏高度（T1.5） */
+#define UI_MARGIN_X     (layout_profile_get()->margin_x)   /* 左右留白（T1.5） */
 #define UI_STATUS_BASE  (UI_STATUS_H - 10)   /* 状态栏文字基线 */
 #define UI_MEAN_LEVEL   (layout_profile_get()->kind <= LAYOUT_SMALL \
                          ? (settings_font_mode() >= 1 ? 1 \
-                            : (epd_gfx_width() <= 122 ? 1 : 0)) \
-                         : (settings_font_mode() >= 2 ? 2 : 1))
+                            : (layout_profile_get()->narrow_tiny ? 1 : 0)) \
+                         : (settings_font_mode() >= 1 ? 2 : 1))
 #define UI_BODY_MAX_W   (epd_gfx_width() - 2 * UI_MARGIN_X)
 #define UI_BODY_LH      (UI_TINY ? (UI_MEAN_LEVEL ? 26 : 20) : (UI_MEAN_LEVEL ? 24 : 20))
 #define UI_FOOT_TOP     (epd_gfx_height() - 16)        /* 底部提示行基线 */
-#define RV_ITEM_H   (UI_TINY ? 28 : (layout_profile_get()->kind == LAYOUT_SMALL \
-                                    ? 36 : 44))    /* 对齐 menu_ui 列表行高 */
-#define RV_HINT_H   (UI_TINY ? 18 : 24)            /* 底部提示行预留 */
+#define RV_ITEM_H   (layout_profile_get()->item_h)  /* 对齐 menu_ui 列表行高（T1.5） */
+#define RV_HINT_H   (layout_profile_get()->rv_hint_h)  /* 底部提示行预留（T1.5） */
 /* 测验纵列选项区顶（题干 1/3 内容区）；行高在 ui_draw_quiz_option
  * 内由可用区四等分与 RV_ITEM_H 取小（2026-08-25 真机反馈收窄：
  * QUIZ_DESIGN §5「一屏四行」在 MID 416x240 沿用 RV_ITEM_H=44 实测

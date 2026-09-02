@@ -26,7 +26,8 @@
  *          波形 387ms、切换 ≈0.5s（真机验证无残影定稿；完整方案
  *          与规则见 README「局部刷新方案」节）；
  *       c) 首绘/校时跳变（s_last_quote==-2）：无影子基准，直接全刷
- *   - 低频保养（STANDBY_PARTIAL_MAX_N=12）：无窗口双 RAM 局刷自身
+ *   - 低频保养（阈值 = desc×1.5，T1.7 前为常量 12，416 屏等值）：
+ *     无窗口双 RAM 局刷自身
  *     无残影（2026-08-20 真机验证），真全刷降级为例行深度保养，
  *     自动轮换下 ≈ 1 小时一次；真全刷波形黑白交替闪烁属正常视觉，
  *     连续手动 SET 翻 12 次才会遇到一次
@@ -88,12 +89,10 @@ static const char *TAG = "STANDBY";
 #ifndef STANDBY_PARTIAL_MAX_DIFF_PX
 #define STANDBY_PARTIAL_MAX_DIFF_PX (-1)  /* 差分像素阈值：<0 = 运行期按带面积 25%（Phase 5 随带尺寸参数化） */
 #endif
-#ifndef STANDBY_PARTIAL_MAX_N
-#define STANDBY_PARTIAL_MAX_N 12          /* 连续局刷次数上限 → 低频真全刷深度
-                                           * 保养（无窗口双 RAM 局刷已无残影，
-                                           * 全刷从窗口时代的频繁清洗降级为
-                                           * 例行保养，自动轮换下 ≈ 1 小时一次） */
-#endif
+/* 连续局刷次数上限 → 低频真全刷例行保养：T1.7 起改运行期
+ * desc.partial_count_full_refresh × profile.partial_standby（见
+ * sb_partial_threshold；原 STANDBY_PARTIAL_MAX_N=12 常量宏已删，
+ * 无 -D 覆盖使用方） */
 
 /* ---- 布局常量（引文独占：居中引文 + 右下出处） ----
  * Phase 5 档位化：字格尺寸运行期取布局档位字库级（MID=24px 与旧
@@ -110,10 +109,10 @@ static const char *TAG = "STANDBY";
  * 五行引文块 128px + 出处带 36px 需带高 ≥132px，原 MID 参数（8/8/8/24）
  * 仅 112px 装不下。三元取值：MID/LARGE 保持原值（视觉零变化铁律）；
  * 2026-08-23 TINY 档（引文 16px）同走紧化分支 */
-#define SB_QUOTE_Y0        (s_tight ? 4 : 8)   /* 引文带顶 */
-#define SB_QUOTE_LINE_GAP  (s_tight ? 2 : 8)   /* 行间距：字格之外追加 */
-#define SB_ATTR_BOTTOM     (s_tight ? 12 : 24) /* 出处底边距 */
-#define SB_ATTR_GAP        (s_tight ? 4 : 8)   /* 引文带底与出处带顶间隙 */
+#define SB_QUOTE_Y0        (layout_profile_get()->tight_quote ? 4 : 8)   /* 引文带顶 */
+#define SB_QUOTE_LINE_GAP  (layout_profile_get()->tight_quote ? 2 : 8)   /* 行间距：字格之外追加 */
+#define SB_ATTR_BOTTOM     (layout_profile_get()->tight_quote ? 12 : 24) /* 出处底边距 */
+#define SB_ATTR_GAP        (layout_profile_get()->tight_quote ? 4 : 8)   /* 引文带底与出处带顶间隙 */
 #define SB_QUOTE_W         (SB_QUOTE_COLS * s_cell)
 /* 引文带左缘：TINY 竖屏 122/128px 宽 < 8 字×16px=128px 带宽时贴左缘
  * （零或负居中值钳 0；极宽 8 字行右缘可贴边甚至溢出 ≤6px，真实引文
@@ -163,9 +162,6 @@ static int s_last_quote = -2;         /* 引文下标（5 分钟窗；-1=无效�
  * 初值为 epd 未初始化前的兜底，绘制前必经 standby_init 覆盖） */
 static int s_quote_level = 2;
 static int s_cell = CJK_GLYPH_H;
-static bool s_tight = false;  /* SMALL/TINY 档紧排版（standby_init 置位）：
-                               * 176px 短边容纳 24px 五行引文需压行距/边距
-                               *（见下方布局常量三元分支，MID/LARGE 原值） */
 
 /* 引文带影子缓存（局刷智能分流的差分基准；Phase 5 改运行期按带
  * 尺寸堆分配，LARGE 档带高增长不再受编译期上限约束）：
@@ -436,7 +432,6 @@ void standby_init(void)
      * 已于 epd_driver_init 就绪，且首调 layout_profile_get 缓存档位） */
     s_quote_level = layout_profile_get()->quote_level;
     s_cell = cjk_glyph_cell_size(s_quote_level);
-    s_tight = (layout_profile_get()->kind <= LAYOUT_SMALL);  /* 含 TINY */
     int bytes = SB_QUOTE_W / 8 * SB_QUOTE_H;
     if (bytes != s_quote_bytes || !s_quote_shadow || !s_quote_scratch) {
         free(s_quote_shadow);
@@ -516,8 +511,8 @@ void standby_invalidate_layout(void)
     /* 几何失效（2026-08-26 屏幕方向设置，旋转切换后 ui_apply_rotation
      * 调用）：差分影子与新画布失配不可信、引文态置 -2 强制下一次渲染
      * 走全刷；三色屏自然窗冻结一并复位（窗口几何已变）。SB_* 几何宏
-     * 动态取 epd_gfx_*，s_quote_level/s_tight 源自 layout_profile 短边
-     * 分档（横竖切换短边不变）无需重算 */
+     * 动态取 epd_gfx_*，s_quote_level 与 tight_quote（紧排版）源
+     * 自 layout_profile 短边分档（横竖切换短边不变）无需重算 */
     s_shadow_valid = false;
     s_last_quote = -2;
     s_quote_hold_win = -1;
@@ -567,6 +562,20 @@ void standby_render_full(void)
  *   1) epd_gfx_fill_rect(带, 白) + flush_window_passes(带, 1)  洗旧字
  *   2) sb_draw_quote(quote) + flush_window_passes(带, 1)      绘新字
  * 两段式波形 774ms、真机验证无残影（完整代码见 git 历史或记忆） */
+
+/* T1.7：局刷保养阈值 = desc.partial_count_full_refresh × 待机系数
+ * （profile.partial_standby，416 屏 8×150/100=12 与原宏精确相等，
+ * 行为零变化；wft0290 desc=4 → 6 次触发，节奏跟随面板特性）。
+ * desc 空/0 时保守 8×1.5 兜底（与 main.cpp 学习页 fallback 同构）；
+ * 三色面板 partial_supported=false 引文轮换禁用，本函数不可达 */
+static int sb_partial_threshold(void)
+{
+    const epd_panel_desc_t *pd = epd_panel_desc();
+    int base = (pd && pd->partial_count_full_refresh > 0)
+             ? pd->partial_count_full_refresh : 8;
+    return base * layout_profile_get()->partial_standby / 100;
+}
+
 static void standby_render_quote(void)
 {
     int quote = sb_quote_now();
@@ -590,7 +599,7 @@ static void standby_render_quote(void)
     const char *mode;
     if (diff_px > max_diff) {
         mode = "full (large change)";
-    } else if (refresh_gfx_before_partial_n(STANDBY_PARTIAL_MAX_N)) {
+    } else if (refresh_gfx_before_partial_n(sb_partial_threshold())) {
         mode = "full (partial count threshold)";
     } else {
         mode = "partial direct (single-phase diff)";

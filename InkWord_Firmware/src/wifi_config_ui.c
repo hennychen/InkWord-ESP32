@@ -5,7 +5,8 @@
  * 使用 epd_driver GFX 包装函数绘图（1bpp 帧缓冲）。
  * 独立 FreeRTOS 任务处理所有 UI 逻辑，按键事件通过队列非阻塞转发。
  *
- * 适配屏幕：416x240 (DEPG0370 横屏 GFX 层)
+ * 适配屏幕：416x240 (DEPG0370 横屏) 基线；SMALL 264x176（2.7"）
+ * 经 layout_profile.kb_scale 缩放适配（T1.6，几何/字号联动见下）
  * 颜色：EPD_GFX_BLACK (1), EPD_GFX_WHITE (0)
  * 字体大小：1=小, 2=中, 3=大, 4=特大
  *
@@ -23,6 +24,7 @@
 #include "debug_log.h"
 #include "study_mode_machine.h"
 #include "refresh_scheduler.h"
+#include "layout_profile.h" /* T1.6：kb_scale 档位缩放（SMALL 键盘适配） */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -59,30 +61,53 @@ static const char *TAG = "WIFI_UI";
 /* ---- 密码框 ---- */
 #define PWD_BOX_Y          (TITLE_H + 4)  /* 密码框顶：标题栏下 4（34） */
 #define PWD_BOX_H          32
-#define PWD_SHOW_MAX       36    /* 18pt '*' 掩码最多显示个数（防溢出 400px 框） */
+#define PWD_SHOW_MAX       (36 * KB_SCALE / 100) /* '*' 掩码上限（SMALL 21：
+                                    * 防溢出 248px 框，掩码字号同步降 FONT_MD） */
 
-/* ---- 键盘几何（4 行均居中，键宽 416 宽设计值；SMALL 档需按档位缩放，
- *      Phase 7 SMALL 屏接入时处理，见 PANEL_COMPAT_DESIGN §8.2。
- *      2026-08-23 TINY 档（2.13"/2.9" 标签屏竖屏 122~128px 宽）：全键盘
- *      不可行（36px 键宽×9 列=324px>屏宽），本 UI 不适配 TINY——该档
- *      配网走 AP 门户路径（手机浏览器连 InkWord 热点，main.cpp LAN
- *      页左通道），SSSID 列表/键盘页均不进入） ---- */
+/* ---- 键盘几何（4 行均居中，键宽 416 宽基准值 ×kb_scale，T1.6）----
+ * SMALL(2.7" 264x176)=60：垂直硬约束定档——键区 74→156(底栏线) 共
+ * 82px，4×19px 键 + 3×1px 隙 = 79；行 0 十键 219px 居中左右各余 22px。
+ * scale=100 时 int 截断无损（36×100/100=36），416 基线视觉零变化。
+ * TINY 档（2.13"/2.9" 122~128px 宽）：全键盘不可行，本 UI 不适配
+ * TINY——配网走 AP 门户路径（手机连 InkWord 热点，main.cpp LAN 页
+ * 左通道），SSID 列表/键盘页均不进入（kb_scale 填 100 无消费方） */
 #define KB_START_Y         (PWD_BOX_Y + PWD_BOX_H + 8) /* 键盘顶：密码框下留 8px（74） */
-#define KB_KEY_W           36    /* 行 0/1 字母键宽 */
-#define KB_KEY_H           32
-#define KB_GAP             3
-/* 行 2：Shift(48) + zxcvbnm(7x36) + Del(48)，含 gap 总宽 372 */
+#define KB_SCALE           (layout_profile_get()->kb_scale) /* T1.6 档位缩放 */
+#define KB_KEY_W           (36 * KB_SCALE / 100)   /* 行 0/1 字母键宽（36/21） */
+#define KB_KEY_H           (32 * KB_SCALE / 100)   /* 键高（32/19） */
+#define KB_GAP             (3 * KB_SCALE / 100)    /* 键隙（3/1） */
+/* T1.6 字号档联动（SMALL 缩放档）：单字符键 3→2（16px 字在 19px 键
+ * 高贴边可读，真机不清晰再降 1）；功能键 2→1；掩码/SSID 3→2
+ * （18pt 在 19px 键高/26px 行高溢出） */
+#define FONT_KB_CHAR       (KB_SCALE < 100 ? FONT_MD : FONT_LG)
+#define FONT_KB_FUNC       (KB_SCALE < 100 ? FONT_SM : FONT_MD)
+#define FONT_PWD           (KB_SCALE < 100 ? FONT_MD : FONT_LG)
+/* 行 2：Shift(48) + zxcvbnm(7x36) + Del(48)，含 gap 总宽 372（基准值，
+ * 消费时 ×kb_scale，见 kb_col_w） */
 static const int kb_w_r2[9] = { 48, 36, 36, 36, 36, 36, 36, 36, 48 };
-/* 行 3 功能行：Mode(64) + Space(180) + OK(112)，总宽 362 */
+/* 行 3 功能行：Mode(64) + Space(180) + OK(112)，总宽 362（基准同上） */
 static const int kb_w_r3[3] = { 64, 180, 112 };
 
-/* ---- 列表几何（4 项完整显示且不压底栏） ---- */
-#define LIST_ITEM_H        44
+/* ---- 列表几何（4 项完整显示且不压底栏；行高随 kb_scale，T1.6：
+ *      SMALL 26px 行高 4 项 138 ≤ 156 底栏线，可见 4 项保持） ---- */
+#define LIST_ITEM_H        (44 * KB_SCALE / 100)  /* 列表行高（44/26） */
 #define LIST_START_Y       (TITLE_H + 4) /* 列表顶：标题栏下 4（34） */
 #define LIST_MAX_VISIBLE   4
+/* 列表项内部元素偏移同步缩放（基准 = 44px 行高内取值） */
+#define LIST_OFF(b)        ((b) * KB_SCALE / 100)
 
 /* ---- 刷新策略 ---- */
-#define WIFI_UI_PARTIAL_MAX  10  /* 局刷阈值：达次数转全刷保养（待机12/学习8 之间） */
+/* T1.7：局刷保养阈值 = desc.partial_count_full_refresh × 配网系数
+ * （profile.partial_wifi，416 屏 8×125/100=10 与原宏精确相等，行为
+ * 零变化）；desc 空/0 时保守 8×1.25 兜底；三色面板 partial_supported
+ * =false 本 UI 不可达（配网仅 BW 屏路径） */
+static int wifi_partial_threshold(void)
+{
+    const epd_panel_desc_t *pd = epd_panel_desc();
+    int base = (pd && pd->partial_count_full_refresh > 0)
+             ? pd->partial_count_full_refresh : 8;
+    return base * layout_profile_get()->partial_wifi / 100;
+}
 
 /* 屏幕尺寸 */
 #define SCR_W   epd_gfx_width()
@@ -209,7 +234,7 @@ static void ellipsize(char *buf, int font, int max_w)
  */
 static bool partial_ok(void)
 {
-    return !refresh_gfx_before_partial_n(WIFI_UI_PARTIAL_MAX);
+    return !refresh_gfx_before_partial_n(wifi_partial_threshold());
 }
 
 /* ============================================================
@@ -260,8 +285,8 @@ static void kb_label(int row, int col, char *buf, int bufsize)
 
 static int kb_col_w(int row, int col)
 {
-    if (row == 2) return kb_w_r2[col];
-    if (row == 3) return kb_w_r3[col];
+    if (row == 2) return kb_w_r2[col] * KB_SCALE / 100;  /* T1.6 缩放 */
+    if (row == 3) return kb_w_r3[col] * KB_SCALE / 100;
     return KB_KEY_W;
 }
 
@@ -305,7 +330,7 @@ static void draw_signal_bars(int x, int y, int8_t rssi, bool inverted)
 
     uint16_t fill_c = inverted ? C_WHITE : C_BLACK;
     uint16_t outl_c = fill_c;
-    int bw = 5, gap = 2, maxh = 22;
+    int bw = 5, gap = 2, maxh = 22 * KB_SCALE / 100;  /* T1.6：条高随行高（22/13） */
 
     for (int i = 0; i < 5; i++) {
         int h = maxh * (i + 1) / 5;
@@ -348,13 +373,13 @@ static void draw_list_body(void)
             strncpy(ssid_buf, (char *)s_ap_list[idx].ssid, 32);
             ssid_buf[32] = 0;
             if (strlen(ssid_buf) == 0) strcpy(ssid_buf, "(hidden)");
-            ellipsize(ssid_buf, FONT_LG, SCR_W - 116); /* SSID 可用宽：文本区 30 起至信号条左缘（416→300） */
-            ui_text(30, y + 28, ssid_buf, FONT_LG, !sel);
+            ellipsize(ssid_buf, FONT_PWD, SCR_W - 116); /* SSID 可用宽：文本区 30 起至信号条左缘（416→300；字号随档） */
+            ui_text(30, y + LIST_OFF(28), ssid_buf, FONT_PWD, !sel);
 
-            draw_signal_bars(SCR_W - 72, y + 12, s_ap_list[idx].rssi, sel);
+            draw_signal_bars(SCR_W - 72, y + LIST_OFF(12), s_ap_list[idx].rssi, sel);
 
             if (s_ap_list[idx].authmode != WIFI_AUTH_OPEN)
-                draw_lock_icon(SCR_W - 28, y + 14, sel);
+                draw_lock_icon(SCR_W - 28, y + LIST_OFF(14), sel);
         }
 
         if (s_ap_count > LIST_MAX_VISIBLE) {
@@ -402,13 +427,14 @@ static void draw_pwd_body(void)
     epd_gfx_draw_rect(8, PWD_BOX_Y, SCR_W - 16, PWD_BOX_H, C_BLACK);
 
     int show = s_pwd_len > PWD_SHOW_MAX ? PWD_SHOW_MAX : s_pwd_len;
-    char pwd_display[PWD_SHOW_MAX + 2];
+    char pwd_display[38];   /* 固定尺寸 = 基准 36+2（PWD_SHOW_MAX 为运行期
+                             * 缩放值，避免 VLA；show 恒 ≤ 基准上限） */
     memset(pwd_display, '*', (size_t)show);
     pwd_display[show] = 0;
 
     int tw, th;
-    epd_gfx_text_bounds(pwd_display, FONT_LG, &tw, &th);
-    ui_text(14, PWD_BOX_Y + 23, show ? pwd_display : "", FONT_LG, true);
+    epd_gfx_text_bounds(pwd_display, FONT_PWD, &tw, &th);
+    ui_text(14, PWD_BOX_Y + 23, show ? pwd_display : "", FONT_PWD, true);
     epd_gfx_draw_vline(14 + tw + 4, PWD_BOX_Y + 6, PWD_BOX_H - 12, C_BLACK);
 
     /* 绘制键盘（单字符/OK 键用大字号，多字符功能键用中字号） */
@@ -425,7 +451,7 @@ static void draw_pwd_body(void)
 
             char label[12];
             kb_label(row, col, label, sizeof(label));
-            int kf = (strlen(label) <= 2) ? FONT_LG : FONT_MD;
+            int kf = (strlen(label) <= 2) ? FONT_KB_CHAR : FONT_KB_FUNC;
             ui_text_center(kx, ky, kw, kh, label, kf, !sel);
         }
     }

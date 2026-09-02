@@ -458,6 +458,18 @@ const layout_study_t *layout_study(void); /* 内部按 layout_profile_get() 分�
 y 向字段按 `gfx_h` 比例缩放，取整后微调保证 8 对齐约束（无窗口局刷已
 解除 8 对齐要求，仅字体基线需稳定）。
 
+**T1.5 兑现状态（2026-09）**：上述愿景已落地为 `src/layout_profile.h/.c`
+单表 15 字段（kind/quote_level/reader_level + 几何 12 项：status_h、
+margin_x、body_reserve、item_h、hint_h、rv_hint_h、font_lvl_main、
+font_px_main、ascii_size_main、info_lh、tight_quote、narrow_tiny），
+消费方 main/menu_ui/quiz_ui/chat_ui/review_ui/standby_page/browse_mode/
+voice_search/settings_ui 九文件全部查表；字段值 = 迁移前各文件三元宏
+取值**原样搬运**（视觉零变化铁律）；TINY 档内 122/128 宽特判档位化为
+`narrow_tiny` 字段（get() 运行期填充，width 类判断属档位职责）。字号/
+行距类运行时派生宏（依赖用户字号设置者）不表化，保留各文件派生式；
+LARGE 档几何字段为预估值，「7.5" 上机校准」。上例 `layout_study_t`
+为设计期映射样例，落地形态以 layout_profile.h 为准。
+
 ### 8.2 Phase 4 改动面三分类清单
 
 | 文件 | 纯绝对坐标（重点改） | 宏派生（跟随） | 公式化（已达标） |
