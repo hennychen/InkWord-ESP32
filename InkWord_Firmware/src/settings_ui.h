@@ -41,6 +41,7 @@
 
 #include <stdbool.h>
 #include "button_handler.h"
+#include "page_router.h"  /* T1.4：page_t（g_settings_ui_page 导出） */
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +55,12 @@ bool settings_ui_is_active(void);
 
 /** 按键转发接口（激活期间由 main 按键回调调用，同步处理）。 */
 void settings_ui_on_button(nav_key_t id, button_event_t event);
+
+/**
+ * @brief T1.4 页面协议实例（enter=settings_ui_enter；经 page_router_push
+ *        入栈：菜单设置项/RST 短按直达两个入口）。
+ */
+extern const page_t g_settings_ui_page;
 
 /* ---- 取值 API（门控层，任何模块可调；惰性缓存，无 init）---- */
 

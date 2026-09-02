@@ -25,6 +25,7 @@
  * epd_gfx_flush_window_passes 内部自动降级全刷，无需特判。
  */
 #include "menu_ui.h"
+#include "page_router.h" /* T1.4：g_menu_ui_page/覆盖层栈（渲染恢复经 render_top） */
 #include "debug_log.h"
 #include "epd_driver.h"
 #include "cjk_text.h"
@@ -62,28 +63,26 @@ extern bool deck_flow_switch(int idx);
 static const char *TAG = "MENU_UI";
 
 /* main.cpp 导出（study_mode_machine.c 引用 ui_render_word 同款先例） */
-extern void ui_render_current(void);
 extern const char *fw_version(void);
 /* T1.2：quiz_flow_start 迁 quiz_ui.c 或 quiz_ui_start（quiz_ui.h） */
 
 /* ---- 几何派生（MENU_DESIGN §4.2，全档运行期） ---- */
 #define MU_TINY     (layout_profile_get()->kind == LAYOUT_TINY)
-#define MU_SMALL    (layout_profile_get()->kind == LAYOUT_SMALL)
-#define MU_TITLE_H  (MU_TINY ? 24 : 32)                    /* 对齐 UI_STATUS_H */
-#define MU_ITEM_H   (MU_TINY ? 28 : MU_SMALL ? 36 : 44)
-#define MU_FONT_H   (MU_TINY ? 16 : 20)                    /* 主内容字号（px） */
-#define MU_FONT_LVL (MU_TINY ? 0  : 1)                     /* cjk_text level */
-#define MU_FONT_ASC (MU_TINY ? 1  : 2)                     /* ASCII 徽标 FreeSans size */
-#define MU_HINT_H   (MU_TINY ? 0 : 22)                     /* TINY 省略提示栏 */
+#define MU_TITLE_H  (layout_profile_get()->status_h)       /* 对齐 UI_STATUS_H（T1.5 档位参数表） */
+#define MU_ITEM_H   (layout_profile_get()->item_h)
+#define MU_FONT_H   (layout_profile_get()->font_px_main)   /* 主内容字号（T1.5） */
+#define MU_FONT_LVL (layout_profile_get()->font_lvl_main) /* cjk_text level（T1.5） */
+#define MU_FONT_ASC (layout_profile_get()->ascii_size_main) /* ASCII 徽标 FreeSans size（T1.5） */
+#define MU_HINT_H   (layout_profile_get()->hint_h)         /* TINY 省略提示栏（T1.5） */
 #define MU_LIST_TOP (MU_TITLE_H + 2)
 #define MU_LIST_H   (epd_gfx_height() - MU_TITLE_H - MU_HINT_H)
 #define MU_VISIBLE  (MU_LIST_H / MU_ITEM_H)   /* MID=4/SMALL=3/TINY 122x250=8、128x296=9 */
-#define MU_MARGIN_X (MU_TINY ? 8 : 16)
+#define MU_MARGIN_X (layout_profile_get()->margin_x)       /* T1.5 档位参数表 */
 #define MU_ITEM_W   (epd_gfx_width() - 2 * MU_MARGIN_X)
 #define MU_SB_W     4    /* 滚动条宽 */
 #define MU_LABEL_W  88   /* INFO 页标签列宽（「收藏/错词」=72px 余量） */
 #define MU_KEYS_LBL_W 56 /* 按键说明页键名列宽（20px 档「上/下」=50px） */
-#define MU_INFO_LH  (MU_TINY ? 20 : 28)      /* INFO/按键说明行高（随字号） */
+#define MU_INFO_LH  (layout_profile_get()->info_lh)  /* INFO/按键说明行高（T1.5） */
 #define MU_INFO_ROWS 5                     /* INFO 每页行数（v1.2 T2.6 设备页加电量行 4→5；TINY 超宽值自然截断，bring-up 再调） */
 
 /* 刷新策略 */
@@ -228,7 +227,7 @@ static void act_collection(void)
     }
     menu_ui_exit();
     study_mode_enter_collection();   /* 计数已预检非零，必成功 */
-    ui_render_current();
+    page_router_render_top();
 }
 
 static void act_modesel(void)
@@ -281,7 +280,7 @@ static void act_lan(void)
 /* AI 对话（P2B；A1 二级选择页）：先进模式页（自由/英中翻译/场景
  * 对话），确认后才组包进入；前置预检（Wi-Fi/Key/SD）在
  * study_mode_enter_chat 内，不满足长震回学习页；满足则进入对话
- * 临时视图（首帧全刷由 ui_render_current 的 MODE_CHAT 分流承担） */
+ * 临时视图（首帧全刷由 base_render 的 MODE_CHAT 分流承担） */
 static void act_chat(void)
 {
     s_page = MU_PAGE_CHATSEL;
@@ -322,7 +321,7 @@ static void chat_enter(int chatsel, int scenario_sel)
     }
     menu_ui_exit();
     haptic_event(HAPTIC_MODE);            /* 进入新模式 50ms（先例） */
-    ui_render_current();
+    page_router_render_top();
 }
 
 /* A3 前向声明（绘制函数在绘制区，文件序同 chat_enter 使用点先行） */
@@ -414,7 +413,7 @@ static void act_quiz(void)
     menu_ui_exit();
     if (!study_mode_enter_quiz()) {
         haptic_event(HAPTIC_ERROR);   /* 词库不足：边界反馈 */
-        ui_render_current();
+        page_router_render_top();
         return;
     }
     haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
@@ -423,18 +422,19 @@ static void act_quiz(void)
 
 /* 教材目录（2026-08-28 设计 §B3）：前置词库 ≥1 在
  * study_mode_enter_browse 内，不满足长震回学习页；满足则三级视图
- * 清态 + 首帧全刷（ui_render_current 的 MODE_BROWSE 分流承担） */
+ * 清态 + 首帧全刷（T1.4 经 g_browse_page 栈顶 render 承担） */
 static void act_browse(void)
 {
     menu_ui_exit();
     if (!study_mode_enter_browse()) {
         haptic_event(HAPTIC_ERROR);   /* 空词库：边界反馈 */
-        ui_render_current();
+        page_router_render_top();
         return;
     }
     haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
-    browse_mode_reset();
-    ui_render_current();
+    page_router_push(&g_browse_page); /* T1.4 试点：enter=browse_mode_reset；
+                                       * 首帧 render_top 走栈顶 render */
+    page_router_render_top();
 }
 
 /* 语音查词（同设计 §B3）：前置 Wi-Fi/Key 在
@@ -445,12 +445,12 @@ static void act_voice_search(void)
     menu_ui_exit();
     if (!study_mode_enter_voice_search()) {
         haptic_event(HAPTIC_ERROR);   /* 无网/未配 Key：边界反馈 */
-        ui_render_current();
+        page_router_render_top();
         return;
     }
     haptic_event(HAPTIC_MODE);
     voice_search_reset();
-    ui_render_current();
+    page_router_render_top();
 }
 
 static void act_info(void)
@@ -474,7 +474,7 @@ static void act_volume(void)
 static void act_settings(void)
 {
     menu_ui_exit();
-    settings_ui_enter();
+    page_router_push(&g_settings_ui_page);   /* T1.4：enter=settings_ui_enter */
 }
 
 static void act_keys(void)
@@ -1106,17 +1106,19 @@ static void draw_scenario(bool partial)
 
 static void menu_ui_exit(void)
 {
+    page_router_pop_if(&g_menu_ui_page);   /* T1.4：所有退出路径统一
+     * 出栈（非栈顶时 NULL 防御；「先 exit 后 enter」纪律不变） */
     s_active = false;
     s_page   = MU_PAGE_MAIN;
     s_sel = s_off = 0;
 }
 
 /* 恢复型退出（SET 主菜单层 / RST 任意层级）：exit 后经
- * ui_render_current 恢复学习页/待机页（模式变化时自然全刷） */
+ * page_router_render_top 恢复学习页/待机页（模式变化时自然全刷） */
 static void menu_ui_exit_restore(void)
 {
     menu_ui_exit();
-    ui_render_current();
+    page_router_render_top();
 }
 
 /* 光标移动（循环滚动，组头行跳过不可停驻）+ 滚动窗口跟随 +
@@ -1165,7 +1167,7 @@ void menu_ui_on_button(nav_key_t id, button_event_t event)
             haptic_event(HAPTIC_MODE);
             menu_ui_exit();
             study_mode_set((study_mode_t)s_mode_sel);
-            ui_render_current();
+            page_router_render_top();
             break;
         case NAV_SET:    /* 返回上级 */
             s_page = MU_PAGE_MAIN;
@@ -1198,7 +1200,7 @@ void menu_ui_on_button(nav_key_t id, button_event_t event)
             if (deck_flow_switch(s_deck_sel)) {
                 haptic_event(HAPTIC_MODE);
                 menu_ui_exit();
-                ui_render_current();
+                page_router_render_top();
             } else {
                 haptic_event(HAPTIC_ERROR);   /* 文件缺失/重载失败 */
             }
@@ -1397,6 +1399,17 @@ void menu_ui_enter(void)
     draw_main(false);
     LOG_I("menu entered");
 }
+
+/* T1.4 页面协议：enter=menu_ui_enter（幂等+触觉+首帧自绘）；
+ * exit 无（清态统一在 menu_ui_exit，pop_if 由其调用，置 NULL 防双重）；
+ * render 无（栈顶期间整页重绘不可达，模块自管局刷） */
+static bool menu_page_on_button(nav_key_t id, button_event_t event)
+{
+    menu_ui_on_button(id, event);
+    return true;   /* 顶层覆盖层总消费（语义不变） */
+}
+
+const page_t g_menu_ui_page = { NULL, menu_page_on_button, menu_ui_enter, NULL };
 
 bool menu_ui_is_active(void)
 {

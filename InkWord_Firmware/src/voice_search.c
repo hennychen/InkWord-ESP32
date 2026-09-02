@@ -35,9 +35,6 @@
 
 static const char *TAG = "VOICE";
 
-/* main.cpp 导出（study_mode_machine.c 引用同款先例；退出编排用） */
-extern void ui_render_current(void);
-
 #define VS_TASK_STACK        (6 * 1024)  /* chat 同栈（esp_http+cJSON 栈深同源） */
 #define VS_TASK_PRIO         (4)         /* chat/pron 同级，低于 btn_scan(5) */
 #define VS_MAX_MS            (3000)      /* 查词档录音上限（设计 §B2） */
@@ -65,19 +62,18 @@ static voice_cand_t s_cands[VOICE_CAND_MAX];
 static char s_transcript[96];
 static char s_hint[64];                     /* idle/result 页提示行 */
 
-/* ---- 几何派生（BR_/MU_* 同款） ---- */
-#define VS_TINY     (layout_profile_get()->kind == LAYOUT_TINY)
-#define VS_SMALL    (layout_profile_get()->kind == LAYOUT_SMALL)
-#define VS_TITLE_H  (VS_TINY ? 24 : 32)
-#define VS_ITEM_H   (VS_TINY ? 28 : VS_SMALL ? 36 : 44)
-#define VS_FONT_H   (VS_TINY ? 16 : 20)
-#define VS_FONT_LVL (VS_TINY ? 0  : 1)
-#define VS_FONT_ASC (VS_TINY ? 1  : 2)
-#define VS_HINT_H   (VS_TINY ? 0 : 22)
+/* ---- 几何派生（T1.5 档位参数表：布局值查 profile，与 menu_ui
+ * MU_* / browse_mode BR_* 同源同值；可用高/可见数派生式局部保留） ---- */
+#define VS_TITLE_H  (layout_profile_get()->status_h)        /* 标题栏高（T1.5） */
+#define VS_ITEM_H   (layout_profile_get()->item_h)          /* 候选行高（T1.5） */
+#define VS_FONT_H   (layout_profile_get()->font_px_main)    /* 主内容字号 px（T1.5） */
+#define VS_FONT_LVL (layout_profile_get()->font_lvl_main)   /* 主内容 cjk level（T1.5） */
+#define VS_FONT_ASC (layout_profile_get()->ascii_size_main) /* ASCII FreeSans size（T1.5） */
+#define VS_HINT_H   (layout_profile_get()->hint_h)          /* 底部提示栏高（TINY 省略；T1.5） */
 #define VS_LIST_TOP (VS_TITLE_H + 2)
 #define VS_LIST_H   (epd_gfx_height() - VS_TITLE_H - VS_HINT_H)
 #define VS_VISIBLE  (VS_LIST_H / VS_ITEM_H)
-#define VS_MARGIN_X (VS_TINY ? 8 : 16)
+#define VS_MARGIN_X (layout_profile_get()->margin_x)        /* 左右留白（T1.5） */
 #define VS_ITEM_W   (epd_gfx_width() - 2 * VS_MARGIN_X)
 #define VS_SB_W     4
 

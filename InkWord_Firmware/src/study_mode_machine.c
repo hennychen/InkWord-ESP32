@@ -25,6 +25,7 @@
 #include <errno.h>
 #include "learning_state.h"
 #include "settings_ui.h"  /* v1.2 T2.5：发音门控（set_audio） */
+#include "page_router.h" /* T1.4：渲染恢复经 render_top（pron 恢复路径） */
 #include "reader_engine.h"   /* READER 模式：页序列/字号切换/进度恢复 */
 
 #include "nvs_flash.h"
@@ -42,7 +43,6 @@ static char s_pron_cloud_id[WORD_CLOUD_ID_MAX];
 
 /* main.cpp 导出（C++ → C，ui_render_word 引用同款先例） */
 extern void ui_render_pron(pron_state_t st, int total, const char *engine);
-extern void ui_render_current(void);
 
 /* 当前词索引（各模式独立游标演示，实际可扩展为独立游标） */
 static int s_cursor = 0;
@@ -213,7 +213,7 @@ static void pron_task(void *arg)
 restore:
     s_pron_active = false;   /* 先清位再渲染（ui_render_word 检查 pron 态） */
     s_pron_cancel = false;
-    ui_render_current();
+    page_router_render_top();
     vTaskDelete(NULL);
 }
 
@@ -238,7 +238,7 @@ void study_mode_pron_any_key(void)
         s_pron_cancel = true;   /* 任务收尾自恢复词卡 */
     } else if (s_pron_showing) {
         s_pron_showing = false;
-        ui_render_current();
+        page_router_render_top();
     }
 }
 

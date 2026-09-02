@@ -14,6 +14,7 @@
  * 全显档位（TINY 竖屏/LARGE）居中版式不变。
  */
 #include "settings_ui.h"
+#include "page_router.h" /* T1.4：g_settings_ui_page/覆盖层栈（渲染恢复经 render_top） */
 #include "daily_plan.h"
 
 #include "epd_driver.h"
@@ -221,7 +222,7 @@ static void draw_page(bool full)
      * 出屏、wft0290 末行压提示栏；改 LAYOUT 枚举判定（menu_ui MU_TINY
      * 同款先例），SMALL/MID/LARGE 输出与原启发式精确一致（视觉零变化） */
     bool compact = layout_profile_get()->kind <= LAYOUT_SMALL;  /* TINY/SMALL */
-    int status_h = compact ? 24 : 32;
+    int status_h = layout_profile_get()->status_h;  /* T1.5 档位参数表（值同原 compact 三元：TINY/SMALL=24） */
     int font_lvl = compact ? 0 : 1;         /* 行文字 16/20px */
     int lh = compact ? 28 : 44;             /* 复习词表同款行高 */
     /* 滚动窗口（2026-08-27）：可用高度装不下全部行时（MID 240 高横屏
@@ -300,10 +301,20 @@ bool settings_ui_is_active(void)
     return s_active;
 }
 
+/* T1.4 页面协议：enter=settings_ui_enter（幂等+首帧自绘）；exit 无
+ * （清态在 on_button 退出分支，pop_if 随后；render 无=模块自管局刷） */
+static bool settings_page_on_button(nav_key_t id, button_event_t event)
+{
+    settings_ui_on_button(id, event);
+    return true;   /* 覆盖层总消费（语义不变） */
+}
+
+const page_t g_settings_ui_page = { NULL, settings_page_on_button,
+                                     settings_ui_enter, NULL };
+
 /* main.cpp 导出（menu_ui 引用同款先例）；ui_force_font_refresh：
  * 字号档变更后的排版失效标记（UI_MEAN_LEVEL 派生几何变化须全刷重排；
  * reader_engine 默认档仅影响下次无记忆恢复） */
-extern void ui_render_current(void);
 extern void ui_force_font_refresh(void);
 extern void ui_apply_rotation(void);   /* 屏幕方向生效链（下方 case 6） */
 
@@ -392,8 +403,9 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
     case NAV_SET:
     case NAV_RST:                           /* 退出（菜单退出同语义） */
         s_active = false;
+        page_router_pop_if(&g_settings_ui_page);  /* T1.4：出栈归位 */
         ui_force_font_refresh();            /* 字号档可能已变（见下） */
-        ui_render_current();                /* 恢复学习页（全刷） */
+        page_router_render_top();           /* 恢复学习页（全刷） */
         return;
     default:
         return;

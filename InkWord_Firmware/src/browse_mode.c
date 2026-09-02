@@ -11,6 +11,7 @@
  * cjk_text_draw_wrap 的 max_lines=1 截断（ASCII 按词断不拆词）。
  */
 #include "browse_mode.h"
+#include "page_router.h" /* T1.4 试点：g_browse_page 栈式接入（渲染/按键经栈顶） */
 #include "catalog_index.h"
 #include "study_mode_machine.h"
 #include "word_parser.h"
@@ -26,22 +27,18 @@
 
 static const char *TAG = "BROWSE";
 
-/* main.cpp 导出（study_mode_machine.c 引用 ui_render_current 同款先例） */
-extern void ui_render_current(void);
-
-/* ---- 几何派生（MU_* 同款，零特判全档） ---- */
-#define BR_TINY     (layout_profile_get()->kind == LAYOUT_TINY)
-#define BR_SMALL    (layout_profile_get()->kind == LAYOUT_SMALL)
-#define BR_TITLE_H  (BR_TINY ? 24 : 32)
-#define BR_ITEM_H   (BR_TINY ? 28 : BR_SMALL ? 36 : 44)
-#define BR_FONT_H   (BR_TINY ? 16 : 20)
-#define BR_FONT_LVL (BR_TINY ? 0  : 1)
-#define BR_FONT_ASC (BR_TINY ? 1  : 2)
-#define BR_HINT_H   (BR_TINY ? 0 : 22)
+/* ---- 几何派生（T1.5 档位参数表：布局值查 profile，与 menu_ui
+ * MU_* 同源同值；列表可用高/可见数等派生式局部保留） ---- */
+#define BR_TITLE_H  (layout_profile_get()->status_h)        /* 标题栏高（T1.5） */
+#define BR_ITEM_H   (layout_profile_get()->item_h)          /* 列表行高（T1.5） */
+#define BR_FONT_H   (layout_profile_get()->font_px_main)    /* 主内容字号 px（T1.5） */
+#define BR_FONT_LVL (layout_profile_get()->font_lvl_main)   /* 主内容 cjk level（T1.5） */
+#define BR_FONT_ASC (layout_profile_get()->ascii_size_main) /* ASCII FreeSans size（T1.5） */
+#define BR_HINT_H   (layout_profile_get()->hint_h)          /* 底部提示栏高（TINY 省略；T1.5） */
 #define BR_LIST_TOP (BR_TITLE_H + 2)
 #define BR_LIST_H   (epd_gfx_height() - BR_TITLE_H - BR_HINT_H)
 #define BR_VISIBLE  (BR_LIST_H / BR_ITEM_H)
-#define BR_MARGIN_X (BR_TINY ? 8 : 16)
+#define BR_MARGIN_X (layout_profile_get()->margin_x)        /* 左右留白（T1.5） */
 #define BR_ITEM_W   (epd_gfx_width() - 2 * BR_MARGIN_X)
 #define BR_SB_W     4
 
@@ -263,6 +260,18 @@ void browse_mode_render(void)
     draw_page(false);
 }
 
+/* T1.4 页面协议（试点）：enter=browse_mode_reset（清态）；exit 无
+ * （退出编排 study_mode_exit_browse 在各按键路径显式调用）；render
+ * =browse_mode_render（render_top 首帧/重绘入口） */
+static bool browse_page_on_button(nav_key_t id, button_event_t event)
+{
+    browse_mode_on_button(id, event);
+    return true;   /* 栈顶总消费；退出编排模块内自管 */
+}
+
+const page_t g_browse_page = { browse_mode_render, browse_page_on_button,
+                               browse_mode_reset, NULL };
+
 /* 选词跳转：seek 已切 FLASH 并渲染词卡（本视图自然终结，无需 exit） */
 static void confirm_word(void)
 {
@@ -273,6 +282,8 @@ static void confirm_word(void)
         return;
     }
     haptic_event(HAPTIC_MODE);
+    page_router_pop_if(&g_browse_page);   /* T1.4：seek 自带渲染词卡，
+     * 出栈须先行（栈顶残留 browse 时后续 render_top 会误重绘旧视图） */
     study_mode_seek(e[s_w_sel]);
     LOG_I("browse seek word #%d", e[s_w_sel]);
 }
@@ -282,7 +293,8 @@ void browse_mode_on_button(nav_key_t id, button_event_t event)
     /* RST 长按：任意层级直接退出回闪卡（游标恢复进视图前位置） */
     if (id == NAV_RST && event == BUTTON_EVENT_LONG_PRESS) {
         study_mode_exit_browse();
-        ui_render_current();
+        page_router_pop_if(&g_browse_page);   /* T1.4：出栈归位 */
+        page_router_render_top();
         return;
     }
     if (event != BUTTON_EVENT_SHORT_PRESS) return;   /* 其余长按忽略 */
@@ -291,7 +303,8 @@ void browse_mode_on_button(nav_key_t id, button_event_t event)
     if (total <= 0) {   /* 空目录：任意短按退出（防御） */
         if (id == NAV_RST || id == NAV_SET || id == NAV_CENTER) {
             study_mode_exit_browse();
-            ui_render_current();
+            page_router_pop_if(&g_browse_page);   /* T1.4：出栈归位 */
+            page_router_render_top();
         }
         return;
     }
@@ -317,7 +330,8 @@ void browse_mode_on_button(nav_key_t id, button_event_t event)
             break;
         case NAV_RST:         /* 顶层退出视图 */
             study_mode_exit_browse();
-            ui_render_current();
+            page_router_pop_if(&g_browse_page);   /* T1.4：出栈归位 */
+            page_router_render_top();
             break;
         default:
             break;

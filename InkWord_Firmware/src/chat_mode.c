@@ -28,6 +28,7 @@
 #include "sync_client.h"       /* base_url / device_key 配置源 */
 #include "haptic.h"
 #include "wifi_manager.h"
+#include "chat_ui.h"           /* T1.3：屏显回调（ui_render_chat/anim_tick，原 main.cpp extern） */
 
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
@@ -89,10 +90,6 @@ static int  s_line_len;
 static char s_replay_files[CHAT_SENT_MAX][CHAT_SENT_NAME_MAX];
 static int  s_replay_total;
 static bool s_replay_req;
-
-/* main.cpp 导出（C++ → C，ui_render_pron 同款先例） */
-extern void ui_render_chat(chat_state_t st, const char *text);
-extern void ui_chat_anim_tick(void);          /* THINKING 涟漪帧（main.cpp） */
 
 /* 全句拼接（IDLE 回看：墨水屏静态驻留红利，2026-09-01 最优方案）
  * + 当前播放句号（PLAYING 进度指示） */

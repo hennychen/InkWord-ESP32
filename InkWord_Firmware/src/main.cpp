@@ -44,9 +44,12 @@
 #include "ui_sfx.h"     /* T1.6 提示音：按键确认/自评/模式/边界 */
 #include "quiz_ui.h"     /* T1.2：快速测验视图（自本文件迁出，修 A1；
                          * 出题核心 quiz_session 纯核由 quiz_ui.c 引用） */
+#include "review_ui.h"   /* T1.3：复习词表视图（自本文件迁出，修 A1） */
 #include "storage_manager.h"
 #include "refresh_scheduler.h"
 #include "word_parser.h"
+#include "word_loader.h"  /* T1.3：词库装载链路（自本文件迁出，修 A1；
+                         * setup 步骤 6 与 deck_flow_switch 切书共用） */
 #include "cjk_text.h"     /* 词卡释义/tag 中文点阵混排（P3 字库资产） */
 #include "cjk_font_sd.h"  /* v1.4 T4.5：SD 卡组子集字库级联装载 */
 #include "layout_profile.h" /* 布局档位：SMALL 单列 / MID 双栏分档（§8.1） */
@@ -59,12 +62,14 @@
 #include "card_layout.h" /* v1.4 T4.3：卡组版式分派（qa/poem） */
 #include "study_mode_machine.h"
 #include "chat_mode.h"    /* P2B：AI 对话模式（MODE_CHAT 按键转发/屏显） */
+#include "chat_ui.h"      /* T1.3：AI 对话屏显（自本文件迁出，修 A1） */
 #include "catalog_index.h" /* 教材目录索引（browse 数据源，词库装载尾部构建） */
 #include "browse_mode.h"   /* 教材目录浏览（MODE_BROWSE 三级目录临时视图） */
 #include "voice_search.h"  /* AI 语音查词（MODE_VOICE 四态临时视图） */
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
 #include "menu_ui.h"      /* 快捷菜单（功能菜单，长按中进入） */
+#include "page_router.h" /* T1.4 页面路由：base + 覆盖层栈（page_t 协议） */
 #include "sync_client.h"
 #include "ota_manager.h"
 #include "lan_display_server.h"
@@ -90,29 +95,11 @@ static const char *TAG = "MAIN";
 #define FW_VERSION  "1.0.0"
 /* 固件版本 getter（快捷菜单设备信息页跨模块取用；FW_VERSION 为文件内宏） */
 extern "C" const char *fw_version(void) { return FW_VERSION; }
-/* 词库容量（PRD §7.2 容量红线 2026-08-20 解除）：词池迁 PSRAM 后
- * 上限 4000 词（词库扩展四字段后 sizeof(WordEntry)≈1096B，
- * 4000 词 ≈ 4.2MB；与阅读器单书上限 4MB 并发最坏 ≈ 8.2MB——仅
- * “满词库+4MB 大书”同时存在时才触顶，实际书多在 1-2MB 且词池
- * 分配失败时逐半降级兼容）。实际分配不足时 setup 内逐级降级，
- * 见 s_word_pool 分配处。
- * v1.4 T4.2 重估：口径 = 单活跃卡组（load_active_words 只装当前
- * deck，4000 上限即单 deck 词条上限；多卡组并存只多占 SD，不多占
- * PSRAM——词池/解析 DOM/学习状态数组均随活跃组重载复用） */
-#define MAX_WORDS   4000
-
 /* 后端 API Base URL（P2 上报闭环）：部署时 -D INKWORD_API_BASE=... 覆盖，
  * 或经 NVS "inkword"/"api_url" 覆盖（配网 UI 扩展后可写）；
  * http: 前缀自动走明文 TCP（本地开发后端，见 sync_client fill_cfg） */
 #ifndef INKWORD_API_BASE
 #define INKWORD_API_BASE "https://api.einkword.com"
-#endif
-
-/* 演示词库开关：inkword-s3-demo 环境置 1；无 SD 词库时加载内嵌 5 词，
- * 用于学习页按键（翻词/SET 遮蔽/RST 回首）的整机验证；
- * 正式构建保持 0，无词库仍走待机页（用户定稿行为） */
-#ifndef INKWORD_DEMO_WORDS
-#define INKWORD_DEMO_WORDS 0
 #endif
 
 /* BLE 配网服务默认禁用：Arduino 预编译库未编入 Wi-Fi/BLE coexistence
@@ -122,11 +109,6 @@ extern "C" const char *fw_version(void) { return FW_VERSION; }
 #ifndef INKWORD_BLE_PROVISION
 #define INKWORD_BLE_PROVISION 0
 #endif
-
-/* 词池：PSRAM 堆分配（原 DRAM 静态数组仅容 64 词；与 reader_engine
- * 书缓冲同策略 MALLOC_CAP_SPIRAM，setup 内 storage_init 后分配） */
-static WordEntry *s_word_pool = NULL;
-static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORDS） */
 
 /* ============================================================
  * 单词卡片 UI 渲染 + 局部刷新策略 (Task F-16)
@@ -161,8 +143,8 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
  * 标签屏竖持）：超紧凑头部——状态栏 24、边距 8、头部行距收紧，
  * 正文 level 0 同 SMALL；竖屏高向充裕（250/296px 存 7/9 行） */
 #define UI_TINY         (layout_profile_get()->kind == LAYOUT_TINY)
-#define UI_STATUS_H     (UI_TINY ? 24 : 32)  /* 状态栏高度（内容区顶 y；无窗口差分下不再要求 8 对齐） */
-#define UI_MARGIN_X     (UI_TINY ? 8 : 16)   /* 左右留白 */
+#define UI_STATUS_H     (layout_profile_get()->status_h)  /* 状态栏高度（内容区顶 y；T1.5 档位参数表） */
+#define UI_MARGIN_X     (layout_profile_get()->margin_x)   /* 左右留白（T1.5 档位参数表） */
 #define UI_STATUS_BASE  (UI_STATUS_H - 10)             /* 状态栏文字基线（22/14） */
 /* ---- 学习页单列版式（全档位统一，2026-08-23 重设计）----
  * 上下结构：头部单词（全宽大字自适应）+ 音标 + 收藏星标；正文流 =
@@ -171,7 +153,7 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
  * 字号档位派生：TINY/SMALL 16px / MID+ 20px */
 #define UI_MEAN_LEVEL   (layout_profile_get()->kind <= LAYOUT_SMALL \
                          ? (settings_font_mode() >= 1 ? 1 \
-                            : (epd_gfx_width() <= 122 ? 1 : 0)) \
+                            : (layout_profile_get()->narrow_tiny ? 1 : 0)) \
                          : (settings_font_mode() >= 1 ? 2 : 1))  /* 正文字号级：
  * 档位默认 TINY/SMALL 16px / MID+ 20px；大字/特大档（set_font>=1）
  * 整体 +1 级（20/24px），行距与几何全部由本宏派生自适应。2026-08-27
@@ -187,7 +169,7 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
 #define UI_PHON_TOP     (UI_WORD_BASE + (UI_TINY ? 6 : 9))     /* 音标行 16px 点阵顶（77/73/54） */
 #define UI_BODY_TOP     (UI_PHON_TOP + (UI_AUX_LEVEL ? 20 : 16) + (UI_TINY ? 4 : 11)) /* 正文流首行顶：音标行高随辅助级 */
 #define UI_BODY_LH      (UI_TINY ? (UI_MEAN_LEVEL ? 26 : 20) : (UI_MEAN_LEVEL ? 24 : 20))  /* 正文行距：字级 +4（reader 惯例）；二十四轮（2026-08-31）TINY 档 20px 级膨胀加粗后 24→26：笔画变粗视觉更满，行间空隙 4→6px 防粘连（低对比度屏稀疏化），每页行数 6→5 */
-#define UI_AUX_LEVEL    (epd_gfx_width() <= 122 ? UI_MEAN_LEVEL : 0)
+#define UI_AUX_LEVEL    (layout_profile_get()->narrow_tiny ? UI_MEAN_LEVEL : 0)
                                    /* 辅助小字级（音标/标签行）：
  * 2.13" 122 宽（135DPI）跟随正文级（20px），其余屏（含 2.9" 128
  * 宽）保持 16px 原口径。2026-08-30 OPM021EB 真机：16px 音标/标签
@@ -195,7 +177,7 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
 /* 行数按屏高派生：底部预留 30 = 标签行 + 余量（末行文字底与标签顶
  * 错开，MID 末行底 196 < 标签顶 206）；416x240=4 行、400x300=6、
  * 264x176=2、122x250 竖屏=7、128x296 竖屏=9（TINY 预留收至 26） */
-#define UI_BODY_RESERVE (UI_TINY ? 26 : 30)
+#define UI_BODY_RESERVE (layout_profile_get()->body_reserve)
 #define UI_BODY_LINES_  ((epd_gfx_height() - UI_BODY_RESERVE - UI_BODY_TOP) / UI_BODY_LH)
 #define UI_BODY_LINES   (UI_BODY_LINES_ < 1 ? 1 : UI_BODY_LINES_)  /* 下限 1：
  * 极端几何（窄屏高字号叠加）防御，正文区至少 1 行可翻页（P1a） */
@@ -212,18 +194,6 @@ static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORD
 #define UI_POEM_PIN_TOP   (UI_POEM_TOP + UI_POEM_LINES * UI_POEM_LH + 4)
 #define UI_POEM_TRANS_TOP (UI_POEM_PIN_TOP + 16 + 8)   /* 拼音行底 + 8 */
 
-/* ---- 复习模式词表视图（2026-08-24，PRD 5.2「紧凑显示+SRS 到期词」落地；
- * 百词斩复习范式借鉴）：到期词紧凑两列词表 + 中键进词卡详情，
- * 左/右自评即出队（游标钳位），列表态/详情态两态由渲染层承载 ---- */
-#define RV_ITEM_H   (UI_TINY ? 28 : (layout_profile_get()->kind == LAYOUT_SMALL \
-                                    ? 36 : 44))    /* 对齐 menu_ui 列表行高 */
-#define RV_LIST_TOP (UI_STATUS_H + 4)
-#define RV_HINT_H   (UI_TINY ? 18 : 24)            /* 底部提示行预留 */
-#define RV_VISIBLE  ((epd_gfx_height() - UI_STATUS_H - RV_HINT_H - 4) / RV_ITEM_H)
-#define RV_SB_W     4                               /* 滚动条宽（menu_ui 同款） */
-static bool s_review_detail = false;   /* false=词表 / true=词卡详情 */
-static int  s_rv_off = 0;              /* 词表滚动窗口偏移 */
-
 /* 前置声明（C++ 静态变量单次定义：s_last_mode 自原渲染区上移至此；
  * T1.2 quiz 块迁 quiz_ui.c 后，下列符号仍被本文件渲染区与 quiz_ui
  * 经 extern/注入引用） */
@@ -232,59 +202,6 @@ static int ui_fit_font(const char *text, int start_size, int max_w);
 static int ui_word_start_size(void);   /* P1b：单词字号偏好→fit 起步档 */
 extern "C" void ui_render_word(study_mode_t mode, int index);
 extern "C" void ui_render_current(void);
-
-/* 活跃词库装载（v1.3 T3.1，setup 与 deck_flow_switch 共用链路）：
- * 活跃卡组文件 → SD words.json → 内嵌兜底 三级递降；任一级成功
- * 即返回（内嵌常在 rodata，末级必达）。返回词条数（<0 全失败）。 */
-static int load_active_words(void)
-{
-    /* v1.4 T4.5 字库子集级联：随活跃卡组装载/切换同步装载该组 SD 子集
-     * 字库（/sdcard/fonts/deck_<id>.bin，无文件=主集已覆盖的正常路径，
-     * 静默通过；旧组子集在 load 内部先退场）。置于词条链路之前：
-     * 子集只依赖 deck_active，与哪级词条源命中无关 */
-    cjk_font_sd_load(deck_manager_active_id());
-
-    const char *deck_file = deck_manager_active_file();
-    if (deck_file) {
-        int n = word_parser_load(deck_file, s_word_pool, s_word_cap);
-        if (n > 0) {
-            LOG_I("deck DB loaded: %d entries (%s)", n, deck_file);
-            return n;
-        }
-        LOG_E("deck load failed: %s, fallback", deck_file);
-    }
-
-    const char *word_file = SD_MOUNT_POINT "/words.json";
-    if (storage_file_exists(word_file)) {
-        int n = word_parser_load(word_file, s_word_pool, s_word_cap);
-        if (n > 0) {
-            LOG_I("word DB loaded: %d entries", n);
-            return n;
-        }
-    }
-
-    /* 出厂内嵌兜底（2026-08-23）：无 SD 卡开箱即用。词库随固件烧入
-     * rodata（platformio.ini embed_files，生成链见
-     * tools/default_vocab），load_mem 零拷贝直吃。SD/卡组词库存在时
-     * 优先（可更新、可携带 cloudId）；内嵌版本无 cloudId（本地词条，
-     * 评分/收藏不上报），在线同步/导出路径下发的词库才携带 */
-    extern const uint8_t _binary_src_default_words_json_start[];
-    extern const uint8_t _binary_src_default_words_json_end[];
-    return word_parser_load_mem(
-        (const char *)_binary_src_default_words_json_start,
-        (size_t)(_binary_src_default_words_json_end -
-                 _binary_src_default_words_json_start),
-        s_word_pool, s_word_cap);
-}
-
-/* 词库装载 + 目录索引（设计 §A1）：装载链路统一挂载点，setup 与
- * deck_flow_switch 共用（词库切换时 catalog_build 内部 free 重建） */
-static int load_words_with_catalog(void)
-{
-    int n = load_active_words();
-    catalog_build();
-    return n;
-}
 
 /* ---- 词书切换编排（v1.3 T3.1，MENU_DESIGN [学习] 组「词书选择」）：
  * 菜单词书页中键经 menu_ui 调入。顺序：NVS 记录 → 词库重载（预检
@@ -364,8 +281,7 @@ static int ui_fit_font(const char *text, int start_size, int max_w)
  * 同一断行核心，页数与渲染行严格一致（reader_engine 建页同策略）。
  * ============================================================ */
 extern "C" void ui_render_word(study_mode_t mode, int index);  /* 下方定义 */
-extern "C" void ui_render_current(void);  /* 下方定义（menu_ui 恢复退出用） */
-extern "C" void ui_render_chat(chat_state_t st, const char *text);  /* 下方定义（ui_render_current 首帧分流） */
+extern "C" void ui_render_current(void);  /* 下方定义（T1.4 兼容别名，quiz_ui 沿用） */
 
 /* 释义正文流（全档位单列）：释义 + 全角空格(U+3000) + 词根 + 例句
  * （单列无独立槽位，随释义滚动分页；空段前导空白被断行核心
@@ -799,68 +715,6 @@ static void ui_draw_content(const WordEntry *w)
     ui_draw_foot(w, UI_BODY_MAX_W);
 }
 
-/* 复习到期词表（列表态）：两列紧凑行（左词 FreeSans / 右释义首行
- * 截断点阵）+ 反选高亮 + 滚动条 + 底部提示（menu_ui 列表范式）；
- * 行取词直接经 learning_state_due_at（REVIEW 序列=due 视图） */
-static void ui_draw_review_list(void)
-{
-    int total = study_mode_seq_total();
-    int sel   = study_mode_seq_pos();
-
-    /* 滚动窗口跟随 */
-    if (sel < s_rv_off) s_rv_off = sel;
-    if (sel >= s_rv_off + RV_VISIBLE) s_rv_off = sel - RV_VISIBLE + 1;
-    int max_off = total > RV_VISIBLE ? total - RV_VISIBLE : 0;
-    if (s_rv_off > max_off) s_rv_off = max_off;
-    if (s_rv_off < 0) s_rv_off = 0;
-
-    epd_gfx_fill_rect(0, UI_STATUS_H, epd_gfx_width(),
-                      epd_gfx_height() - UI_STATUS_H, EPD_GFX_WHITE);
-
-    int body_w = epd_gfx_width() - 2 * UI_MARGIN_X - RV_SB_W - 4;
-    for (int i = 0; i < RV_VISIBLE; i++) {
-        int idx = s_rv_off + i;
-        if (idx >= total) break;
-        int wi = learning_state_due_at(idx);
-        const WordEntry *w = wi >= 0 ? word_parser_get(wi) : NULL;
-        if (!w) break;
-
-        int y = RV_LIST_TOP + i * RV_ITEM_H;
-        bool s = (idx == sel);
-        if (s)
-            epd_gfx_fill_rect(UI_MARGIN_X, y, body_w, RV_ITEM_H - 4,
-                              EPD_GFX_BLACK);
-
-        /* 左：词（FreeSans size 2；半宽 ASCII 与点阵释义行视觉平衡） */
-        int tw, th;
-        epd_gfx_text_bounds(w->text, 2, &tw, &th);
-        epd_gfx_draw_text(UI_MARGIN_X + 4, y + RV_ITEM_H * 3 / 4,
-                          w->text, s ? EPD_GFX_WHITE : EPD_GFX_BLACK, 2);
-
-        /* 右：释义首行截断（16px 点阵单行；剩宽 <32px 跳过） */
-        int mx = UI_MARGIN_X + 4 + tw + 12;
-        int mw = UI_MARGIN_X + body_w - 6 - mx;
-        if (mw >= 32 && w->meaning[0])
-            cjk_text_draw_wrap(mx, y + (RV_ITEM_H - 16) / 2, mw, 0, 0, 1,
-                               w->meaning, s ? EPD_GFX_WHITE : EPD_GFX_BLACK);
-    }
-
-    /* 滚动条（menu_ui 同款滑块） */
-    if (total > RV_VISIBLE) {
-        int x = epd_gfx_width() - UI_MARGIN_X;
-        int h = RV_VISIBLE * RV_ITEM_H;
-        epd_gfx_draw_rect(x, RV_LIST_TOP, RV_SB_W, h, EPD_GFX_BLACK);
-        int thumb_h = h * RV_VISIBLE / total;
-        if (thumb_h < RV_SB_W * 2) thumb_h = RV_SB_W * 2;
-        epd_gfx_fill_rect(x, RV_LIST_TOP + (h - thumb_h) * s_rv_off /
-                          (total - RV_VISIBLE), RV_SB_W, thumb_h, EPD_GFX_BLACK);
-    }
-
-    /* 底部提示行（同学习页 foot 位；RST 直达设置 2026-08-27） */
-    cjk_text_draw(UI_MARGIN_X, UI_FOOT_TOP, 0,
-                  "中 详情 · 左/右 自评出队 · RST 设置", EPD_GFX_BLACK);
-}
-
 /* LAN 直传外部内容整帧直刷后调用：GFX previous 缓冲已失配，
  * 置 s_last_mode 无效值强制下一次学习界面渲染走全刷 */
 extern "C" void ui_force_full_refresh_next(void)
@@ -922,7 +776,7 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
         study_mode_pron_ui_visible()) return; /* P1 跟读三态屏独占内容区 */
 
     /* 模式切换重置复习列表态（详情态只在会话内保持） */
-    if (mode != s_last_mode) s_review_detail = false;
+    if (mode != s_last_mode) review_ui_reset_detail();
 
     /* 阅读模式（P3）：index=页码，渲染走 reader_engine，词库空判断
      * 不适用；实时页码由内容区页脚承担（局刷不重画状态栏） */
@@ -954,7 +808,7 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
 
     /* 复习模式列表态（2026-08-24）：到期词表 + 中键详情；空序列显
      * 示占位空态页（低频，一律整屏全刷——空态下无按键触发重绘） */
-    if (mode == MODE_REVIEW && !s_review_detail) {
+    if (mode == MODE_REVIEW && !review_ui_is_detail()) {
         if (study_mode_seq_total() == 0) {
             epd_gfx_fill_screen(EPD_GFX_WHITE);
             ui_draw_status(mode);          /* 序号 0/0 */
@@ -980,7 +834,7 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
         if (!need_full && refresh_gfx_before_partial()) need_full = true;
 
         if (need_full) ui_draw_status(mode);
-        ui_draw_review_list();
+        review_ui_render_list();
 
         if (need_full)
             epd_gfx_flush();               /* 整屏全刷 */
@@ -1045,9 +899,10 @@ extern "C" void ui_render_word(study_mode_t mode, int index)
     LOG_I("[%s] #%d %s", study_mode_name(mode), index, w->text);
 }
 
-/* 当前应显示页面的统一渲染入口：有词库走学习页，无词库走待机页
- * （LAN/配网退出与模式切换后的恢复路径均经此路由；menu_ui 恢复退出同） */
-extern "C" void ui_render_current(void)
+/* base 页渲染（T1.4 经 page_router 委托）：有词库走学习页，无词库
+ * 走待机页（LAN/配网退出与模式切换后的恢复路径均经此路由；覆盖层
+ * 栈非空时 render_top 分发栈顶，不进入本函数） */
+static void base_render(void)
 {
     study_mode_t m = study_mode_current();
     if (m == MODE_READER)
@@ -1070,6 +925,17 @@ extern "C" void ui_render_current(void)
         ui_render_word(m, 0);
     else
         standby_render_full();
+}
+
+/* T1.4 base 页：render=学习/阅读/待机分流；按键不经路由（base 编排
+ * 仍在 on_button），enter/exit 无（常驻） */
+static const page_t g_base_page = { base_render, NULL, NULL, NULL };
+
+/* 兼容别名（T1.4 第一步：quiz_ui 等未迁移调用方沿用；后续批次
+ * 全部改 page_router_render_top 后删除） */
+extern "C" void ui_render_current(void)
+{
+    page_router_render_top();
 }
 
 /* P1 跟读评测三态屏显（pron_task 驱动；状态栏不动，内容区局刷 350ms
@@ -1128,238 +994,6 @@ extern "C" void ui_render_pron(pron_state_t st, int total, const char *engine)
     LOG_I("pron ui state=%d total=%d", (int)st, total);
 }
 
-/* P2B AI 对话屏显（chat_mode 任务驱动；状态区局刷同 ui_render_pron
- * 策略，环路内禁全刷红线。语音优先、屏幕克制：仅状态词 + 末句回复
- * ≤2 行（听不清时看屏）。三色面板 partial_enabled=false 零渲染，
- * 纯语音+震动（与待机页轮换停用同款 UX 降级先例） */
-/* ===== AI 对话 Siri 球（聆听/思考状态页中央图标，2026-09-01） =====
- * 版式仅 MID+ 档（TINY/SMALL 内容区高度不足，保持纯文字版式同先例
- * 降级）；动画仅 THINKING 期（读流循环 ui_chat_anim_tick 驱动涟漪
- * ~2fps）；RECORDING 期零刷屏——I2S RX DMA 缓冲 128ms，任何局刷
- * 阻塞都会丢样本（音频保真红线），静态球页在 adc_start 前刷就 */
-static int ui_chat_isqrt(int v)
-{
-    int r = 0;
-    while ((r + 1) * (r + 1) <= v) r++;
-    return r;
-}
-
-/* 行扫描实心圆（GFX 无圆 API，r<=30 场景微秒级） */
-static void ui_chat_fill_circle(int cx, int cy, int r, uint16_t color)
-{
-    for (int dy = -r; dy <= r; dy++) {
-        int dx = ui_chat_isqrt(r * r - dy * dy);
-        epd_gfx_fill_rect(cx - dx, cy + dy, 2 * dx + 1, 1, color);
-    }
-}
-
-#define CHAT_ORB_R     18                        /* 球半径（MID+ 档） */
-#define CHAT_ORB_RIP   7                         /* 涟漪环步距（phase 0..2） */
-#define CHAT_ORB_WIN   (CHAT_ORB_R + 2 * CHAT_ORB_RIP + 5) /* 动画窗半边=37 */
-#define CHAT_ORB_OK    (layout_profile_get()->kind >= LAYOUT_MID) /* 档位门槛 */
-
-static int ui_chat_orb_cx(void) { return epd_gfx_width() / 2; }
-static int ui_chat_orb_cy(void)               /* 内容区 36% 线（球窗下方 */
-{                                             /* 留状态词+辅助行两行） */
-    return UI_STATUS_H + (epd_gfx_height() - UI_STATUS_H) * 9 / 25;
-}
-
-/* 画球到帧缓冲（不 flush）：phase -1 静态球；0..2 涟漪帧（环
- * r=R+4+phase*RIP，3px 线宽）。窗口整擦保证环移动无残帧 */
-static void ui_chat_orb_draw(int phase)
-{
-    int cx = ui_chat_orb_cx(), cy = ui_chat_orb_cy();
-    epd_gfx_fill_rect(cx - CHAT_ORB_WIN, cy - CHAT_ORB_WIN,
-                      2 * CHAT_ORB_WIN, 2 * CHAT_ORB_WIN, EPD_GFX_WHITE);
-    ui_chat_fill_circle(cx, cy, CHAT_ORB_R, EPD_GFX_BLACK);
-    if (phase >= 0) {
-        int rr = CHAT_ORB_R + 4 + phase * CHAT_ORB_RIP;
-        ui_chat_fill_circle(cx, cy, rr + 2, EPD_GFX_BLACK);
-        ui_chat_fill_circle(cx, cy, rr - 1, EPD_GFX_WHITE);
-    }
-}
-
-/* 居中状态词（cjk 测宽居中；越界钳到边距） */
-static void ui_chat_caption(int y, const char *s, int level)
-{
-    int x = (epd_gfx_width() - cjk_text_width(level, s)) / 2;
-    if (x < UI_MARGIN_X) x = UI_MARGIN_X;
-    cjk_text_draw(x, y, level, s, EPD_GFX_BLACK);
-}
-
-extern "C" void ui_render_chat(chat_state_t st, const char *text)
-{
-    if (!epd_gfx_partial_supported()) return;   /* 三色降级：纯语音+震动 */
-    if (wifi_config_ui_is_active() || lan_server_is_active() ||
-        menu_ui_is_active())
-        return;                              /* 顶层覆盖层期间不绘制 */
-
-    epd_gfx_fill_rect(0, UI_STATUS_H, epd_gfx_width(),
-                      epd_gfx_height() - UI_STATUS_H, EPD_GFX_WHITE);
-
-    switch (st) {
-    case CHAT_STATE_IDLE: {
-        /* 最优方案（2026-09-01）：title 删除（菜单已选，二次确认冗余）；
-         * MID+ 小球锚点（与过程态视觉语言连贯）+ 完整回复回看 3 行
-         * （静态驻留红利，中段句可回看）；TINY/SMALL 保持纯文字版式 */
-        if (CHAT_ORB_OK) {
-            int ocx = ui_chat_orb_cx();
-            int ocy = UI_STATUS_H +
-                      (epd_gfx_height() - UI_STATUS_H) * 6 / 25;
-            epd_gfx_fill_rect(ocx - 16, ocy - 16, 32, 32, EPD_GFX_WHITE);
-            ui_chat_fill_circle(ocx, ocy, 12, EPD_GFX_BLACK);
-            ui_chat_caption(ocy + 22, "按中键说话 · 长按退出", 2);
-            const char *fr = chat_mode_full_reply();
-            if (fr[0])
-                cjk_text_draw_wrap_page(UI_MARGIN_X, ocy + 54,
-                                        UI_BODY_MAX_W, UI_MEAN_LEVEL,
-                                        UI_BODY_LH, 3, 0, fr, EPD_GFX_BLACK);
-            if (chat_mode_wordhit_count() > 0) {
-                char hbuf[40];
-                snprintf(hbuf, sizeof(hbuf), "生词 %d · SET 收藏",
-                         chat_mode_wordhit_count());
-                cjk_text_draw(UI_MARGIN_X, ocy + 54 + 3 * UI_BODY_LH + 4,
-                              UI_MEAN_LEVEL, hbuf, EPD_GFX_BLACK);
-            }
-        } else {
-            cjk_text_draw(UI_MARGIN_X, UI_WORD_BASE, UI_MEAN_LEVEL,
-                          "按中键说话 · 长按中键退出", EPD_GFX_BLACK);
-            if (chat_mode_wordhit_count() > 0) {
-                char hbuf[40];
-                snprintf(hbuf, sizeof(hbuf), "生词 %d · SET 收藏",
-                         chat_mode_wordhit_count());
-                cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
-                              hbuf, EPD_GFX_BLACK);
-            }
-            const char *fr = chat_mode_full_reply();
-            if (fr[0])
-                cjk_text_draw_wrap_page(UI_MARGIN_X, UI_BODY_TOP + UI_BODY_LH,
-                                        UI_BODY_MAX_W, UI_MEAN_LEVEL,
-                                        UI_BODY_LH, 2, 0, fr, EPD_GFX_BLACK);
-        }
-        break;
-    }
-    case CHAT_STATE_RECORDING:
-        if (CHAT_ORB_OK) {
-            ui_chat_orb_draw(-1);
-            ui_chat_caption(ui_chat_orb_cy() + CHAT_ORB_WIN + 6,
-                            "聆听中 · · ·", 2);
-            ui_chat_caption(ui_chat_orb_cy() + CHAT_ORB_WIN + 34,
-                            "请说话 · 停顿即发送", 1);
-        } else {
-            epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Listening...",
-                              EPD_GFX_BLACK, 2);
-            cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
-                          "请说话 · 停顿即发送 / 中键立即发", EPD_GFX_BLACK);
-        }
-        break;
-    case CHAT_STATE_UPLOADING:
-        if (CHAT_ORB_OK) {
-            ui_chat_orb_draw(-1);
-            /* 录音时长即时反馈（本地可算零网络）：说话中页面静默的
-             * 首个补偿信号——至少确认采到了多长的音 */
-            char ucap[40];
-            int rms_ms = chat_mode_rec_ms();
-            if (rms_ms > 0)
-                snprintf(ucap, sizeof(ucap), "已录 %d.%d 秒 · 发送中",
-                         rms_ms / 1000, (rms_ms % 1000) / 100);
-            else
-                snprintf(ucap, sizeof(ucap), "发送中 · · ·");
-            ui_chat_caption(ui_chat_orb_cy() + CHAT_ORB_WIN + 6, ucap, 2);
-        } else {
-            epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Sending...",
-                              EPD_GFX_BLACK, 2);
-        }
-        break;
-    case CHAT_STATE_THINKING:
-        if (CHAT_ORB_OK) {
-            ui_chat_orb_draw(0);          /* 静态首帧；涟漪由 anim_tick 推进 */
-            ui_chat_caption(ui_chat_orb_cy() + CHAT_ORB_WIN + 6,
-                            "思考中 · · ·", 2);
-            /* 识别文本回显（meta.transcript 到达时 set_state 同态重入）：
-             * 「你说：…」= mic 正常的最强证据；空串=后端未听到 */
-            const char *heard = chat_mode_heard();
-            if (heard) {
-                char hbuf[160];
-                if (heard[0])
-                    snprintf(hbuf, sizeof(hbuf), "你说：%s", heard);
-                else
-                    snprintf(hbuf, sizeof(hbuf), "未听到内容");
-                cjk_text_draw_wrap_page(UI_MARGIN_X,
-                                        ui_chat_orb_cy() + CHAT_ORB_WIN + 32,
-                                        UI_BODY_MAX_W, UI_MEAN_LEVEL,
-                                        UI_BODY_LH, 2, 0, hbuf, EPD_GFX_BLACK);
-            }
-        } else {
-            epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Thinking...",
-                              EPD_GFX_BLACK, 2);
-            const char *heard = chat_mode_heard();
-            if (heard && heard[0])
-                cjk_text_draw_wrap_page(UI_MARGIN_X, UI_BODY_TOP,
-                                        UI_BODY_MAX_W, UI_MEAN_LEVEL,
-                                        UI_BODY_LH, 1, 0, heard,
-                                        EPD_GFX_BLACK);
-        }
-        break;
-    case CHAT_STATE_PLAYING: {
-        /* 句进度（中途打断决策依据）：TTS 降级文本先行未开播（N=0）
-         * 只显状态词；TINY/SMALL 保持 FreeSans 原样 */
-        if (CHAT_ORB_OK) {
-            char cap[32];
-            int no = chat_mode_sentence_no();
-            if (no > 0)
-                snprintf(cap, sizeof(cap), "正在回答 · 第 %d 句", no);
-            else
-                snprintf(cap, sizeof(cap), "正在回答");
-            ui_chat_caption(UI_WORD_BASE, cap, 2);
-        } else {
-            epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Speaking",
-                              EPD_GFX_BLACK, 2);
-        }
-        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
-                      "中键打断重说", EPD_GFX_BLACK);
-        break;
-    }
-    case CHAT_STATE_NETFAIL:
-        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Offline",
-                          EPD_GFX_BLACK, 2);
-        cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
-                      "网络不可用 · 按中键重试", EPD_GFX_BLACK);
-        break;
-    }
-
-    /* 当前句 ≤2 行（仅 PLAYING：IDLE 回看已自分档自画，过程态不画 */
-    if (text && text[0] && st == CHAT_STATE_PLAYING)
-        cjk_text_draw_wrap_page(UI_MARGIN_X, UI_BODY_TOP + 2 * UI_BODY_LH,
-                                UI_BODY_MAX_W, UI_MEAN_LEVEL, UI_BODY_LH, 2,
-                                0, text, EPD_GFX_BLACK);
-
-    epd_gfx_flush_window(0, UI_STATUS_H, epd_gfx_width(),
-                         epd_gfx_height() - UI_STATUS_H);
-    LOG_I("chat ui state=%d", (int)st);
-}
-
-/* THINKING 涟漪帧：chat_task 读流循环周期调用（500ms 读超时回环点），
- * 内部 600ms 节拍防抖（n>0 连续到达时不加速）；非 THINKING 态/
- * 顶层覆盖层期间 no-op。仅重刷球窗（74×74，A2 快刷 ~100ms） */
-extern "C" void ui_chat_anim_tick(void)
-{
-    static int64_t last_us = -1;
-    static int phase = 0;
-    if (!epd_gfx_partial_supported() || !CHAT_ORB_OK) return;
-    if (wifi_config_ui_is_active() || lan_server_is_active() ||
-        menu_ui_is_active())
-        return;
-    if (chat_mode_state() != CHAT_STATE_THINKING) return;
-    int64_t now = esp_timer_get_time();
-    if (last_us > 0 && now - last_us < 600000) return;
-    last_us = now;
-    ui_chat_orb_draw(phase);
-    int cx = ui_chat_orb_cx(), cy = ui_chat_orb_cy();
-    epd_gfx_flush_window(cx - CHAT_ORB_WIN, cy - CHAT_ORB_WIN,
-                         2 * CHAT_ORB_WIN, 2 * CHAT_ORB_WIN);
-    phase = (phase + 1) % 3;
-}
 
 /* P5 幻影按键吞除武装标志：按键唤醒的会话置位（setup），on_button 吞掉
  * 唤醒后首个中键事件后清位（见 on_button 顶部注释） */
@@ -1384,17 +1018,10 @@ static void on_button(nav_key_t id, button_event_t event)
      * audio_play_file 打断重播覆盖本音，不会叠播 */
     ui_sfx_play(UI_SFX_KEY);
 
-    /* 快捷菜单激活时，按键全部转发（顶层覆盖层，与配网页同级语义） */
-    if (menu_ui_is_active()) {
-        menu_ui_on_button(id, event);
-        return;
-    }
-
-    /* v1.2 T2.5 设置页激活时，按键全部转发（同级覆盖层，菜单退出后接替） */
-    if (settings_ui_is_active()) {
-        settings_ui_on_button(id, event);
-        return;
-    }
+    /* T1.4 页面路由：覆盖层栈顶独占按键（menu/settings/browse…；
+     * 原三层 is_active if 链收敛于此，栈空返回 false 继续。pron
+     * 短事务与栈互斥（base 层触发），顺序等价） */
+    if (page_router_dispatch_button(id, event)) return;
 
     /* P1 跟读评测期间：任意键取消录音 / 关闭结果屏（吞键，pron_task
      * 或 any_key 自恢复词卡；短事务期间不进菜单/翻词） */
@@ -1409,7 +1036,7 @@ static void on_button(nav_key_t id, button_event_t event)
         if (!chat_mode_on_button(id, event)) {
             haptic_event(HAPTIC_MODE);   /* 退出模式 50ms（进/出同档） */
             study_mode_exit_chat();
-            ui_render_current();         /* 模式变化自然全刷回闪卡 */
+            page_router_render_top();    /* 模式变化自然全刷回闪卡 */
         }
         return;
     }
@@ -1421,12 +1048,8 @@ static void on_button(nav_key_t id, button_event_t event)
         return;
     }
 
-    /* 教材目录浏览（设计 §A2）：按键全转发（上下移动/中进入/RST 逐级
-     * 返回，长按直退；模块内自管渲染，选词 confirm 经 seek 终结视图） */
-    if (study_mode_current() == MODE_BROWSE) {
-        browse_mode_on_button(id, event);
-        return;
-    }
+    /* 教材目录浏览（设计 §A2）经页面路由栈顶分发（T1.4 试点，顶部
+     * dispatch；选词 confirm 经 seek 终结视图时 pop_if 归位） */
 
     /* AI 语音查词（设计 §B2）：按键全转发（中=录音/提前停/确认，上下=
      * 候选移动，RST=重说）；退出请求由编排层执行——chat 同款编排 */
@@ -1435,7 +1058,7 @@ static void on_button(nav_key_t id, button_event_t event)
             haptic_event(HAPTIC_MODE);
             voice_search_request_exit();
             study_mode_exit_voice_search();
-            ui_render_current();
+            page_router_render_top();
         }
         return;
     }
@@ -1451,7 +1074,7 @@ static void on_button(nav_key_t id, button_event_t event)
     if (lan_server_is_active()) {
         lan_portal_exit();
         lan_server_leave_receive_page();
-        ui_render_current();
+        page_router_render_top();
         return;
     }
 
@@ -1467,7 +1090,7 @@ static void on_button(nav_key_t id, button_event_t event)
     if (event == BUTTON_EVENT_LONG_PRESS) {
         switch (id) {
         case NAV_CENTER:
-            menu_ui_enter();
+            page_router_push(&g_menu_ui_page);   /* T1.4：enter=menu_ui_enter */
             return;
         case NAV_UP:
             LOG_I("user requested ghost-clear full refresh");
@@ -1478,7 +1101,7 @@ static void on_button(nav_key_t id, button_event_t event)
             haptic_event(HAPTIC_MODE);   /* 模式切换 50ms（PRD 5.4） */
             ui_sfx_play(UI_SFX_MODE);    /* T1.6 模式切换音「滴--」 */
             study_mode_switch_next();
-            ui_render_current();
+            page_router_render_top();
             return;
         case NAV_LEFT:
             lan_portal_enter();
@@ -1497,7 +1120,7 @@ static void on_button(nav_key_t id, button_event_t event)
             learning_state_toggle_collect(study_mode_current_word_index());
             if (study_mode_current() == MODE_COLLECTION &&
                 study_mode_after_uncollect()) {
-                ui_render_current();   /* 清空退回闪卡或游标收缩，重绘当前页 */
+                page_router_render_top();   /* 清空退回闪卡或游标收缩 */
                 return;
             }
             ui_render_word(study_mode_current(),
@@ -1516,7 +1139,7 @@ static void on_button(nav_key_t id, button_event_t event)
                 return;
             }
             haptic_event(HAPTIC_MODE);
-            ui_render_current(); /* 模式变化 -> 全刷重绘第一条 */
+            page_router_render_top(); /* 模式变化 -> 全刷重绘第一条 */
             return;
         default:
             return;
@@ -1562,7 +1185,7 @@ static void on_button(nav_key_t id, button_event_t event)
      * 通用词卡路由（上/下翻释义页/跨词翻卡），左/右自评改为
      * after_due_review 出队并回列表——序列清空由列表态空态页承载，
      * 避免空序列词卡取词 */
-    if (study_mode_current() == MODE_REVIEW && !s_review_detail) {
+    if (study_mode_current() == MODE_REVIEW && !review_ui_is_detail()) {
         switch (id) {
         case NAV_UP:
             study_mode_handle_action(0);   /* 选择上一词（回绕，内部重绘） */
@@ -1572,7 +1195,7 @@ static void on_button(nav_key_t id, button_event_t event)
             return;
         case NAV_CENTER:
             if (study_mode_seq_total() == 0) return;
-            s_review_detail = true;       /* 进词卡详情 */
+            review_ui_set_detail(true);       /* 进词卡详情 */
             ui_render_word(study_mode_current(),
                            study_mode_current_word_index());
             return;
@@ -1596,14 +1219,14 @@ static void on_button(nav_key_t id, button_event_t event)
             return;
         }
     }
-    if (study_mode_current() == MODE_REVIEW && s_review_detail &&
+    if (study_mode_current() == MODE_REVIEW && review_ui_is_detail() &&
         (id == NAV_LEFT || id == NAV_RIGHT)) {
         /* 详情态自评：出队 + 回列表（下词钳位高亮；清空→空态页） */
         int q = (id == NAV_RIGHT) ? 5 : 1;
         learning_state_apply_quality(study_mode_current_word_index(), q);
         haptic_event(HAPTIC_REVIEW);
         ui_sfx_play(UI_SFX_RATE);      /* T1.6 自评提交音「滴答」 */
-        s_review_detail = false;
+        review_ui_set_detail(false);
         study_mode_after_due_review();
         ui_render_word(study_mode_current(),
                        study_mode_current_word_index());
@@ -1629,7 +1252,7 @@ static void on_button(nav_key_t id, button_event_t event)
         /* RST 短按直达设置页（2026-08-27 用户需求：音量等高频项快速
          * 触达；原「回当前模式首条」退役——低频功能，可由多次上键
          * 等价达成；quiz/AI 对话等临时视图的 RST 语义在前置分支不受影响） */
-        settings_ui_enter();
+        page_router_push(&g_settings_ui_page);  /* T1.4：enter=settings_ui_enter */
         return;
     case NAV_LEFT:
         learning_state_apply_quality(study_mode_current_word_index(), 1);
@@ -1953,13 +1576,19 @@ void setup()
      * 停摆、连按丢失；队列化后刷新阻塞期间事件排队不丢） */
     boot_stamp("keys");
 
-    /* 3. 刷新调度器：阈值取面板 desc.partial_count_full_refresh
-     * （2026-08-26 wft0290 调优改：原硬编码 8 与 desc 脱钩；
-     * 残影为单相快刷固有特性，wft0290 取 4 加频清除，全刷 3.4s
-     * 洗净实测；待机页走独立 _n 阈值 12，见 standby_page.c） */
+    /* 2.5 T1.4 页面路由：注册 base 页（先于一切 push/渲染；覆盖层
+     *     栈 menu/settings/browse 见各模块 g_*_page） */
+    page_router_init(&g_base_page);
+
+    /* 3. 刷新调度器：T1.7 三页面保养阈值统一公式 desc×factor
+     * （学习 1.0/待机 1.5/配网 1.25，系数入 layout_profile）：
+     * 2026-08-26 wft0290 调优改：原硬编码 8 与 desc 脱钩；残影为
+     * 单相快刷固有特性，wft0290 取 4 加频清除，全刷 3.4s 洗净实测；
+     * 416 屏 8×100/100=8，行为零变化 */
     const epd_panel_desc_t *pd = epd_panel_desc();
-    refresh_scheduler_init(pd && pd->partial_count_full_refresh > 0
-                               ? pd->partial_count_full_refresh : 8);
+    int learn_base = (pd && pd->partial_count_full_refresh > 0)
+                   ? pd->partial_count_full_refresh : 8;
+    refresh_scheduler_init(learn_base * layout_profile_get()->partial_std / 100);
 
     /* 4. WiFi 联网（失败不阻塞主流程）；同步凭据（base URL / 设备 key）
      *    从 NVS 恢复到 sync_client，首次注册留待联网后 background_task */
@@ -1986,35 +1615,9 @@ void setup()
     ota_mark_valid();
     boot_stamp("wifi");
 
-    /* 6. 加载词库（词池 PSRAM 化，2026-08-20）：按 MAX_WORDS 逐半降级
-     *    分配，与阅读器书缓冲共享 8MB Octal；全部分配失败（极小概率）
-     *    置空容量，词库空走待机页 */
-    for (int cap = MAX_WORDS; cap > 0 && !s_word_pool; cap /= 2) {
-        s_word_pool = (WordEntry *)heap_caps_malloc(
-            (size_t)cap * sizeof(WordEntry), MALLOC_CAP_SPIRAM);
-        if (s_word_pool) s_word_cap = cap;
-        else LOG_W("word pool alloc %d entries failed, halving", cap);
-    }
-    LOG_I("word pool: %d entries x %uB = %uKB PSRAM",
-          s_word_cap, (unsigned)sizeof(WordEntry),
-          (unsigned)((size_t)s_word_cap * sizeof(WordEntry) / 1024));
-
-    /* v1.3 T3.1：卡组扫描（无 manifest 退化为单默认卡组，开箱行为
-     * 不变）；装载走 load_active_words 三级递降链路（与切书共用） */
-    deck_manager_scan();
-    if (s_word_pool) {
-        int n = load_words_with_catalog();
-        LOG_I("word DB ready: %d entries", n);
-    } else {
-        LOG_W("word pool alloc failed, no word DB");
-    }
-#if INKWORD_DEMO_WORDS
-    /* 测试构建：内嵌词库也被排除时（如裁剪验证）的最后一道演示词 */
-    if (s_word_pool && word_parser_get_count() == 0) {
-        word_parser_load_demo(s_word_pool, s_word_cap);
-        catalog_build();    /* 演示词路径同建索引（装载尾部口径统一） */
-    }
-#endif
+    /* 6. 加载词库：词池 PSRAM 分配 + 卡组扫描 + 三级递降装载 +
+     *    演示词兑底（T1.3 迁 word_loader.c，行为零变化） */
+    word_loader_init();
 
     /* 6.5 本地学习状态（P1 错词本/收藏）：按卡组+词库规模锁定并从
      *     该组 NVS 键恢复（LR04）；必须先于 study_mode_init/首次渲染
@@ -2049,7 +1652,7 @@ void setup()
     if (word_parser_get_count() > 0 && study_mode_current() != MODE_READER) {
         study_mode_handle_action(1);    /* 渲染第一条 */
     } else {
-        ui_render_current();            /* READER 书页/占位页 或 待机页 */
+        page_router_render_top();      /* READER 书页/占位页 或 待机页 */
     }
     boot_stamp("first-frame");
 

@@ -21,6 +21,7 @@
 
 #include <stdbool.h>
 #include "button_handler.h"
+#include "page_router.h"  /* T1.4：page_t（g_menu_ui_page 导出） */
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +42,12 @@ bool menu_ui_is_active(void);
  * @brief 按键转发接口。菜单激活时由 main 按键回调调用（同步处理）。
  */
 void menu_ui_on_button(nav_key_t id, button_event_t event);
+
+/**
+ * @brief T1.4 页面协议实例（enter=menu_ui_enter；经 page_router_push
+ *        入栈，长按中键入口由 main.cpp 调用）。
+ */
+extern const page_t g_menu_ui_page;
 
 #ifdef __cplusplus
 }

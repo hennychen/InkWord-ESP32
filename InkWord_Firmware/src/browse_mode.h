@@ -11,16 +11,16 @@
  * 切闪卡）；RST 短按（或 SET）=返回上一级（词表→单元→年级→退出视图），
  * RST 长按=直接退出回闪卡（游标恢复进视图前位置）。
  *
- * 生命周期对齐临时视图第五先例：browse_mode_reset 由菜单 act 在
- * study_mode_enter_browse 成功后调用；渲染经 ui_render_current 的
- * MODE_BROWSE 分流（首帧全刷）；按键经 main.cpp on_button 转发
- * （长短按都要，RST 长按语义在键值区分）。
+ * 生命周期（T1.4 页面路由试点）：g_browse_page 经 page_router_push
+ * 入栈（enter=reset 清态，首帧 render_top 走栈顶 render）；按键经
+ * 栈顶 on_button 分发；退出/选词 seek 终结时 pop_if 归位。
  */
 #ifndef INKWORD_BROWSE_MODE_H
 #define INKWORD_BROWSE_MODE_H
 
 #include "button_handler.h"
 #include <stdbool.h>
+#include "page_router.h"  /* T1.4：page_t（g_browse_page 导出） */
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,11 +36,14 @@ typedef enum {
 /** 进入视图时清态（study_mode_enter_browse 成功后由菜单 act 调用） */
 void browse_mode_reset(void);
 
-/** 当前页全刷重绘（ui_render_current 的 MODE_BROWSE 分流入口） */
+/** 当前页全刷重绘（T1.4：render_top 的栈顶分发入口） */
 void browse_mode_render(void);
 
-/** 按键处理（main.cpp on_button 的 MODE_BROWSE 转发；长短按区分） */
+/** 按键处理（T1.4：页面路由栈顶分发；长短按区分） */
 void browse_mode_on_button(nav_key_t id, button_event_t event);
+
+/** T1.4 页面协议实例（enter=reset；经 page_router_push 入栈，试点） */
+extern const page_t g_browse_page;
 
 #ifdef __cplusplus
 }
