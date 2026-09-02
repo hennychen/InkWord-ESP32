@@ -90,6 +90,9 @@
 
 #include <string.h>
 #include <stdio.h>
+#if INKWORD_GOLDEN_FRAME
+#include "selftest_frame.h" /* T2.2 demo env 黄金帧自检（跑完挂起不进 loop） */
+#endif
 
 static const char *TAG = "MAIN";
 #define FW_VERSION  "1.0.0"
@@ -1661,6 +1664,12 @@ void setup()
 
     LOG_I("=== InkWord ready ===");
     boot_stamp("ready");
+
+#if INKWORD_GOLDEN_FRAME
+    /* T2.2：demo env 自检序列（首帧已绘、词库/字体/后台任务就绪后；
+     * 跑完内部挂起，不进 loop） */
+    selftest_frame_run();
+#endif
 }
 
 /* Arduino loop - 主循环（T0.2/T0.3 事件驱动核心：按键队列消费 +

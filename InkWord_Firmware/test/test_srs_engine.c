@@ -127,6 +127,12 @@ extern void test_epd_geom_rect_four_dirs(void);
 extern void test_epd_geom_rect_clamp(void);
 extern void test_epd_geom_palette_degrade(void);
 
+/* 黄金帧 diff 灵敏度（T2.2 selftest_diff 纯函数层）：同 runner 挂载 */
+extern void test_selftest_diff_identical(void);
+extern void test_selftest_diff_single_byte(void);
+extern void test_selftest_diff_multi_first_offset(void);
+extern void test_selftest_diff_null_off_safe(void);
+
 /* poem 默写数据通路（v1.4 T4.4）：同 runner 挂载 */
 extern void test_word_parser_poem_dictation_fields(void);
 
@@ -217,5 +223,9 @@ int main(void)
     RUN_TEST(test_catalog_overflow_merges_to_fallback);
     RUN_TEST(test_catalog_rebuild_idempotent);
     RUN_TEST(test_catalog_utf8_truncation_safe);
+    RUN_TEST(test_selftest_diff_identical);
+    RUN_TEST(test_selftest_diff_single_byte);
+    RUN_TEST(test_selftest_diff_multi_first_offset);
+    RUN_TEST(test_selftest_diff_null_off_safe);
     return UNITY_END();
 }

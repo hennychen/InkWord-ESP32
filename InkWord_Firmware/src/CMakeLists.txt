@@ -66,6 +66,9 @@ idf_component_register(
         "voice_search.c"     # AI 语音查词四态状态机（MODE_VOICE 临时视图：录音→上传→候选）
         "study_mode_machine.c"
         "page_router.c"     # T1.4 页面路由：base+覆盖层栈（page_t 协议，双轨同步）
+        "selftest_diff.c"   # T2.2 黄金帧 diff 纯函数（native-test 覆盖灵敏度）
+        "selftest_frame.c"  # T2.2 黄金帧自检（INKWORD_GOLDEN_FRAME 门控，
+                            # 生产 env 空展开；双轨同步占位）
         "layout_profile.c"   # P5+Phase5：L4 布局档位层（档位→字库级映射）
         "standby_page.c"
         "cjk_font.c"
