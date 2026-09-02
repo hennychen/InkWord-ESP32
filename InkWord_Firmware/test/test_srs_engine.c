@@ -120,6 +120,13 @@ extern void test_quiz_true_false(void);
 extern void test_card_layout_known_types(void);
 extern void test_card_layout_fallbacks(void);
 
+/* 显示链路几何真值表（T2.1 epd_geom 纯函数层）：同 runner 挂载 */
+extern void test_epd_geom_transpose_four_dirs(void);
+extern void test_epd_geom_transpose_roundtrip(void);
+extern void test_epd_geom_rect_four_dirs(void);
+extern void test_epd_geom_rect_clamp(void);
+extern void test_epd_geom_palette_degrade(void);
+
 /* poem 默写数据通路（v1.4 T4.4）：同 runner 挂载 */
 extern void test_word_parser_poem_dictation_fields(void);
 
@@ -190,6 +197,12 @@ int main(void)
     RUN_TEST(test_exam_unset_returns_zero);
     RUN_TEST(test_exam_set_and_countdown);
     RUN_TEST(test_exam_urgent_boundary);
+    /* T2.1：显示链路几何真值表（epd_geom 纯函数层） */
+    RUN_TEST(test_epd_geom_transpose_four_dirs);
+    RUN_TEST(test_epd_geom_transpose_roundtrip);
+    RUN_TEST(test_epd_geom_rect_four_dirs);
+    RUN_TEST(test_epd_geom_rect_clamp);
+    RUN_TEST(test_epd_geom_palette_degrade);
     RUN_TEST(test_exam_expires_to_zero);
     RUN_TEST(test_exam_clear);
     RUN_TEST(test_exam_refused_when_clock_unsynced);

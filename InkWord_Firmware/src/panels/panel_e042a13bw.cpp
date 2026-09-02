@@ -37,6 +37,7 @@
  */
 #include "../epd_panel.h"
 #include "../gpio_config.h"
+#include "epd_bus.h"    /* T1.1：SPI 原语/等待收敛层 */
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -52,54 +53,6 @@ static bool s_ready = false;   /* init 完成（power_off/deep_sleep 归零） *
  * 低——若出现花屏/乱码回退 4000000） */
 static const uint32_t k_spi_hz = 8000000;
 
-/* —— SPI 底层（与三色兄弟屏同源：逐字节 transfer，铁律不可换 writeBytes） —— */
-static void epd_cmd(uint8_t c)
-{
-    SPI.beginTransaction(SPISettings(k_spi_hz, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, LOW);    /* DC=0 命令 */
-    SPI.transfer(c);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
-
-static void epd_dat(uint8_t d)
-{
-    SPI.beginTransaction(SPISettings(k_spi_hz, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, HIGH);   /* DC=1 数据 */
-    SPI.transfer(d);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
-
-/* 批量写 RAM：SPI.writeBytes DMA 块传输（2026-08-30 实证定稿：
- * 8MHz + FPC 排线 + 当前 core 显示正常——三色版“不落地”铁律
- * 局限于其 1MHz 杜邦线/旧 core 场景；DMA 后 RAM 传输 240→
- * ~80ms，局刷总时长 ~1.3s。若未来花屏回退 transfer 逐字节） */
-#define RAM_WRITE_DMA 1
-static void epd_write_buf(const uint8_t *p, size_t n)
-{
-    SPI.beginTransaction(SPISettings(k_spi_hz, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, HIGH);
-#if RAM_WRITE_DMA
-    SPI.writeBytes(p, n);         /* DMA 块传输（TX-only 快路径） */
-#else
-    for (size_t i = 0; i < n; i++) SPI.transfer(p[i]);
-#endif
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
-
-/* 等 BUSY 回空闲（单段，init/关电路径用；SSD16xx HIGH=忙） */
-static void panel_wait_idle(uint32_t timeout_ms)
-{
-    const uint32_t t0 = millis();
-    while (digitalRead(EPD_BUSY_PIN) == g_panel_e042a13bw.busy_level &&
-           millis() - t0 < timeout_ms)
-        delay(10);
-}
 
 /* 全屏 RAM 窗口 + 光标归零（写整屏帧前必调）：窗口局刷会残留小
  * 0x44/0x45 窗口，地址计数器被窗口约束行末回卷——若不重设，整屏
@@ -107,36 +60,15 @@ static void panel_wait_idle(uint32_t timeout_ms)
  * 显示黑点花屏（2026-08-30 窗口局刷实验真机实证） */
 static void set_full_window(void)
 {
-    epd_cmd(0x44);
-    epd_dat(0x00);
-    epd_dat((uint8_t)(g_panel_e042a13bw.panel_w / 8 - 1));
-    epd_cmd(0x45);
-    epd_dat(0x00); epd_dat(0x00);
-    epd_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) & 0xFF));
-    epd_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) >> 8));
-    epd_cmd(0x4E); epd_dat(0x00);
-    epd_cmd(0x4F); epd_dat(0x00); epd_dat(0x00);
-}
-
-/* 0x20 刷新序列后 BUSY 两段式等待（与三色兄弟屏同结构）：
- *   ① 等 BUSY 进入忙电平（≤300ms，容忍命令置位延迟）；
- *   ② 等 BUSY 释放（≤busy_timeout_ms，BW 波形应比三色 16s 快）。
- * profile 兼作「命令是否达 COG」现场判据 */
-static void wait_refresh_done(void)
-{
-    const uint32_t t0 = millis();
-    while (digitalRead(EPD_BUSY_PIN) != g_panel_e042a13bw.busy_level &&
-           millis() - t0 < 300)
-        delay(2);
-    const bool asserted =
-        digitalRead(EPD_BUSY_PIN) == g_panel_e042a13bw.busy_level;
-    const uint32_t t1 = millis();
-    while (digitalRead(EPD_BUSY_PIN) == g_panel_e042a13bw.busy_level &&
-           millis() - t1 < g_panel_e042a13bw.busy_timeout_ms)
-        delay(10);
-    Serial.printf("[E042BW-DIAG] 0x20 busy: %s @%ums, active %ums\n",
-                  asserted ? "HIGH" : "never",
-                  (unsigned)(millis() - t0), (unsigned)(millis() - t1));
+    bus_cmd(0x44);
+    bus_dat(0x00);
+    bus_dat((uint8_t)(g_panel_e042a13bw.panel_w / 8 - 1));
+    bus_cmd(0x45);
+    bus_dat(0x00); bus_dat(0x00);
+    bus_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) & 0xFF));
+    bus_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) >> 8));
+    bus_cmd(0x4E); bus_dat(0x00);
+    bus_cmd(0x4F); bus_dat(0x00); bus_dat(0x00);
 }
 
 static int panel_init(void)
@@ -157,42 +89,42 @@ static int panel_init(void)
     delay(g_panel_e042a13bw.rst_pulse_ms);
     digitalWrite(EPD_RESET_PIN, HIGH);
     delay(10);
-    panel_wait_idle(5000);            /* 复位后 boot 自检（忙→闲） */
+    bus_wait_idle(&g_panel_e042a13bw, 5000);            /* 复位后 boot 自检（忙→闲） */
 
-    epd_cmd(0x12);                    /* SWRESET：寄存器回 POR，VCOM 载 OTP */
-    panel_wait_idle(5000);
+    bus_cmd(0x12);                    /* SWRESET：寄存器回 POR，VCOM 载 OTP */
+    bus_wait_idle(&g_panel_e042a13bw, 5000);
 
     /* —— 官方初始代码（与三色版相同核心，SSD1619 家族共用）—— */
-    epd_cmd(0x74); epd_dat(0x54);     /* Set Analog Block Control */
-    epd_cmd(0x7E); epd_dat(0x3B);     /* Set Digital Block Control */
-    epd_cmd(0x0C);                    /* Softstart：四段软启动 */
-    epd_dat(0x8E); epd_dat(0x8C); epd_dat(0x85); epd_dat(0x3F);
-    epd_cmd(0x2B); epd_dat(0x04); epd_dat(0x63);   /* ACVCOM */
-    epd_cmd(0x01);                    /* Driver Output：300 gate (0x12B) */
-    epd_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) & 0xFF));
-    epd_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) >> 8));
-    epd_dat(0x00);                    /* 扫描方向 B[2:0]=0 */
-    epd_cmd(0x3A); epd_dat(0x2C);     /* dummy line period = 0x2C */
-    epd_cmd(0x3B); epd_dat(0x0A);     /* gate line width = 0x0A */
-    epd_cmd(0x3C); epd_dat(0x05);     /* BorderWaveform */
-    epd_cmd(0x18); epd_dat(0x80);     /* 内置温度传感器自动模式 */
-    epd_cmd(0x21); epd_dat(0x00);     /* Display Update Control（BW 特有，
+    bus_cmd(0x74); bus_dat(0x54);     /* Set Analog Block Control */
+    bus_cmd(0x7E); bus_dat(0x3B);     /* Set Digital Block Control */
+    bus_cmd(0x0C);                    /* Softstart：四段软启动 */
+    bus_dat(0x8E); bus_dat(0x8C); bus_dat(0x85); bus_dat(0x3F);
+    bus_cmd(0x2B); bus_dat(0x04); bus_dat(0x63);   /* ACVCOM */
+    bus_cmd(0x01);                    /* Driver Output：300 gate (0x12B) */
+    bus_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) & 0xFF));
+    bus_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) >> 8));
+    bus_dat(0x00);                    /* 扫描方向 B[2:0]=0 */
+    bus_cmd(0x3A); bus_dat(0x2C);     /* dummy line period = 0x2C */
+    bus_cmd(0x3B); bus_dat(0x0A);     /* gate line width = 0x0A */
+    bus_cmd(0x3C); bus_dat(0x05);     /* BorderWaveform */
+    bus_cmd(0x18); bus_dat(0x80);     /* 内置温度传感器自动模式 */
+    bus_cmd(0x21); bus_dat(0x00);     /* Display Update Control（BW 特有，
                                        * 三色版无此步；Waveshare BW demo
                                        * 0x21/0x00 为 BW 波形温度加载路径） */
-    epd_cmd(0x11); epd_dat(0x03);     /* 数据入口 X+ Y+ */
+    bus_cmd(0x11); bus_dat(0x03);     /* 数据入口 X+ Y+ */
 
     /* RAM 窗口：X 0..width/8-1，Y 0..height-1（400x300 → 0x31 / 0x12B） */
-    epd_cmd(0x44);
-    epd_dat(0x00);
-    epd_dat((uint8_t)(g_panel_e042a13bw.panel_w / 8 - 1));
-    epd_cmd(0x45);
-    epd_dat(0x00); epd_dat(0x00);
-    epd_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) & 0xFF));
-    epd_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) >> 8));
+    bus_cmd(0x44);
+    bus_dat(0x00);
+    bus_dat((uint8_t)(g_panel_e042a13bw.panel_w / 8 - 1));
+    bus_cmd(0x45);
+    bus_dat(0x00); bus_dat(0x00);
+    bus_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) & 0xFF));
+    bus_dat((uint8_t)((g_panel_e042a13bw.panel_h - 1) >> 8));
 
-    epd_cmd(0x4E); epd_dat(0x00);     /* X 计数器归零 */
-    epd_cmd(0x4F); epd_dat(0x00); epd_dat(0x00);   /* Y 计数器归零 */
-    panel_wait_idle(5000);
+    bus_cmd(0x4E); bus_dat(0x00);     /* X 计数器归零 */
+    bus_cmd(0x4F); bus_dat(0x00); bus_dat(0x00);   /* Y 计数器归零 */
+    bus_wait_idle(&g_panel_e042a13bw, 5000);
 
     s_ready = true;
     return 0;
@@ -209,16 +141,16 @@ static int do_refresh(const uint8_t *bw_plane)
 
     set_full_window();                /* 窗口显式重设：防局刷窗口残留 */
 
-    epd_cmd(0x24);
-    epd_write_buf(bw_plane, plane_bytes);
+    bus_cmd(0x24);
+    bus_dat_stream(bw_plane, plane_bytes);
 
-    epd_cmd(0x22); epd_dat(0xF7);     /* 全刷序列（实验 A 2026-08-30：0xC7 实测
+    bus_cmd(0x22); bus_dat(0xF7);     /* 全刷序列（实验 A 2026-08-30：0xC7 实测
                                        * BUSY 仅 230ms 空转无波形（Waveshare BW
                                        * demo 的 0xC7 适用 2020+ 批次 OTP）；
                                        * 换三色兄弟屏实证 0xF7（含平面驱动位
                                        * bit4/5，本屏 2017 批次同族 OTP） */
-    epd_cmd(0x20);                    /* Master Activation */
-    wait_refresh_done();              /* BW 波形应比三色 16s 快，实测回填 */
+    bus_cmd(0x20);                    /* Master Activation */
+    bus_wait_busy(&g_panel_e042a13bw, g_panel_e042a13bw.busy_timeout_ms);              /* BW 波形应比三色 16s 快，实测回填 */
     return 0;
 }
 
@@ -239,11 +171,11 @@ static int panel_write_full(const uint8_t *frame)
         const size_t plane_bytes =
             (size_t)(g_panel_e042a13bw.panel_w / 8) * g_panel_e042a13bw.panel_h;
         set_full_window();            /* 窗口显式重设：防局刷窗口残留 */
-        epd_cmd(0x24);
-        for (size_t i = 0; i < plane_bytes; i++) epd_dat(white);
-        epd_cmd(0x22); epd_dat(0xF7); /* 同 do_refresh：实验 A 0xF7 */
-        epd_cmd(0x20);
-        wait_refresh_done();
+        bus_cmd(0x24);
+        for (size_t i = 0; i < plane_bytes; i++) bus_dat(white);
+        bus_cmd(0x22); bus_dat(0xF7); /* 同 do_refresh：实验 A 0xF7 */
+        bus_cmd(0x20);
+        bus_wait_busy(&g_panel_e042a13bw, g_panel_e042a13bw.busy_timeout_ms);
         return 0;
     }
     return panel_full_refresh(frame);
@@ -362,36 +294,36 @@ static int panel_partial(const uint8_t *prev, const uint8_t *new_, uint8_t passe
 
     /* v8 = v6 两段式回退定稿（单激活多相 spec 与实测不符，见上）：
      * 段1 (prev→全白) 归白清残影，段2 (全白→new) 出黑锁死 */
-    epd_cmd(0x21); epd_dat(0x00); epd_dat(0x00);
+    bus_cmd(0x21); bus_dat(0x00); bus_dat(0x00);
     const size_t plane_bytes = (size_t)wb * ph;
 
     /* 段1：归白（短 LUT）。0x26=prev（当前内容），0x24=全 0xFF */
-    epd_cmd(0x32);
-    epd_write_buf(k_lut_white, sizeof(k_lut_white));
+    bus_cmd(0x32);
+    bus_dat_stream(k_lut_white, sizeof(k_lut_white));
     set_full_window();
-    epd_cmd(0x26);
-    epd_write_buf(prev, plane_bytes);
-    epd_cmd(0x24);
-    for (size_t i = 0; i < plane_bytes; i++) epd_dat(0xFF);
-    epd_cmd(0x22); epd_dat(0xEC);   /* CLK+Analog+LoadLUT+Mode2+
+    bus_cmd(0x26);
+    bus_dat_stream(prev, plane_bytes);
+    bus_cmd(0x24);
+    for (size_t i = 0; i < plane_bytes; i++) bus_dat(0xFF);
+    bus_cmd(0x22); bus_dat(0xEC);   /* CLK+Analog+LoadLUT+Mode2+
                                    * DISPLAY（去温度位，寄存器 LUT
                                    * 无需 OTP 温度补偿） */
-    epd_cmd(0x20);
-    wait_refresh_done();
+    bus_cmd(0x20);
+    bus_wait_busy(&g_panel_e042a13bw, g_panel_e042a13bw.busy_timeout_ms);
 
     /* 段2：出新（长 LUT 锁死黑字，两段间重写 0x32——RAM 写命令
      * 不破坏 LUT 寄存器，激活时 0xEC bit4 重新加载） */
     for (uint8_t p = 0; p < passes; p++) {
-        epd_cmd(0x32);
-        epd_write_buf(k_lut_dark, sizeof(k_lut_dark));
+        bus_cmd(0x32);
+        bus_dat_stream(k_lut_dark, sizeof(k_lut_dark));
         set_full_window();
-        epd_cmd(0x26);
-        for (size_t i = 0; i < plane_bytes; i++) epd_dat(0xFF);
-        epd_cmd(0x24);
-        epd_write_buf(new_, plane_bytes);
-        epd_cmd(0x22); epd_dat(0xEC);
-        epd_cmd(0x20);
-        wait_refresh_done();            /* 实测段共 ~1.29s */
+        bus_cmd(0x26);
+        for (size_t i = 0; i < plane_bytes; i++) bus_dat(0xFF);
+        bus_cmd(0x24);
+        bus_dat_stream(new_, plane_bytes);
+        bus_cmd(0x22); bus_dat(0xEC);
+        bus_cmd(0x20);
+        bus_wait_busy(&g_panel_e042a13bw, g_panel_e042a13bw.busy_timeout_ms);            /* 实测段共 ~1.29s */
     }
     return 0;
 }
@@ -401,9 +333,9 @@ static void panel_power_off(void)
     /* SSD16xx 标准关电序列（与三色版相同）：0x22/0xC3 + 0x20。
      * 完成后归零 s_ready —— 下次刷新完整重配（无状态铁律） */
     if (!s_ready) return;
-    epd_cmd(0x22); epd_dat(0xC3);
-    epd_cmd(0x20);
-    panel_wait_idle(g_panel_e042a13bw.busy_timeout_ms);
+    bus_cmd(0x22); bus_dat(0xC3);
+    bus_cmd(0x20);
+    bus_wait_idle(&g_panel_e042a13bw, g_panel_e042a13bw.busy_timeout_ms);
     s_ready = false;
 }
 
@@ -411,7 +343,7 @@ static void panel_deep_sleep(void)
 {
     /* Waveshare Sleep 一比一：0x10 check 0x01 深睡（~µA 级），
      * RST 硬复位唤醒 + panel_init 重初始化 */
-    epd_cmd(0x10); epd_dat(0x01);
+    bus_cmd(0x10); bus_dat(0x01);
     s_ready = false;
 }
 
@@ -464,5 +396,6 @@ const epd_panel_desc_t g_panel_e042a13bw = {
         .deep_sleep   = panel_deep_sleep,
         .probe        = NULL,       /* SSD1619 版本读 0x2F→0x01 可作 probe */
         .write_planes = panel_write_planes,
+        .diag         = bus_diag_ssd16, /* T1.8：SSD16xx 0x2F 双读 */
     },
 };

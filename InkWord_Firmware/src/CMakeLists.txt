@@ -10,7 +10,9 @@ idf_component_register(
     SRCS
         "debug_log.c"
         "epd_driver.cpp"
+        "epd_geom.c"       # T2.1：几何纯函数层（转置/窗口/调色板，native-test，双轨同步）
         "epd_panel.c"
+        "panels/epd_bus.cpp"                  # T1.1：L0 公共 SPI 原语层（cmd/dat/流式/等待/判活收敛，双轨同步）
         "panels/panel_depg0370_uc8253.cpp"
         "panels/panel_e042a13_ssd1619.cpp"   # Phase 6：4.2" 三色面板单元（SSD1619 手写序列，与 arduino 自动递归编译双轨同步）
         "panels/panel_wf0270_ssd1680.cpp"    # 2.7" 三色面板单元（SSD1680 手写序列，维峰 WF0270，双轨同步）
@@ -52,6 +54,7 @@ idf_component_register(
         "srs_engine.c"
         "learning_state.c"
         "quiz_session.c"     # v1.2 T2.1：四选一出题核心（纯 C，native-test，泛化回调）
+        "quiz_ui.c"          # T1.2：快速测验视图（自 main.cpp 迁出，双轨同步）
         "daily_plan.c"       # v1.2 T2.4：每日目标量与今日任务判据（NVS set_daily）
         "settings_ui.c"      # v1.2 T2.5：设置页覆盖层 + 发音/震动/字号门控（set_*）
         "deck_manager.c"     # v1.3 T3.1：词书卡组（manifest 扫描/活跃切换，rd_* 隔离配套）

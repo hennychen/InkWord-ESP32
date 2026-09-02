@@ -53,6 +53,8 @@
  */
 #include "../epd_panel.h"
 #include "../gpio_config.h"
+#include "epd_bus.h"    /* T1.1：SPI 原语/等待/判活收敛层（原六面板
+                      * 同构底层迁出，陷阱注释见彼处） */
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -61,127 +63,6 @@
 extern const epd_panel_desc_t g_panel_wft0290;
 
 static bool s_ready = false;   /* uc_init 完成（power_off/deep_sleep 归零） */
-
-/* —— SPI 底层（panel_wf0270_ssd1680 同款实证路径：transfer 逐字节
- * 连发，SPI.writeBytes 在 ESP32-S3 Arduino core 有 RAM 不落地陷阱，
- * 禁用；epd_driver_init 已 SPI.begin，此处事务直发）—— */
-static void epd_cmd(uint8_t c)
-{
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, LOW);    /* DC=0 命令 */
-    SPI.transfer(c);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
-
-static void epd_dat(uint8_t d)
-{
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, HIGH);   /* DC=1 数据 */
-    SPI.transfer(d);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
-
-static void epd_write_buf(const uint8_t *p, size_t n)
-{
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, HIGH);
-    for (size_t i = 0; i < n; i++) SPI.transfer(p[i]);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
-
-/* 等 BUSY 回空闲（UC 家族 LOW=忙，回 HIGH 空闲） */
-static void wait_idle_level(uint8_t busy_level, uint32_t timeout_ms)
-{
-    const uint32_t t0 = millis();
-    while (digitalRead(EPD_BUSY_PIN) == busy_level &&
-           millis() - t0 < timeout_ms)
-        delay(10);
-}
-
-/* 0x12 刷新后 BUSY 两段式等待（诊断 + 修正，DEPG0370/WF0270 bring-up
- * 模式）：① 等 BUSY 进入忙电平（≤300ms 容忍命令置位延迟）；
- * ② 等释放（≤busy_timeout_ms）。busy 从未置位 = 0x12 未达 COG
- * （SPI 硬件排查判据）。忙时长偏离 ~3.4s = 波形/供电异常信号。 */
-static void wait_refresh_done(void)
-{
-    const uint32_t t0 = millis();
-    while (digitalRead(EPD_BUSY_PIN) != g_panel_wft0290.busy_level &&
-           millis() - t0 < 300)
-        delay(2);
-    const bool asserted =
-        digitalRead(EPD_BUSY_PIN) == g_panel_wft0290.busy_level;
-    const uint32_t t_enter = millis() - t0;   /* 置忙延迟（打印前捕获，
-                                                * 二轮版此处取值口径有误） */
-    const uint32_t t1 = millis();
-    while (digitalRead(EPD_BUSY_PIN) == g_panel_wft0290.busy_level &&
-           millis() - t1 < g_panel_wft0290.busy_timeout_ms)
-        delay(10);
-    Serial.printf("[W29-DIAG] 0x12 busy: %s @%ums, active %ums\n",
-                  asserted ? "LOW" : "never",
-                  (unsigned)t_enter, (unsigned)(millis() - t1));
-}
-
-/* —— bring-up 通电自检（SOP 步 1，三轮收敛为换屏/重插 FPC 验证）——
- * 判据（UC8151D 实锤口径）：RST 脉冲后 BUSY 忙→闲往返 = COG 在位；
- * 空闲电平 HIGH = UC 家族。异常 → fail-safe -1。 */
-static int detect_alive(void)
-{
-    pinMode(EPD_RESET_PIN, OUTPUT);
-    pinMode(EPD_CS_PIN, OUTPUT);
-    pinMode(EPD_DC_PIN, OUTPUT);
-    pinMode(EPD_BUSY_PIN, INPUT);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    digitalWrite(EPD_DC_PIN, LOW);
-
-    /* RST：HIGH 200ms → LOW rst_pulse → HIGH（三轮实测应答良好口径） */
-    digitalWrite(EPD_RESET_PIN, HIGH);
-    delay(200);
-    digitalWrite(EPD_RESET_PIN, LOW);
-    delay(10);
-    digitalWrite(EPD_RESET_PIN, HIGH);
-
-    /* 证据①：RST 释放后 5s 窗口观察 BUSY 忙→闲往返（COG boot 自检） */
-    const uint32_t t0 = millis();
-    bool saw_high = false, saw_low = false;
-    while (millis() - t0 < 5000 && !(saw_high && saw_low)) {
-        if (digitalRead(EPD_BUSY_PIN)) saw_high = true;
-        else saw_low = true;
-        delay(10);
-    }
-    const bool cog_alive = saw_high && saw_low;
-
-    /* 证据②：静置 300ms 后采样 5 次取众数（空闲 HIGH = UC 家族） */
-    delay(300);
-    int high_cnt = 0;
-    for (int i = 0; i < 5; i++) {
-        if (digitalRead(EPD_BUSY_PIN)) high_cnt++;
-        delay(10);
-    }
-
-    Serial.printf("[W29-DIAG] RST pulse: H%s L%s (alive=%d) | "
-                  "BUSY idle: %s (%d/5 HIGH)\n",
-                  saw_high ? "+" : "-", saw_low ? "+" : "-",
-                  cog_alive, high_cnt >= 3 ? "HIGH" : "LOW", high_cnt);
-
-    if (!cog_alive) {
-        Serial.printf("[W29-DIAG] COG no answer: check FPC seat / "
-                      "VCI 3.3V / BS=LOW(4-line SPI) wiring\n");
-        return -1;
-    }
-    if (high_cnt < 3) {
-        Serial.printf("[W29-DIAG] idle LOW (SSD16xx traits) — NOT this "
-                      "panel's family (UC8151D 实锤 idle HIGH); check "
-                      "FPC seat / wiring\n");
-        return -1;
-    }
-    return 0;
-}
 
 /* —— UC8151D init（GxEPD2_290_T5D._InitDisplay 忠实）——
  * demo 板 EN 脚（VCI 使能）为 DEPG demo 板专属，本驱动板 VCI 直供。 */
@@ -192,23 +73,23 @@ static int uc_init(void)
     digitalWrite(EPD_RESET_PIN, LOW);
     delay(g_panel_wft0290.rst_pulse_ms);
     digitalWrite(EPD_RESET_PIN, HIGH);
-    wait_idle_level(g_panel_wft0290.busy_level, 5000);  /* boot 自检 */
+    bus_wait_idle(&g_panel_wft0290, 5000);  /* boot 自检 */
 
     /* PSR：单字节 0x1F = OTP LUT + 128x296 + 默认扫描（UC8253 的
      * 双字节 PSR 在 UC8151D 上第二字节会被误锁存，二轮花屏根因①） */
-    epd_cmd(0x00);
-    epd_dat(0x1F);
+    bus_cmd(0x00);
+    bus_dat(0x1F);
 
     /* TRES：分辨率显式设置 source=128 / gate=296（二轮花屏根因②，
      * UC8253 demo 靠 OTP 默认不发的命令，UC8151D 必发） */
-    epd_cmd(0x61);
-    epd_dat((uint8_t)g_panel_wft0290.panel_w);               /* 128 */
-    epd_dat((uint8_t)(g_panel_wft0290.panel_h >> 8));        /* 296 高位 */
-    epd_dat((uint8_t)(g_panel_wft0290.panel_h & 0xFF));      /* 296 低位 */
+    bus_cmd(0x61);
+    bus_dat((uint8_t)g_panel_wft0290.panel_w);               /* 128 */
+    bus_dat((uint8_t)(g_panel_wft0290.panel_h >> 8));        /* 296 高位 */
+    bus_dat((uint8_t)(g_panel_wft0290.panel_h & 0xFF));      /* 296 低位 */
 
     /* CDI：VCOM 与数据间隔（全刷边框白，GxEPD2 原注释 WBmode:VBDF 17） */
-    epd_cmd(0x50);
-    epd_dat(0x97);
+    bus_cmd(0x50);
+    bus_dat(0x97);
 
     s_ready = true;
     return 0;
@@ -224,22 +105,22 @@ static int uc_refresh_bw(const uint8_t *frame /* NULL = 全白 */)
     const size_t plane_bytes =
         (size_t)(g_panel_wft0290.panel_w / 8) * g_panel_wft0290.panel_h;
 
-    epd_cmd(0x04);                     /* Power on（GxEPD2 先上电再写 RAM） */
-    wait_idle_level(g_panel_wft0290.busy_level,
+    bus_cmd(0x04);                     /* Power on（GxEPD2 先上电再写 RAM） */
+    bus_wait_idle(&g_panel_wft0290,
                     g_panel_wft0290.busy_timeout_ms);
 
-    epd_cmd(0x13);                     /* DTM1 新帧（地址计数器 RST 归零） */
+    bus_cmd(0x13);                     /* DTM1 新帧（地址计数器 RST 归零） */
     if (frame) {
-        epd_write_buf(frame, plane_bytes);
+        bus_dat_stream(frame, plane_bytes);
     } else {
-        for (size_t i = 0; i < plane_bytes; i++) epd_dat(0xFF);  /* 白 */
+        for (size_t i = 0; i < plane_bytes; i++) bus_dat(0xFF);  /* 白 */
     }
 
-    epd_cmd(0x12);                     /* display refresh（无哑字节） */
-    wait_refresh_done();
+    bus_cmd(0x12);                     /* display refresh（无哑字节） */
+    bus_wait_busy(&g_panel_wft0290, g_panel_wft0290.busy_timeout_ms);
 
-    epd_cmd(0x02);                     /* Power off */
-    wait_idle_level(g_panel_wft0290.busy_level, 1000);
+    bus_cmd(0x02);                     /* Power off */
+    bus_wait_idle(&g_panel_wft0290, 1000);
     return 0;
 }
 
@@ -319,26 +200,26 @@ static int uc_init_part(void)
     digitalWrite(EPD_RESET_PIN, LOW);
     delay(g_panel_wft0290.rst_pulse_ms);
     digitalWrite(EPD_RESET_PIN, HIGH);
-    wait_idle_level(g_panel_wft0290.busy_level, 5000);
+    bus_wait_idle(&g_panel_wft0290, 5000);
 
-    epd_cmd(0x00);
-    epd_dat(0xBF);                    /* REG LUT（bit5=1）+ 128x296 */
-    epd_cmd(0x61);
-    epd_dat((uint8_t)g_panel_wft0290.panel_w);
-    epd_dat((uint8_t)(g_panel_wft0290.panel_h >> 8));
-    epd_dat((uint8_t)(g_panel_wft0290.panel_h & 0xFF));
-    epd_cmd(0x82);                    /* VCOM_DC setting */
-    epd_dat(0x08);
-    epd_cmd(0x50);
-    epd_dat(0x17);                    /* CDI 局刷档（GxEPD 原注 VBDF 17） */
-    epd_cmd(0x20); epd_write_buf(LUT_VCOM_DC, sizeof(LUT_VCOM_DC));
-    epd_cmd(0x21); epd_write_buf(LUT_WW, sizeof(LUT_WW));
-    epd_cmd(0x22); epd_write_buf(LUT_BW, sizeof(LUT_BW));
-    epd_cmd(0x23); epd_write_buf(LUT_WB, sizeof(LUT_WB));
-    epd_cmd(0x24); epd_write_buf(LUT_BB, sizeof(LUT_BB));
+    bus_cmd(0x00);
+    bus_dat(0xBF);                    /* REG LUT（bit5=1）+ 128x296 */
+    bus_cmd(0x61);
+    bus_dat((uint8_t)g_panel_wft0290.panel_w);
+    bus_dat((uint8_t)(g_panel_wft0290.panel_h >> 8));
+    bus_dat((uint8_t)(g_panel_wft0290.panel_h & 0xFF));
+    bus_cmd(0x82);                    /* VCOM_DC setting */
+    bus_dat(0x08);
+    bus_cmd(0x50);
+    bus_dat(0x17);                    /* CDI 局刷档（GxEPD 原注 VBDF 17） */
+    bus_cmd(0x20); bus_dat_stream(LUT_VCOM_DC, sizeof(LUT_VCOM_DC));
+    bus_cmd(0x21); bus_dat_stream(LUT_WW, sizeof(LUT_WW));
+    bus_cmd(0x22); bus_dat_stream(LUT_BW, sizeof(LUT_BW));
+    bus_cmd(0x23); bus_dat_stream(LUT_WB, sizeof(LUT_WB));
+    bus_cmd(0x24); bus_dat_stream(LUT_BB, sizeof(LUT_BB));
 
-    epd_cmd(0x04);                    /* Power on */
-    wait_idle_level(g_panel_wft0290.busy_level,
+    bus_cmd(0x04);                    /* Power on */
+    bus_wait_idle(&g_panel_wft0290,
                     g_panel_wft0290.busy_timeout_ms);
     return 0;
 }
@@ -350,15 +231,17 @@ static int panel_init(void)
     /* bring-up 第三轮：通电自检 → UC8151D init + 白屏试刷（屏白 =
      * 判定 + TRES 序列双实锤，UI 全刷随即接管）；自检异常 →
      * fail-safe 返回 -1（epd_driver_init LOG_E 退出） */
-    if (detect_alive() != 0) return -1;
+    if (bus_detect_alive(&g_panel_wft0290) != 0) return -1;
 
     if (uc_init() != 0) return -1;
 
-    Serial.printf("[W29-DIAG] first white refresh (128x296 BW)...\n");
+    DIAG_LOG("first white refresh (128x296 BW)...");
+    #if INKWORD_EPD_DIAG
     const uint32_t t0 = millis();
     uc_refresh_bw(NULL);               /* 白屏试刷 */
-    Serial.printf("[W29-DIAG] white refresh took %ums (fill desc.full_ms)\n",
-                  (unsigned)(millis() - t0));
+    DIAG_LOG("white refresh took %ums (fill desc.full_ms)",
+             (unsigned)(millis() - t0));
+    #endif
     return 0;
 }
 
@@ -398,21 +281,24 @@ static int panel_partial(const uint8_t *prev, const uint8_t *new_,
 
     if (uc_init_part() != 0) return -1;
 
-    epd_cmd(0x10);                    /* previous plane（整屏） */
-    epd_write_buf(prev, plane_bytes);
-    epd_cmd(0x13);                    /* current plane（整屏） */
-    epd_write_buf(new_, plane_bytes);
+    bus_cmd(0x10);                    /* previous plane（整屏） */
+    bus_dat_stream(prev, plane_bytes);
+    bus_cmd(0x13);                    /* current plane（整屏） */
+    bus_dat_stream(new_, plane_bytes);
 
+    /* passes 循环计时（诊断专用，生产态不编入） */
+#if INKWORD_EPD_DIAG
     const uint32_t t0 = millis();
+#endif
     for (uint8_t p = 0; p < passes; p++) {
-        epd_cmd(0x12);
-        wait_refresh_done();
+        bus_cmd(0x12);
+        bus_wait_busy(&g_panel_wft0290, g_panel_wft0290.busy_timeout_ms);
     }
-    Serial.printf("[W29-DIAG] partial %ux0x12 took %ums\n",
-                  passes, (unsigned)(millis() - t0));
+    DIAG_LOG("partial %ux0x12 took %ums",
+             passes, (unsigned)(millis() - t0));
 
-    epd_cmd(0x02);                    /* Power off */
-    wait_idle_level(g_panel_wft0290.busy_level, 1000);
+    bus_cmd(0x02);                    /* Power off */
+    bus_wait_idle(&g_panel_wft0290, 1000);
     return 0;
 }
 
@@ -421,16 +307,16 @@ static void panel_power_off(void)
     /* GxEPD2 _PowerOff 忠实：0x02 关高压 rails（VCI 3.3V 保持供电）。
      * 完成后归零 s_ready —— 下次刷新完整重配 */
     if (!s_ready) return;
-    epd_cmd(0x02);
-    wait_idle_level(g_panel_wft0290.busy_level, 1000);
+    bus_cmd(0x02);
+    bus_wait_idle(&g_panel_wft0290, 1000);
     s_ready = false;
 }
 
 static void panel_deep_sleep(void)
 {
     /* 深睡 0x07/0xA5（~µA 级），RST 硬复位唤醒 + uc_init 重初始化 */
-    epd_cmd(0x07);
-    epd_dat(0xA5);
+    bus_cmd(0x07);
+    bus_dat(0xA5);
     delay(200);
     s_ready = false;
 }
@@ -454,6 +340,8 @@ const epd_panel_desc_t g_panel_wft0290 = {
         [EPD_GFX_ACCENT] = 0x00,   /* BW 退化：强调色降级黑（§9.2） */
         [EPD_GFX_AUX]    = 0x00,
     },
+    .accent_rgb  = 0,                    /* BW 面板无第三色（显式零，
+                                    * 补齐声明序消 -Wmissing-field-initializers） */
     .fb_location = EPD_FB_AUTO,    /* 4.7KB x2 帧+画布 全 SRAM（§10.1） */
     .rst_pulse_ms = 10,            /* RST LOW 脉宽（判定/init 实测口径） */
     .busy_level = 0,               /* BUSY=LOW 忙（UC 家族，三轮实测 +
@@ -490,5 +378,6 @@ const epd_panel_desc_t g_panel_wft0290 = {
         .probe        = NULL,      /* epd_driver 诊断 0x71 FLG 已覆盖
                                     * （UC8151D 应答者，实测 0x13） */
         .write_planes = NULL,      /* BW 单平面，无多平面入口 */
+        .diag         = bus_diag_uc, /* T1.8：UC 族 FLG 0x71 双读 */
     },
 };

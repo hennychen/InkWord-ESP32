@@ -43,6 +43,7 @@
  */
 #include "../epd_panel.h"
 #include "../gpio_config.h"
+#include "epd_bus.h"    /* T1.1：SPI 原语/等待收敛层 */
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -52,63 +53,15 @@ extern const epd_panel_desc_t g_panel_gdew027c44;
 
 static bool s_ready = false;   /* init 完成（power_off/deep_sleep 归零） */
 
-/* —— SPI 底层（epd_driver_init 已 SPI.begin(7,-1,8,10)，此处事务直发） —— */
-static void epd_cmd(uint8_t c)
-{
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, LOW);    /* DC=0 命令 */
-    SPI.transfer(c);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
 
-/* 单字节数据：独立 CS 事务（EK79652 锁存要求，见文件头铁律） */
-static void epd_dat(uint8_t d)
-{
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, HIGH);   /* DC=1 数据 */
-    SPI.transfer(d);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
-
-/* RAM 平面写入：逐字节独立 CS 事务（!! 勿改单事务连发，见文件头铁律；
- * invert=true 发送前按字节取反，用于 0x14 的 driver 白位→RAM 黑位适配） */
+/* RAM 平面写入：逐字节独立 CS 事务（!! 勿改单事务连发，
+ * EK79652 锁存要求，文件头铁律；invert=true 发送前按字节取反，
+ * 用于 0x14 的 driver 白位→RAM 黑位适配）—— T1.1 后由
+ * epd_bus bus_dat 实现（单字节独立事务语义不变） */
 static void epd_write_plane(const uint8_t *p, size_t n, bool invert)
 {
-    for (size_t i = 0; i < n; i++) epd_dat(invert ? (uint8_t)~p[i] : p[i]);
-}
-
-/* 等 BUSY 回空闲（IL91874 LOW=忙；init/关电路径用） */
-static void panel_wait_idle(uint32_t timeout_ms)
-{
-    const uint32_t t0 = millis();
-    while (digitalRead(EPD_BUSY_PIN) == g_panel_gdew027c44.busy_level &&
-           millis() - t0 < timeout_ms)
-        delay(10);
-}
-
-/* 0x12 刷新后 BUSY 两段式等待（诊断口径同 E042A13 bring-up）：
- *   ① 等 BUSY 进入忙电平（≤300ms，容忍命令置位延迟）；
- *   ② 等 BUSY 释放（≤busy_timeout_ms，三色波形 ~14.7s）。
- * busy 从未置位 = SPI 命令未达 COG（硬件排查现场判据） */
-static void wait_refresh_done(void)
-{
-    const uint32_t t0 = millis();
-    while (digitalRead(EPD_BUSY_PIN) != g_panel_gdew027c44.busy_level &&
-           millis() - t0 < 300)
-        delay(2);
-    const bool asserted =
-        digitalRead(EPD_BUSY_PIN) == g_panel_gdew027c44.busy_level;
-    const uint32_t t1 = millis();
-    while (digitalRead(EPD_BUSY_PIN) == g_panel_gdew027c44.busy_level &&
-           millis() - t1 < g_panel_gdew027c44.busy_timeout_ms)
-        delay(10);
-    Serial.printf("[G027-DIAG] 0x12 busy: %s @%ums, active %ums\n",
-                  asserted ? "LOW" : "never",
-                  (unsigned)(millis() - t0), (unsigned)(millis() - t1));
+    for (size_t i = 0; i < n; i++)
+        bus_dat(invert ? (uint8_t)~p[i] : p[i]);
 }
 
 /* —— 五组 LUT（IL91874 无 OTP 三色波形，PSR 0xaf 选 register LUT 后
@@ -182,7 +135,7 @@ static const uint8_t LUT_BLACK_FAST[] = {
 
 static void il_write_lut(uint8_t cmd, const uint8_t *lut, size_t n)
 {
-    epd_cmd(cmd);
+    bus_cmd(cmd);
     epd_write_plane(lut, n, false);   /* LUT 亦逐字节独立 CS（GxEPD2 sCS 同款） */
 }
 
@@ -190,13 +143,13 @@ static void il_write_lut(uint8_t cmd, const uint8_t *lut, size_t n)
  * y>>8, y&0xff, w>>8, w&0xf8, h>>8, h&0xff；全屏 x=0 y=0 w=176 h=264） */
 static void set_full_window(uint8_t cmd)
 {
-    epd_cmd(cmd);
-    epd_dat(0x00); epd_dat(0x00);                  /* x = 0 */
-    epd_dat(0x00); epd_dat(0x00);                  /* y = 0 */
-    epd_dat(0x00); epd_dat((uint8_t)(g_panel_gdew027c44.panel_w & 0xF8));
+    bus_cmd(cmd);
+    bus_dat(0x00); bus_dat(0x00);                  /* x = 0 */
+    bus_dat(0x00); bus_dat(0x00);                  /* y = 0 */
+    bus_dat(0x00); bus_dat((uint8_t)(g_panel_gdew027c44.panel_w & 0xF8));
                                                   /* w = 176 (0xB0) */
-    epd_dat((uint8_t)(g_panel_gdew027c44.panel_h >> 8));
-    epd_dat((uint8_t)(g_panel_gdew027c44.panel_h & 0xFF)); /* h = 264 (0x108) */
+    bus_dat((uint8_t)(g_panel_gdew027c44.panel_h >> 8));
+    bus_dat((uint8_t)(g_panel_gdew027c44.panel_h & 0xFF)); /* h = 264 (0x108) */
 }
 
 static int panel_init_impl(bool fast)
@@ -216,26 +169,26 @@ static int panel_init_impl(bool fast)
     delay(g_panel_gdew027c44.rst_pulse_ms);   /* GxEPD2 默认 20ms 脉冲 */
     digitalWrite(EPD_RESET_PIN, HIGH);
     delay(10);
-    panel_wait_idle(5000);                    /* 复位后 boot 自检（忙→闲） */
+    bus_wait_idle(&g_panel_gdew027c44, 5000);                    /* 复位后 boot 自检（忙→闲） */
 
-    epd_cmd(0x01);                            /* 驱动配置（gate 软起等） */
-    epd_dat(0x03); epd_dat(0x00); epd_dat(0x2b); epd_dat(0x2b); epd_dat(0x09);
-    epd_cmd(0x06);                            /* boost 软启动 */
-    epd_dat(0x07); epd_dat(0x07); epd_dat(0x17);
-    epd_cmd(0xF8); epd_dat(0x60); epd_dat(0xA5);   /* 命令解锁序列 ×5 */
-    epd_cmd(0xF8); epd_dat(0x89); epd_dat(0xA5);
-    epd_cmd(0xF8); epd_dat(0x90); epd_dat(0x00);
-    epd_cmd(0xF8); epd_dat(0x93); epd_dat(0x2A);
-    epd_cmd(0xF8); epd_dat(0x73); epd_dat(0x41);
-    epd_cmd(0x16); epd_dat(0x00);             /* 增强命令复位 */
-    epd_cmd(0x00); epd_dat(0xaf);             /* PSR: by register LUT */
-    epd_cmd(0x30); epd_dat(0x3a);             /* PLL 90Hz */
-    epd_cmd(0x61);                            /* 分辨率 176x264（竖屏原生） */
-    epd_dat(0x00); epd_dat((uint8_t)g_panel_gdew027c44.panel_w);
-    epd_dat((uint8_t)(g_panel_gdew027c44.panel_h >> 8));
-    epd_dat((uint8_t)(g_panel_gdew027c44.panel_h & 0xFF));
-    epd_cmd(0x82); epd_dat(0x12);             /* VCOM_DC */
-    epd_cmd(0x50); epd_dat(0x87);             /* CDI VCOM 与边框 */
+    bus_cmd(0x01);                            /* 驱动配置（gate 软起等） */
+    bus_dat(0x03); bus_dat(0x00); bus_dat(0x2b); bus_dat(0x2b); bus_dat(0x09);
+    bus_cmd(0x06);                            /* boost 软启动 */
+    bus_dat(0x07); bus_dat(0x07); bus_dat(0x17);
+    bus_cmd(0xF8); bus_dat(0x60); bus_dat(0xA5);   /* 命令解锁序列 ×5 */
+    bus_cmd(0xF8); bus_dat(0x89); bus_dat(0xA5);
+    bus_cmd(0xF8); bus_dat(0x90); bus_dat(0x00);
+    bus_cmd(0xF8); bus_dat(0x93); bus_dat(0x2A);
+    bus_cmd(0xF8); bus_dat(0x73); bus_dat(0x41);
+    bus_cmd(0x16); bus_dat(0x00);             /* 增强命令复位 */
+    bus_cmd(0x00); bus_dat(0xaf);             /* PSR: by register LUT */
+    bus_cmd(0x30); bus_dat(0x3a);             /* PLL 90Hz */
+    bus_cmd(0x61);                            /* 分辨率 176x264（竖屏原生） */
+    bus_dat(0x00); bus_dat((uint8_t)g_panel_gdew027c44.panel_w);
+    bus_dat((uint8_t)(g_panel_gdew027c44.panel_h >> 8));
+    bus_dat((uint8_t)(g_panel_gdew027c44.panel_h & 0xFF));
+    bus_cmd(0x82); bus_dat(0x12);             /* VCOM_DC */
+    bus_cmd(0x50); bus_dat(0x87);             /* CDI VCOM 与边框 */
 
     if (fast) {   /* E4 快刷表（LUT 区注释：仅 byte5 重复数压缩） */
         il_write_lut(0x20, LUT_VCOM_FAST,   sizeof(LUT_VCOM_FAST));
@@ -251,8 +204,8 @@ static int panel_init_impl(bool fast)
         il_write_lut(0x24, LUT_BLACK,  sizeof(LUT_BLACK));
     }
 
-    epd_cmd(0x04);                            /* power on */
-    panel_wait_idle(5000);
+    bus_cmd(0x04);                            /* power on */
+    bus_wait_idle(&g_panel_gdew027c44, 5000);
 
     s_ready = true;
     return 0;
@@ -300,8 +253,8 @@ static int do_refresh(const uint8_t *bw_plane, const uint8_t *red_plane)
     set_full_window(0x15);                    /* red RAM 全屏窗口 */
     epd_write_plane(red_plane, plane_bytes, false);
 
-    epd_cmd(0x12);                            /* display refresh */
-    wait_refresh_done();                      /* 三色波形 ~14.7s：等完成再下电 */
+    bus_cmd(0x12);                            /* display refresh */
+    bus_wait_busy(&g_panel_gdew027c44, g_panel_gdew027c44.busy_timeout_ms);                      /* 三色波形 ~14.7s：等完成再下电 */
     return 0;
 }
 
@@ -326,11 +279,11 @@ static int panel_write_full(const uint8_t *frame)
         const size_t plane_bytes =
             (size_t)(g_panel_gdew027c44.panel_w / 8) * g_panel_gdew027c44.panel_h;
         set_full_window(0x14);
-        for (size_t i = 0; i < plane_bytes; i++) epd_dat(0x00);
+        for (size_t i = 0; i < plane_bytes; i++) bus_dat(0x00);
         set_full_window(0x15);
-        for (size_t i = 0; i < plane_bytes; i++) epd_dat(0x00);
-        epd_cmd(0x12);
-        wait_refresh_done();
+        for (size_t i = 0; i < plane_bytes; i++) bus_dat(0x00);
+        bus_cmd(0x12);
+        bus_wait_busy(&g_panel_gdew027c44, g_panel_gdew027c44.busy_timeout_ms);
         return 0;
     }
     return panel_full_refresh(frame);
@@ -347,8 +300,8 @@ static void panel_power_off(void)
     /* GxEPD2_270c _PowerOff 一比一：0x02 关高压。归零 s_ready —— 下次
      * 刷新完整重配（无状态铁律，不赌关电后 LUT/窗口存活） */
     if (!s_ready) return;
-    epd_cmd(0x02);
-    panel_wait_idle(g_panel_gdew027c44.busy_timeout_ms);
+    bus_cmd(0x02);
+    bus_wait_idle(&g_panel_gdew027c44, g_panel_gdew027c44.busy_timeout_ms);
     s_ready = false;
 }
 
@@ -356,7 +309,7 @@ static void panel_deep_sleep(void)
 {
     /* GxEPD2_270c hibernate 一比一：0x07 check 0xA5 深睡（~µA 级），
      * RST 硬复位唤醒 + panel_init 重初始化 */
-    epd_cmd(0x07); epd_dat(0xA5);
+    bus_cmd(0x07); bus_dat(0xA5);
     s_ready = false;
 }
 
@@ -411,5 +364,6 @@ const epd_panel_desc_t g_panel_gdew027c44 = {
                                   * （0x71 位掩读恒 0x00 而屏正常，
                                   * 2026-08-22 真机实证），无 probe 路径 */
         .write_planes = panel_write_planes,
+        .diag         = NULL, /* T1.8：IL91874 无 FLG/版本寄存器 */
     },
 };

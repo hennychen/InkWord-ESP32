@@ -40,8 +40,13 @@
  *             → 手机连热点后系统探测域名被重定向 → 自动弹出配网页；
  *             连接成功后自动回学习界面并关闭热点。
  *
- * 线程模型：handler 在 httpd 任务中直接刷屏；与按键任务的学习页渲染存在潜在竞争，
- *           测试版通过“接收页激活时屏蔽学习页渲染 + 外部直刷后强制下次全刷”缓解。
+ * 线程模型（T0.3，修 C1 终态）：handler 在 httpd 任务只收帧入
+ *           双缓冲并置就绪标志，立即回 200；直刷由主任务 loop 经
+ *           lan_display_drain_frame() 执行（EPD 回归单写者，刷新
+ *           14.6s 不阻塞 httpd 服务其它请求）。原「httpd 直刷与
+ *           按键任务渲染存在潜在竞争」由 T0.1 互斥锁兜底 + 本任务
+ *           单写者化根治；「接收页激活时屏蔽学习页渲染 + 外部直刷
+ *           后强制下次全刷」两道缓解保留。
  */
 #include "lan_display_server.h"
 #include "debug_log.h"
@@ -78,9 +83,24 @@ static const char *TAG = "LAN";
 
 static httpd_handle_t s_server = NULL;
 static bool s_active = false;                  /* 接收页在前台 */
-static uint8_t *s_frame = NULL;   /* 整帧接收缓冲：epd_fb_total() 首用分配
-                                   * （Phase 6 多面板；协议 v2 双平面填满，
-                                   * v1 单平面余平面清零） */
+
+/* 整帧接收双缓冲（T0.3）：httpd 任务写入侧与主任务消费侧轮换。
+ *   s_recv_idx    —— httpd 下一帧写入块（收完即翻转）
+ *   s_ready_idx   —— 待主任务直刷的帧号（-1 无；覆盖旧值 = 丢旧保新）
+ *   s_draining_idx—— 主任务正在直刷的帧号（-1 无；httpd 写块避开，
+ *                    防 14.6s 全刷期间第三帧覆写 SPI 正在读的缓冲）
+ *   s_ready_page_active —— 置就绪时接收页是否在前台（消费时页已退出
+ *                    则丢弃：防止迟到的帧覆盖退出后刚绘的学习页；
+ *                    STA 后台传图（页未激活直传）不受影响）
+ * 状态转换均在 portMUX 临界区内（纳秒级）；帧体收写与刷屏在锁外 */
+#define LAN_FRAME_NBUF 2
+static uint8_t *s_frame_buf[LAN_FRAME_NBUF] = {NULL, NULL}; /* 首用分配：
+                                   * epd_fb_total()（Phase 6 多面板）*/
+static volatile int s_recv_idx = 0;
+static volatile int s_ready_idx = -1;
+static volatile int s_draining_idx = -1;
+static volatile bool s_ready_page_active = false;
+static portMUX_TYPE s_frame_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static bool s_portal_mode = false;             /* AP 配网门户激活 */
 static bool s_portal_provision = false;        /* 无凭据配网场景（连上即自动关）；
@@ -692,9 +712,17 @@ static esp_err_t display_post_handler(httpd_req_t *req)
     }
     const size_t recv_len = color_frame ? total_bytes : frame_bytes;
 
-    if (!s_frame) { /* 首用分配（epd_driver_init 后几何就绪） */
-        s_frame = (uint8_t *)malloc(epd_fb_total());
-        if (!s_frame) {
+    /* T0.3：选写入块（避开主任务正在直刷的 draining 块；双缓冲下必
+     * 有可用块——若候选块恰为未消费的 pending，覆盖 = 丢旧保新） */
+    int widx;
+    portENTER_CRITICAL(&s_frame_mux);
+    widx = s_recv_idx;
+    if (widx == s_draining_idx) widx ^= 1;
+    portEXIT_CRITICAL(&s_frame_mux);
+
+    if (!s_frame_buf[widx]) { /* 首用分配（epd_driver_init 后几何就绪） */
+        s_frame_buf[widx] = (uint8_t *)malloc(epd_fb_total());
+        if (!s_frame_buf[widx]) {
             LOG_E("frame buffer alloc failed (%u B)", (unsigned)epd_fb_total());
             httpd_resp_set_status(req, "500 Internal Server Error");
             httpd_resp_set_type(req, "text/plain");
@@ -705,7 +733,7 @@ static esp_err_t display_post_handler(httpd_req_t *req)
 
     int received = 0;
     while (received < (int)recv_len) {
-        int r = httpd_req_recv(req, (char *)s_frame + received,
+        int r = httpd_req_recv(req, (char *)s_frame_buf[widx] + received,
                                (int)recv_len - received);
         if (r <= 0) {
             LOG_E("display upload recv failed at %d/%d", received, (int)recv_len);
@@ -718,20 +746,58 @@ static esp_err_t display_post_handler(httpd_req_t *req)
     }
     /* v1 单平面 → 多平面面板余平面（accent）清零；v2 双平面已填满直通 */
     if (!color_frame && total_bytes > frame_bytes)
-        memset(s_frame + frame_bytes, 0x00, total_bytes - frame_bytes);
+        memset(s_frame_buf[widx] + frame_bytes, 0x00, total_bytes - frame_bytes);
 
-    /* 整帧直刷（面板物理原生格式），并同步两处“上一帧”语义：
-     * 1) 残影调度局刷计数归零（外部全刷等价于一次全刷）；
-     * 2) 学习界面下次渲染强制全刷（GFX previous 缓冲已失配） */
-    epd_full_refresh(s_frame);
-    refresh_notify_full_done();
-    ui_force_full_refresh_next();
+    /* T0.3：帧体收完即置就绪返回（直刷交主任务 lan_display_drain_frame，
+     * 原三联动 epd_full_refresh + refresh_notify_full_done +
+     * ui_force_full_refresh_next 语义原样迁往消费侧） */
+    portENTER_CRITICAL(&s_frame_mux);
+    if (s_ready_idx >= 0 && s_ready_idx != widx)
+        LOG_I("frame %d pending not drained, replaced (drop-old)", s_ready_idx);
+    s_ready_idx = widx;
+    s_ready_page_active = s_active;
+    s_recv_idx = widx ^ 1;
+    portEXIT_CRITICAL(&s_frame_mux);
 
-    LOG_I("LAN frame displayed (%d bytes%s)", received,
+    LOG_I("LAN frame queued (%d bytes%s), main loop will display", received,
           color_frame ? ", color" : "");
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
+}
+
+/* T0.3：主任务消费侧直刷入口（main.cpp loop 每轮调用）——有就绪帧时
+ * 在主任务上下文执行原 handler 内的三联动：整帧直刷 + 局刷计数归零
+ * + 学习界面下次强制全刷。EPD 单写者化后 httpd 任务不再触碰刷屏路径 */
+bool lan_display_drain_frame(void)
+{
+    int idx;
+    bool page_active;
+    portENTER_CRITICAL(&s_frame_mux);
+    idx = s_ready_idx;
+    page_active = s_ready_page_active;
+    if (idx >= 0) {
+        s_ready_idx = -1;      /* 先取出独占：刷屏 14.6s 窗口内新帧照常 */
+        s_draining_idx = idx;  /* 置 draining：httpd 写块避开 */
+    }
+    portEXIT_CRITICAL(&s_frame_mux);
+    if (idx < 0) return false;
+
+    /* 接收页激活期收的帧，消费时页已退出（用户按键退出后画面已恢复
+     * 学习页）——丢弃防迟到帧覆盖；STA 后台传图（page_active=false）
+     * 不受影响照常显示 */
+    if (page_active && !s_active) {
+        LOG_I("LAN frame dropped: receive page left before display");
+        s_draining_idx = -1;
+        return false;
+    }
+
+    epd_full_refresh(s_frame_buf[idx]);
+    refresh_notify_full_done();   /* 外部全刷等价于残影清理，计数归零 */
+    ui_force_full_refresh_next(); /* GFX previous 缓冲已失配，下次强制全刷 */
+    s_draining_idx = -1;
+    LOG_I("LAN frame displayed (%d bytes)", (int)epd_fb_total());
+    return true;
 }
 
 /* ============================================================

@@ -14,6 +14,7 @@
  */
 #include "../epd_panel.h"
 #include "../gpio_config.h"
+#include "epd_bus.h"    /* T1.8：ops.diag 族标准实现 */
 
 #include <Arduino.h>
 #include "../GxEPD2_374_DEPG0370.h"
@@ -118,6 +119,8 @@ const epd_panel_desc_t g_panel_depg0370 = {
         [EPD_GFX_AUX]    = 0x00,   /* BW 退化：次强调色同降级黑 */
         /* [4..15] 保留档位零初始化 */
     },
+    .accent_rgb  = 0,                    /* BW 面板无第三色（显式零，
+                                    * 补齐声明序消 -Wmissing-field-initializers） */
     .fb_location = EPD_FB_AUTO,    /* 37.4KB 双帧+画布全 SRAM（§10.1 预算表） */
     .rst_pulse_ms = 20,            /* epd_driver_init 复位脉宽现值 */
     .busy_level = 0,               /* BUSY=LOW 忙（空闲电平 1） */
@@ -139,5 +142,6 @@ const epd_panel_desc_t g_panel_depg0370 = {
         .deep_sleep   = panel_deep_sleep,
         .probe        = NULL,      /* probe 环境启用时补（§14.3） */
         .write_planes = NULL,      /* Phase 6 多平面色彩面板用（§9.3） */
+        .diag         = bus_diag_uc, /* T1.8：UC 族 FLG 0x71 双读（GxEPD2 路径仅诊断用 bus 位掩读，刷新仍走 s_epd2） */
     },
 };

@@ -46,6 +46,7 @@ extern bool deck_flow_switch(int idx);
 #include "study_mode_machine.h"
 #include "word_parser.h"
 #include "browse_mode.h"   /* 教材目录三级视图（2026-08-28 设计） */
+#include "quiz_ui.h"      /* T1.2：快速测验视图（quiz_ui_start） */
 #include "voice_search.h" /* 语音查词状态机（同设计） */
 #include "chat_mode.h"    /* A1：chat_request_t（对话二级页确认组包） */
 #include "sync_client.h"  /* A3：对话周报拉取（chat-review 端点） */
@@ -63,7 +64,7 @@ static const char *TAG = "MENU_UI";
 /* main.cpp 导出（study_mode_machine.c 引用 ui_render_word 同款先例） */
 extern void ui_render_current(void);
 extern const char *fw_version(void);
-extern void quiz_flow_start(void);  /* v1.2 T2.2：测验会话启动（题池+出题+首帧） */
+/* T1.2：quiz_flow_start 迁 quiz_ui.c 或 quiz_ui_start（quiz_ui.h） */
 
 /* ---- 几何派生（MENU_DESIGN §4.2，全档运行期） ---- */
 #define MU_TINY     (layout_profile_get()->kind == LAYOUT_TINY)
@@ -406,7 +407,7 @@ static void act_audio_sync(void)
 
 /* 快速测验（v1.2 T2.3，MENU_DESIGN 二期位）：前置词库 ≥8 在
  * study_mode_enter_quiz 内，不满足长震回学习页；满足则题池构造、
- * quiz_session_start 与首帧渲染由 main.cpp quiz_flow_start 编排
+ * quiz_session_start 与首帧渲染由 quiz_ui_start 编排
  * （QUIZ_DESIGN §7 数据流：入口与数据流分层） */
 static void act_quiz(void)
 {
@@ -417,7 +418,7 @@ static void act_quiz(void)
         return;
     }
     haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
-    quiz_flow_start();
+    quiz_ui_start();
 }
 
 /* 教材目录（2026-08-28 设计 §B3）：前置词库 ≥1 在

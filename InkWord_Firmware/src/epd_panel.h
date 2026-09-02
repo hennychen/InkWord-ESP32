@@ -96,6 +96,13 @@ typedef struct epd_panel_desc {
         void (*deep_sleep)(void);                   /* 0x07/0xA5 深睡 */
         int  (*probe)(void);                        /* 读 MANUFACTURE_ID 探测 */
         int  (*write_planes)(const uint8_t *const *planes); /* 多平面统一入口 */
+        void (*diag)(void);                         /* bring-up 状态读诊断
+                                                     * （T1.8：族标准实现见
+                                                     * epd_bus.h bus_diag_uc /
+                                                     * bus_diag_ssd16；无 FLG/
+                                                     * 版本寄存器的控制器填
+                                                     * NULL 跳过。L3 只调不
+                                                     * 判族，铁律 3） */
     } ops;
 } epd_panel_desc_t;
 

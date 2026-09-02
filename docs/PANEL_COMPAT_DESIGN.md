@@ -366,6 +366,16 @@ GxEPD2_BW setRotation 语义，_reverse 翻转位序）：
 
 ### 6.4 面板可插拔单元（panels/）
 
+- **`panels/epd_bus.h/.cpp`（T1.1 已落地 ✓）**：L0 公共 SPI 原语收敛层——
+  原六面板手写底层（epd_cmd / epd_dat / epd_write_buf / wait_refresh_done
+  同构副本）归一为 `bus_cmd / bus_dat / bus_dat_stream / bus_dat_begin/put/
+  end / bus_wait_idle / bus_wait_busy / bus_detect_alive`，SPI 三大陷阱
+  注释单点沉淀（writeBytes RAM 不落地、CS↑ 重置地址计数器→单 CS 事务
+  连续流、BUSY 两段式等待）。面板文件只留命令序列表 / LUT 常量 /
+  行宽特例（K_ROW_BYTES）/ 真值表注释；gdew027c44 逐字节独立 CS 铁律
+  （EK79652 锁存）以面板内 epd_write_plane 循环调 bus_dat 保留；
+  depg0370 GxEPD2 包装路径不复用总线原语，仅 ops.diag 借 epd_bus
+  位掩读；
 - **`panels/panel_depg0370_uc8253.cpp`**：包装现有 GxEPD2_374_DEPG0370 +
   demo 忠实序列（`hwReset → initPartialDemo → demoWriteDualNoWindow →
   updateDemoPartial`，调用点 epd_driver.cpp L422-425；demo 原函数名映射见
@@ -677,6 +687,16 @@ NVS 运行期选择：保留 `epd_panel_get_by_id()` 运行期查表接口，量
   实测数据直接回填 desc 时序字段；
 - **首批受益**：4.2" Hink（先 GxEPD2_420c 不中再试 420c_Z21）与 2.7"（先
   GxEPD2_270c）均免改代码快速验证。
+
+### 14.4 诊断编译开关 INKWORD_EPD_DIAG（T1.8 已落地 ✓）
+
+`[env]` 默认 `-D INKWORD_EPD_DIAG=0`（生产态诊断不编入，Flash 实测
+−5.3KB）；inkword-s3-demo 与 opm021eb-probe 置 1（bring-up 全量诊断
+保留）。诊断输出统一走 `DIAG_LOG()` 宏（epd_bus.h，生产态空展开）；
+epd_driver_init 的 BUSY 三态 / RST 脉冲 / BUSY 释放跟踪诊断段整体
+`#if INKWORD_EPD_DIAG` 包裹；控制器判族状态读（原 is_ssd16 分支）
+下沉为 `desc.ops.diag` 可选回调——族标准实现 bus_diag_uc /
+bus_diag_ssd16 由 epd_bus 提供，L3 不再感知面板型号。
 
 ---
 

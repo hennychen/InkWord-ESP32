@@ -36,6 +36,7 @@
 #include "epd_driver.h"
 #include "gpio_config.h"
 #include "epd_panel.h"
+#include "epd_geom.h"   /* T2.1：转置/窗口/调色板纯函数权威（native 真值表） */
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -58,6 +59,8 @@
 #include <string.h>
 #include <stdlib.h>     /* malloc：帧缓冲内部 SRAM 分配 */
 #include <esp_heap_caps.h> /* Phase 2：PSRAM 帧缓冲 heap_caps_malloc（禁 DMA cap） */
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h" /* T0.1：帧一致序列互斥锁 */
 
 /* L2 面板描述符（Phase 1）：epd_panel_get_by_id 查表所得，全局唯一；
  * 面板类实例与 demo 时序序列封装在 panels/panel_depg0370_uc8253.cpp，
@@ -87,6 +90,27 @@ static size_t   s_fb_size   = 0;      /* 单平面单帧 = panel_stride x panel_
 static bool     s_fb_in_psram = false; /* 诊断日志：帧缓冲实际落点 */
 
 static bool s_inited = false;
+
+/* 帧一致序列互斥锁（T0.1，修 C1）：httpd 任务（LAN 直刷）与按键任务
+ * （渲染局刷）对 SPI 总线 / s_port_prev / 画布的并发访问防护——
+ * lan_display_server.cpp 文件头自认的已知竞态。绘图 API（fill_rect /
+ * draw_text 等）不加锁：单写者场景下绘制与刷新由上层序列保证；锁只
+ * 保护「转置 → ops 写帧 → BUSY 等待 → prev 回写」的帧一致序列，
+ * 避免锁粒度膨胀。超时放弃本次刷新：屏幕保持旧帧好于错帧 */
+static SemaphoreHandle_t s_epd_lock = NULL;
+#define EPD_LOCK_TIMEOUT_MS 15000  /* 覆盖最长全刷 14.6s（三色）+ 余量 */
+
+static bool epd_lock(void)
+{
+    /* 未创建（init 失败/早期路径）时无并发方，直通放行 */
+    if (!s_epd_lock) return true;
+    return xSemaphoreTake(s_epd_lock, pdMS_TO_TICKS(EPD_LOCK_TIMEOUT_MS)) == pdTRUE;
+}
+
+static void epd_unlock(void)
+{
+    if (s_epd_lock) xSemaphoreGive(s_epd_lock);
+}
 
 /* 面板竖屏行宽字节（字节粒度向上取整）：OPM021EB 122px → 16B/行
  * 为首个非 8 整除宽面板（2026-08-30），SSD1680 RAM 物理行宽同 16B
@@ -134,14 +158,15 @@ static const GFXfont *font_for_size(int font_size)
 static const uint16_t CANVAS_BLACK = 0x0000;
 static const uint16_t CANVAS_WHITE = 0xFFFF;
 
-/* 逻辑色 → 双层画布色分解（Phase 6，§9.4）：
+/* 逻辑色 → 双层画布色分解（Phase 6，§9.4；T2.1 后公式权威在
+ * epd_geom，本处仅转发）：
  *   B/W 层：WHITE 置白位，BLACK/ACCENT 置黑位（红像素需 B/W 位为黑，
  *           IL0398 真值表 (0,1)=红）；
  *   AC 层：ACCENT 置红位，其余清位（BLACK 绘制必须清红防旧红残留）；
  * BW 单平面面板无 AC 层，仅 B/W 层参与，与旧单画布行为等价 */
 static uint16_t bw_layer_color(uint16_t color)
 {
-    return (color == EPD_GFX_WHITE) ? CANVAS_WHITE : CANVAS_BLACK;
+    return epd_geom_bw_layer_color(color);
 }
 
 static uint16_t ac_layer_color(uint16_t color)
@@ -150,7 +175,7 @@ static uint16_t ac_layer_color(uint16_t color)
      * 导致 fill_screen(WHITE) 后 AC 层全 1 → red plane 全置 → 整屏恒红
      * （E042A13 bring-up 实测：波形照跑但待机页永不显现）。AC 层
      * CANVAS_WHITE(0xFFFF) 语义＝位全 1＝红，非「白」——命名易误导 */
-    return (color == EPD_GFX_ACCENT) ? CANVAS_WHITE : CANVAS_BLACK;
+    return epd_geom_ac_layer_color(color);
 }
 
 /* 帧缓冲分配（Phase 2，§6.2/§10.2）：来源按 desc.fb_location ——
@@ -172,27 +197,11 @@ static uint8_t *epd_fb_alloc(size_t size)
 /* 单画布层 → 指定面板平面转置（Phase 2 四方向泛化提取，§6.3；对应
  * GxEPD2_BW setRotation 语义，_reverse=false，现役 rot=1 顺时针 90°）。
  * 画布与平面同为 bit=1 置位（B/W 层 bit=1 白 / AC 层 bit=1 红），
- * 置位直通，无需反相 */
+ * 置位直通，无需反相。T2.1 后公式权威在 epd_geom（native 真值表） */
 static void transpose_to_plane(const GFXcanvas1 *cv, uint8_t *plane)
 {
-    const uint8_t *src = cv->getBuffer();
-    const int gw = cv->width(), gh = cv->height();
-    const int stride = (gw + 7) / 8;          /* 画布行宽字节 */
-    const int pstride = panel_stride(s_panel); /* 面板竖屏行宽字节 */
-    const int rot = s_rot;
-    for (int cy = 0; cy < gh; cy++) {
-        const uint8_t *row = src + cy * stride;
-        for (int cx = 0; cx < gw; cx++) {
-            if (row[cx >> 3] & (0x80 >> (cx & 7))) {
-                int px, py;
-                if (rot == 0)      { px = cx;          py = cy; }
-                else if (rot == 1) { px = gh - 1 - cy; py = cx; }        /* 现役 */
-                else if (rot == 2) { px = gw - 1 - cx; py = gh - 1 - cy; }
-                else               { px = cy;          py = gw - 1 - cx; }
-                plane[py * pstride + (px >> 3)] |= (uint8_t)(0x80 >> (px & 7));
-            }
-        }
-    }
+    epd_geom_transpose(cv->getBuffer(), cv->width(), cv->height(),
+                       plane, panel_stride(s_panel), (int)s_rot);
 }
 
 /* 双层画布 → 面板多平面展开（Phase 6，§9.3）：
@@ -209,73 +218,18 @@ static void canvas_to_panel(uint8_t *panel)
 
 /* GFX 窗口 → 面板窗口（Phase 2 四方向泛化，§6.3；rot=1 即旧
  * swap(x,y)/swap(w,h)+翻转，与 GxEPD2_BW displayWindow 的
- * _rotate+._reverse 语义一致）。
+ * _rotate+._reverse 语义一致）。T2.1 后公式权威在 epd_geom。
  * 注：面板侧 x/w 由 epd2 层自动 8 像素对齐（对应 gfx 侧 y/h 对齐约束不变） */
 static void gfx_rect_to_panel(int x, int y, int w, int h,
                               uint16_t *px, uint16_t *py, uint16_t *pw, uint16_t *ph)
 {
-    const int gw = s_canvas->width(), gh = s_canvas->height();
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > gw) w = gw - x;
-    if (y + h > gh) h = gh - y;
-    if (w <= 0 || h <= 0) { *pw = 0; *ph = 0; return; }
-
-    uint16_t rx, ry, rw, rh;
-    switch (s_rot) {
-    case 0:  rx = (uint16_t)x;              ry = (uint16_t)y;              rw = (uint16_t)w; rh = (uint16_t)h; break;
-    case 1:  rx = (uint16_t)(gh - y - h);   ry = (uint16_t)x;              rw = (uint16_t)h; rh = (uint16_t)w; break; /* 现役 */
-    case 2:  rx = (uint16_t)(gw - x - w);   ry = (uint16_t)(gh - y - h);   rw = (uint16_t)w; rh = (uint16_t)h; break;
-    default: rx = (uint16_t)y;              ry = (uint16_t)(gw - x - w);   rw = (uint16_t)h; rh = (uint16_t)w; break;
-    }
-
-    *px = rx; *py = ry; *pw = rw; *ph = rh;
+    epd_geom_rect_to_panel(x, y, w, h, s_canvas->width(), s_canvas->height(),
+                           (int)s_rot, px, py, pw, ph);
 }
 
 /* ============================================================
  * 公共 C API 实现
  * ============================================================ */
-
-/* —— E042A13 bring-up 诊断（2026-08-22）：状态寄存器回读 ——
- * SPI 通路软件闭环判据（位掩时序，须在 SPI.begin 之前执行，GPIO
- * 矩阵未被 SPI 占用）。单根双向 SDA（J2-5）：命令后切输入读回。
- * 命令按面板分支：SSD1619 版本读 0x2F → 0x01（Waveshare 4in2b_V2
- * Init() 实证判别法）；UC8176 系 FLG 0x71 → 0x02（POF 默认）。
- * 判据：读到预期值 = SPI 双向通，COG 真实应答；0xFF = 悬空无驱动；
- * 0x00 = 恒低。拔屏对比：插屏应答 vs 拔屏 0xFF = COG 在场铁证 */
-static uint8_t epd_diag_read_status(uint8_t cmd, bool delay_50ms)
-{
-    pinMode(EPD_SCK_PIN, OUTPUT);
-    pinMode(EPD_MOSI_PIN, OUTPUT);
-    pinMode(EPD_DC_PIN, OUTPUT);
-    pinMode(EPD_CS_PIN, OUTPUT);
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, LOW);   /* 命令阶段 */
-    digitalWrite(EPD_SCK_PIN, LOW);
-    delayMicroseconds(2);
-    for (int i = 7; i >= 0; i--) {   /* mode0：SCK 低电平期放数据 */
-        digitalWrite(EPD_MOSI_PIN, (cmd >> i) & 0x01);
-        delayMicroseconds(2);
-        digitalWrite(EPD_SCK_PIN, HIGH);
-        delayMicroseconds(2);
-        digitalWrite(EPD_SCK_PIN, LOW);
-    }
-    digitalWrite(EPD_DC_PIN, HIGH);  /* 数据阶段 */
-    pinMode(EPD_MOSI_PIN, INPUT);    /* SDA 交还 COG 驱动 */
-    if (delay_50ms) delay(50);       /* SSD1619 版本读需 50ms（demo 同款） */
-    delayMicroseconds(2);
-    uint8_t flg = 0;
-    for (int i = 7; i >= 0; i--) {   /* COG 驱动位，MCU 上升沿采样 */
-        digitalWrite(EPD_SCK_PIN, HIGH);
-        delayMicroseconds(2);
-        flg = (uint8_t)((flg << 1) | (digitalRead(EPD_MOSI_PIN) ? 1 : 0));
-        digitalWrite(EPD_SCK_PIN, LOW);
-        delayMicroseconds(2);
-    }
-    digitalWrite(EPD_CS_PIN, HIGH);
-    digitalWrite(EPD_DC_PIN, LOW);
-    return flg;
-}
 
 extern "C" {
 
@@ -293,6 +247,10 @@ int epd_driver_init(void)
         return -1;
     }
 
+    /* 0.5 帧一致序列互斥锁（T0.1）：先于首次刷新创建（epd_clear_screen
+     * 在 init 返回后即被 main 调用）；此后所有 ops 刷新序列均持锁 */
+    if (!s_epd_lock) s_epd_lock = xSemaphoreCreateMutex();
+
     /* 1. BS1=LOW 选择 4 线 SPI 模式（EVK011 J2-10；v1.4 板上硬接无此步）。
      *    EVK011 省线方案：在转接板侧将 J2-10 直接短接 GND（板上就近接
      *    J2-1），并把 gpio_config.h 的 EPD_BS_PIN 改为 -1 —— 硬接 GND
@@ -303,6 +261,7 @@ int epd_driver_init(void)
     digitalWrite(EPD_BS_PIN, LOW);
 #endif
 
+#if INKWORD_EPD_DIAG
     /* 2. BUSY 三态诊断：
      *    a) 高阻输入读电平：COG 空闲时应为 1
      *    b) 开内部上拉(≈45kΩ)再读：区分「悬空断线」与「被驱动为低」
@@ -358,31 +317,21 @@ int epd_driver_init(void)
                   t_rel_ms >= 0 ? "released (COG reset self-test done)" :
                                   "STUCK busy >600ms (COG boot stuck / BUSY shorted)");
 
-    /* 2d. 状态读（面板分支：SSD16xx 0x2F 版本读 / UC8176 0x71 FLG）：
-     *     SPI 通路闭环判据，见 epd_diag_read_status 注释；连读两次看
-     *     稳定性。注：本诊断在面板 ops.init 之前执行，读到的是复位
-     *     自检后的待机态；SSD1680 0x2F 返回值待 WF0270 bring-up 实测
-     *     （expect 0x01 为 SSD1619 实证值，仅供参考比对）。
-     *     IL91874 无 FLG/版本读寄存器，跳过（2026-08-22 GDEW027C44
-     *     真机实证：0x71 位掩读恒 0x00 而屏工作正常，硬套 UC 系判据
-     *     会误报「stuck LOW」误导排查） */
-    const bool is_ssd16 = (s_panel->controller == EPD_CTRL_SSD1619 ||
-                           s_panel->controller == EPD_CTRL_SSD1680);
-    if (is_ssd16 || s_panel->controller != EPD_CTRL_IL91874) {
-        const uint8_t st1 = is_ssd16 ? epd_diag_read_status(0x2F, true)
-                                     : epd_diag_read_status(0x71, false);
-        const uint8_t st2 = is_ssd16 ? epd_diag_read_status(0x2F, true)
-                                     : epd_diag_read_status(0x71, false);
-        const uint8_t expect = is_ssd16 ? 0x01 : 0x02;
-        Serial.printf("[EPD-DIAG] status read(0x%02X): 0x%02X/0x%02X %s\n",
-                      is_ssd16 ? 0x2F : 0x71, st1, st2,
-                      st1 == expect || st2 == expect ? "(EXPECTED: SPI LOOP OK, COG responded)" :
-                      st1 == 0xFF && st2 == 0xFF ? "(floating: cmd lost / no COG drive / read timing)" :
-                      st1 == 0x00 && st2 == 0x00 ? "(stuck LOW: short / no drive)" :
-                                                   "(unexpected value: check controller)");
-    } else {
-        Serial.printf("[EPD-DIAG] status read: skipped (IL91874 has no FLG/version register)\n");
-    }
+    /* 2d. 状态读（T1.8 判族下沉：L3 不再感知控制器型号）：
+     *     desc.ops.diag 由面板单元按族填写（epd_bus 标准实现
+     *     bus_diag_uc / bus_diag_ssd16），IL91874 等无 FLG/版本
+     *     寄存器的控制器填 NULL 跳过 */
+    if (s_panel->ops.diag)
+        s_panel->ops.diag();
+    else
+        Serial.printf("[EPD-DIAG] status read: skipped (panel has no diag op)\n");
+#else
+    /* 生产态（T1.8，修 E2）：bring-up 诊断序列整体不编入（体积 -4~6KB），
+     * 仅保留引脚方向初始化；RST 复位与 BUSY 判活由面板 ops.init 自带
+     * 序列承担（全部面板 init 均含 RST 脉冲，行为等价） */
+    pinMode(EPD_BUSY_PIN, INPUT);
+    pinMode(EPD_RESET_PIN, OUTPUT);
+#endif
 
     /* 3. 硬件 SPI（EVK011 J2: SCK=pin3, SDO=pin5）。
      * GxEPD2 内部 SPI.beginTransaction 使用 GPIO matrix，任意引脚可用 */
@@ -495,8 +444,15 @@ void epd_full_refresh(const uint8_t *data)
      * 直通 epd2 层不做旋转；NULL 时清白。
      * 注意：UI 主路径请用 epd_gfx_*（横屏 GFX 坐标）；
      * 本路径不更新 s_port_prev（LAN 直传后调用方须强制下一次全刷，
-     * main.cpp ui_force_full_refresh_next() 已保证） */
+     * main.cpp ui_force_full_refresh_next() 已保证）。
+     * T0.1 加锁：与按键任务局刷序列互斥（互斥锁非递归，勿在持锁路径内
+     * 再调本函数） */
+    if (!epd_lock()) {
+        LOG_E("epd lock timeout, full_refresh dropped");
+        return;
+    }
     s_panel->ops.write_full(data);
+    epd_unlock();
 
     LOG_D("EPD full refresh done");
 }
@@ -509,7 +465,13 @@ void epd_deep_sleep(void)
 {
     if (!s_inited) return;
 
+    /* T0.1 加锁：确保无并发刷新进行中再下电（锁被 LAN 全刷持有时，
+     * 在此等其完成——入睡宁晚勿错） */
+    if (!epd_lock()) {
+        LOG_W("epd lock timeout before deep sleep, proceed anyway");
+    }
     s_panel->ops.deep_sleep(); /* 0x02 下电 + 0x07/0xA5 深睡，可被硬件复位唤醒 */
+    epd_unlock();
 
     /* 注意：保持 s_inited=true —— hibernate 后置 _init_display_done=false，
      * 下一次局刷路径的 hwReset()/写数据前会自动复位并重新初始化 */
@@ -547,11 +509,19 @@ int epd_set_rotation(uint8_t rot)
     const int gw = (rot & 1) ? s_panel->panel_h : s_panel->panel_w;
     const int gh = (rot & 1) ? s_panel->panel_w : s_panel->panel_h;
 
+    /* T0.1 加锁：画布重建全程持锁（delete 后 new 前的窗口期内，并发
+     * 刷新路径的 canvas_to_panel 会读到悬垂指针） */
+    if (!epd_lock()) {
+        LOG_E("epd lock timeout, rotation change dropped");
+        return -1;
+    }
+
     /* 先建后换（失败路径原画布完好，渲染无损）：初始化与
      * epd_driver_init 同参——白底/黑字/14pt/不折行，AC 层全 0 无红 */
     GFXcanvas1 *cv = new GFXcanvas1(gw, gh);
     if (!cv || !cv->getBuffer()) {
         delete cv;
+        epd_unlock();
         LOG_E("rotation canvas alloc failed (%dx%d)", gw, gh);
         return -1;
     }
@@ -561,6 +531,7 @@ int epd_set_rotation(uint8_t rot)
         if (!cv_ac || !cv_ac->getBuffer()) {
             delete cv;
             delete cv_ac;   /* delete NULL 安全 */
+            epd_unlock();
             LOG_E("rotation accent canvas alloc failed (%dx%d)", gw, gh);
             return -1;
         }
@@ -575,6 +546,7 @@ int epd_set_rotation(uint8_t rot)
     s_canvas->setTextWrap(false);
     if (s_canvas_ac) s_canvas_ac->fillScreen(CANVAS_BLACK);
     s_rot = rot;
+    epd_unlock();
 
     /* s_port_prev 面板物理帧快照保持有效（旋转不改屏幕物理内容）；
      * 新画布白底与屏幕旧内容不一致属正常初态，调用方首次全刷覆盖 */
@@ -715,14 +687,27 @@ void epd_gfx_read_window(int x, int y, int w, int h, uint8_t *out)
     }
 }
 
-void epd_gfx_flush(void)
+/* 全刷主体（T0.1 提取：调用方已持锁；供 epd_gfx_flush 与
+ * flush_window 的 partial_enabled=false 降级分支复用，避免
+ * 非递归互斥锁嵌套加锁死锁） */
+static void gfx_flush_locked(void)
 {
-    if (!s_inited) return;
     canvas_to_panel(s_port_new);
     /* 真全刷（demo 忠实序列，实现在 panels/panel_depg0370_uc8253.cpp：
      * 硬复位→full 初始化→无窗口整屏写 0x13→0x04/0x12/0x02） */
     s_panel->ops.full_refresh(s_port_new);
     memcpy(s_port_prev, s_port_new, s_fb_size * s_panel->plane_count); /* 屏幕内容 == 新帧 */
+}
+
+void epd_gfx_flush(void)
+{
+    if (!s_inited) return;
+    if (!epd_lock()) {
+        LOG_E("epd lock timeout, flush dropped");
+        return;
+    }
+    gfx_flush_locked();
+    epd_unlock();
 }
 
 void epd_gfx_flush_window_passes(int x, int y, int w, int h, int passes)
@@ -733,13 +718,21 @@ void epd_gfx_flush_window_passes(int x, int y, int w, int h, int passes)
     gfx_rect_to_panel(x, y, w, h, &px, &py, &pw, &ph);
     if (pw == 0 || ph == 0) return; /* 窗口参数仅做区域合法性检查 */
 
+    /* T0.1：局刷序列与 LAN 直刷/旋转重建互斥（含窗口转置读画布段） */
+    if (!epd_lock()) {
+        LOG_E("epd lock timeout, window flush dropped");
+        return;
+    }
+
     /* 色彩面板无快速局刷（§13.2：full==partial 且无差分波形）：整帧
      * 走全刷——画布为累积缓冲，整帧推送与窗口语义一致，调用方零改动。
-     * 全刷 16s 的刷新计费约束由上层 UX 降级承担（待机自动轮换停用） */
+     * 全刷 16s 的刷新计费约束由上层 UX 降级承担（待机自动轮换停用）。
+     * 调 gfx_flush_locked（已持锁，勿再调 epd_gfx_flush） */
     if (!s_panel->partial_enabled) {
         LOG_I("no fast partial on '%s': window refresh -> full (~%ums)",
               s_panel->name, (unsigned)s_panel->full_ms);
-        epd_gfx_flush();
+        gfx_flush_locked();
+        epd_unlock();
         return;
     }
 
@@ -751,6 +744,7 @@ void epd_gfx_flush_window_passes(int x, int y, int w, int h, int passes)
                          (uint8_t)(passes < 1 ? 1 : passes));
 
     memcpy(s_port_prev, s_port_new, s_fb_size * s_panel->plane_count); /* 屏幕内容 == 新帧 */
+    epd_unlock();
 }
 
 bool epd_gfx_partial_supported(void)

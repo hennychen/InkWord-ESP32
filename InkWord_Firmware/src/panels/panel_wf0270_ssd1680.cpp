@@ -33,6 +33,7 @@
  */
 #include "../epd_panel.h"
 #include "../gpio_config.h"
+#include "epd_bus.h"    /* T1.1：SPI 原语/等待收敛层 */
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -42,69 +43,6 @@ extern const epd_panel_desc_t g_panel_wf0270;
 
 static bool s_ready = false;   /* init 完成（power_off/deep_sleep 归零） */
 
-/* —— SPI 底层（epd_driver_init 已 SPI.begin，此处事务直发；E042A13
- * bring-up 实证 transfer 逐字节连发，SPI.writeBytes 在 ESP32-S3
- * Arduino core 存在 RAM 不落地陷阱，禁用） —— */
-static void epd_cmd(uint8_t c)
-{
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, LOW);    /* DC=0 命令 */
-    SPI.transfer(c);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
-
-static void epd_dat(uint8_t d)
-{
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, HIGH);   /* DC=1 数据 */
-    SPI.transfer(d);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
-
-/* 批量写 RAM（同 E042A13 实证路径：单事务 transfer 逐字节连发） */
-static void epd_write_buf(const uint8_t *p, size_t n)
-{
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(EPD_CS_PIN, LOW);
-    digitalWrite(EPD_DC_PIN, HIGH);
-    for (size_t i = 0; i < n; i++) SPI.transfer(p[i]);
-    digitalWrite(EPD_CS_PIN, HIGH);
-    SPI.endTransaction();
-}
-
-/* 等 BUSY 回空闲（单段，init/关电路径用；SSD16xx HIGH=忙） */
-static void panel_wait_idle(uint32_t timeout_ms)
-{
-    const uint32_t t0 = millis();
-    while (digitalRead(EPD_BUSY_PIN) == g_panel_wf0270.busy_level &&
-           millis() - t0 < timeout_ms)
-        delay(10);
-}
-
-/* 0x20 刷新后 BUSY 两段式等待（诊断 + 修正，同 E042A13 bring-up 模式）：
- *   ① 等 BUSY 进入忙电平（≤300ms，容忍命令置位延迟）；
- *   ② 等 BUSY 释放（≤busy_timeout_ms，三色波形 ~15s）。
- * busy 从未置位 = 0x20 未达 COG（SPI 硬件排查判据） */
-static void wait_refresh_done(void)
-{
-    const uint32_t t0 = millis();
-    while (digitalRead(EPD_BUSY_PIN) != g_panel_wf0270.busy_level &&
-           millis() - t0 < 300)
-        delay(2);
-    const bool asserted =
-        digitalRead(EPD_BUSY_PIN) == g_panel_wf0270.busy_level;
-    const uint32_t t1 = millis();
-    while (digitalRead(EPD_BUSY_PIN) == g_panel_wf0270.busy_level &&
-           millis() - t1 < g_panel_wf0270.busy_timeout_ms)
-        delay(10);
-    Serial.printf("[WF-DIAG] 0x20 busy: %s @%ums, active %ums\n",
-                  asserted ? "HIGH" : "never",
-                  (unsigned)(millis() - t0), (unsigned)(millis() - t1));
-}
 
 static int panel_init(void)
 {
@@ -127,34 +65,34 @@ static int panel_init(void)
     delay(g_panel_wf0270.rst_pulse_ms);
     digitalWrite(EPD_RESET_PIN, HIGH);
     delay(200);
-    panel_wait_idle(5000);            /* 复位后 boot 自检（忙→闲） */
+    bus_wait_idle(&g_panel_wf0270, 5000);            /* 复位后 boot 自检（忙→闲） */
 
-    epd_cmd(0x12);                    /* SWRESET：寄存器回 POR，VCOM 载 OTP */
-    panel_wait_idle(5000);
+    bus_cmd(0x12);                    /* SWRESET：寄存器回 POR，VCOM 载 OTP */
+    bus_wait_idle(&g_panel_wf0270, 5000);
 
     /* —— PSR（demo 原样 3 字节：0x27 主配置，后两字节 demo 冗余下发，
      * COG 按命令长度截断，无害保留）—— 0x27 = REG LUT + BWR 色序，
      * LUT 取 OTP 波形表（0x20 直接激活即跑全刷序列） —— */
-    epd_cmd(0x00);
-    epd_dat(0x27);
-    epd_dat(0x01);
-    epd_dat(0x00);
+    bus_cmd(0x00);
+    bus_dat(0x27);
+    bus_dat(0x01);
+    bus_dat(0x00);
 
-    epd_cmd(0x11); epd_dat(0x03);     /* 数据入口 X+ Y+ */
+    bus_cmd(0x11); bus_dat(0x03);     /* 数据入口 X+ Y+ */
 
     /* RAM 窗口：X 字节 0..panel_w/8-1（176/8=22 → 0..21），
      * Y 0..panel_h-1（264 → 0..0x0107，demo SetWindows 同款） */
-    epd_cmd(0x44);
-    epd_dat(0x00);
-    epd_dat((uint8_t)(g_panel_wf0270.panel_w / 8 - 1));
-    epd_cmd(0x45);
-    epd_dat(0x00); epd_dat(0x00);
-    epd_dat((uint8_t)((g_panel_wf0270.panel_h - 1) & 0xFF));
-    epd_dat((uint8_t)((g_panel_wf0270.panel_h - 1) >> 8));
+    bus_cmd(0x44);
+    bus_dat(0x00);
+    bus_dat((uint8_t)(g_panel_wf0270.panel_w / 8 - 1));
+    bus_cmd(0x45);
+    bus_dat(0x00); bus_dat(0x00);
+    bus_dat((uint8_t)((g_panel_wf0270.panel_h - 1) & 0xFF));
+    bus_dat((uint8_t)((g_panel_wf0270.panel_h - 1) >> 8));
 
-    epd_cmd(0x4E); epd_dat(0x00);     /* X 计数器归零 */
-    epd_cmd(0x4F); epd_dat(0x00); epd_dat(0x00);   /* Y 计数器归零 */
-    panel_wait_idle(5000);
+    bus_cmd(0x4E); bus_dat(0x00);     /* X 计数器归零 */
+    bus_cmd(0x4F); bus_dat(0x00); bus_dat(0x00);   /* Y 计数器归零 */
+    bus_wait_idle(&g_panel_wf0270, 5000);
 
     s_ready = true;
     return 0;
@@ -173,16 +111,16 @@ static int do_refresh(const uint8_t *bw_plane, const uint8_t *red_plane)
         (size_t)(g_panel_wf0270.panel_w / 8) * g_panel_wf0270.panel_h;
 
     /* 地址计数器归零（无状态保证：不依赖上次写满后的回卷状态） */
-    epd_cmd(0x4E); epd_dat(0x00);
-    epd_cmd(0x4F); epd_dat(0x00); epd_dat(0x00);
+    bus_cmd(0x4E); bus_dat(0x00);
+    bus_cmd(0x4F); bus_dat(0x00); bus_dat(0x00);
 
-    epd_cmd(0x24);
-    epd_write_buf(bw_plane, plane_bytes);
-    epd_cmd(0x26);
-    epd_write_buf(red_plane, plane_bytes);
+    bus_cmd(0x24);
+    bus_dat_stream(bw_plane, plane_bytes);
+    bus_cmd(0x26);
+    bus_dat_stream(red_plane, plane_bytes);
 
-    epd_cmd(0x20);                    /* Master Activation（PSR 全配置） */
-    wait_refresh_done();              /* 三色波形 ~15s：等真实完成再下电 */
+    bus_cmd(0x20);                    /* Master Activation（PSR 全配置） */
+    bus_wait_busy(&g_panel_wf0270, g_panel_wf0270.busy_timeout_ms);              /* 三色波形 ~15s：等真实完成再下电 */
     return 0;
 }
 
@@ -206,14 +144,14 @@ static int panel_write_full(const uint8_t *frame)
         static const uint8_t white = 0xFF, no_red = 0x00;
         const size_t plane_bytes =
             (size_t)(g_panel_wf0270.panel_w / 8) * g_panel_wf0270.panel_h;
-        epd_cmd(0x4E); epd_dat(0x00);
-        epd_cmd(0x4F); epd_dat(0x00); epd_dat(0x00);
-        epd_cmd(0x24);
-        for (size_t i = 0; i < plane_bytes; i++) epd_dat(white);
-        epd_cmd(0x26);
-        for (size_t i = 0; i < plane_bytes; i++) epd_dat(no_red);
-        epd_cmd(0x20);
-        wait_refresh_done();
+        bus_cmd(0x4E); bus_dat(0x00);
+        bus_cmd(0x4F); bus_dat(0x00); bus_dat(0x00);
+        bus_cmd(0x24);
+        for (size_t i = 0; i < plane_bytes; i++) bus_dat(white);
+        bus_cmd(0x26);
+        for (size_t i = 0; i < plane_bytes; i++) bus_dat(no_red);
+        bus_cmd(0x20);
+        bus_wait_busy(&g_panel_wf0270, g_panel_wf0270.busy_timeout_ms);
         return 0;
     }
     return panel_full_refresh(frame);
@@ -230,9 +168,9 @@ static void panel_power_off(void)
     /* SSD1680 标准关电序列（GxEPD2 同款）：0x22/0xC3 + 0x20。
      * 完成后归零 s_ready —— 下次刷新完整重配（无状态铁律） */
     if (!s_ready) return;
-    epd_cmd(0x22); epd_dat(0xC3);
-    epd_cmd(0x20);
-    panel_wait_idle(g_panel_wf0270.busy_timeout_ms);
+    bus_cmd(0x22); bus_dat(0xC3);
+    bus_cmd(0x20);
+    bus_wait_idle(&g_panel_wf0270, g_panel_wf0270.busy_timeout_ms);
     s_ready = false;
 }
 
@@ -240,7 +178,7 @@ static void panel_deep_sleep(void)
 {
     /* demo Sleep 一比一：0x10 check 0x01 深睡（~µA 级），
      * RST 硬复位唤醒 + panel_init 重初始化 */
-    epd_cmd(0x10); epd_dat(0x01);
+    bus_cmd(0x10); bus_dat(0x01);
     s_ready = false;
 }
 
@@ -296,5 +234,6 @@ const epd_panel_desc_t g_panel_wf0270 = {
                                    * （epd_driver 诊断路径已覆盖），
                                    * 留 §14.3 接入 */
         .write_planes = panel_write_planes,
+        .diag         = bus_diag_ssd16, /* T1.8：SSD16xx 0x2F 双读 */
     },
 };

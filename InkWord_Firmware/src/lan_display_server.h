@@ -59,6 +59,18 @@ void lan_portal_enter(void);
  */
 void lan_portal_exit(void);
 
+/**
+ * @brief 消费一帧待刷的 LAN 直传帧（T0.3 主任务投递）。
+ *
+ * httpd 任务收帧后仅置就绪标志即返回；本函数由主任务 loop 每轮
+ * 调用，有待刷帧时执行 epd_full_refresh + refresh_notify_full_done
+ * + ui_force_full_refresh_next 三联动（EPD 单写者，httpd 上下文
+ * 零 EPD 直调）。接收页已退出的迟到帧直接丢弃。
+ *
+ * @return true 本轮刷了一帧；false 无待刷帧（零开销路径）。
+ */
+bool lan_display_drain_frame(void);
+
 #ifdef __cplusplus
 }
 #endif
