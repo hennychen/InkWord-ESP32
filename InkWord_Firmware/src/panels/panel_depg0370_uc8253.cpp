@@ -106,6 +106,7 @@ const epd_panel_desc_t g_panel_depg0370 = {
     .panel_w    = 240,
     .panel_h    = 416,
     .gfx_rotation = 1,       /* 横屏持机（gfx 416x240），Phase 2 转置泛化依据 */
+    .dpi         = 130,       /* 对角 PPI（诊断字段：3.7" 对角 480px；换算 mm=px÷PPI×25.4） */
     .color_mode = EPD_COLOR_BW,
     .plane_count = 1,
     .palette    = {

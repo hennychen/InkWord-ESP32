@@ -427,6 +427,13 @@ int epd_driver_init(void)
     LOG_I("FB: %u B x2 (%s) + canvas %dx%d %u B x%d",
           (unsigned)plane_bytes, s_fb_in_psram ? "PSRAM" : "SRAM",
           gw, gh, (unsigned)((gw * gh + 7) / 8), s_canvas_ac ? 2 : 1);
+    /* dpi 诊断行（2026-09-03）：物理字高 mm = px÷dpi×25.4，新屏上机
+     * 对照现役基线（3.7" 130PPI：16px≈3.1mm / 20px≈3.9mm / 24px≈4.7mm）
+     * 判「档内但视觉不符」的同档异 PPI 风险 */
+    LOG_I("Panel dpi=%u (16px=%.1fmm 20px=%.1fmm 24px=%.1fmm 32px=%.1fmm)",
+          s_panel->dpi,
+          16.0f * 25.4f / s_panel->dpi, 20.0f * 25.4f / s_panel->dpi,
+          24.0f * 25.4f / s_panel->dpi, 32.0f * 25.4f / s_panel->dpi);
 #if defined(INKWORD_BOARD_V14)
     LOG_I("Booster: v1.4 on-board self-managed boost (decoupled from COG GDR), no MCU PWM");
 #else

@@ -323,6 +323,7 @@ const epd_panel_desc_t g_panel_wft0290 = {
     .panel_w    = 128,
     .panel_h    = 296,
     .gfx_rotation = 0,       /* 竖屏持机（gfx 128x296，LAYOUT_TINY） */
+    .dpi         = 111,       /* 对角 PPI（诊断字段：2.9" 对角 322px；换算 mm=px÷PPI×25.4） */
     .color_mode = EPD_COLOR_BW,
     .plane_count = 1,
     .palette    = {

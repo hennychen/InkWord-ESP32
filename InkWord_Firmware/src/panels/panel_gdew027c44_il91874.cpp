@@ -324,6 +324,7 @@ const epd_panel_desc_t g_panel_gdew027c44 = {
     .panel_w    = 176,
     .panel_h    = 264,
     .gfx_rotation = 1,       /* 物理竖屏 176x264 → UI 横屏 264x176 */
+    .dpi         = 118,       /* 对角 PPI（诊断字段：2.7" 对角 317px；换算 mm=px÷PPI×25.4） */
     .color_mode = EPD_COLOR_3C,
     .plane_count = 2,        /* B/W 白位平面 + 红位平面（§9.3） */
     .palette    = {

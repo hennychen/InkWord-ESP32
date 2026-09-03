@@ -57,6 +57,11 @@ typedef struct epd_panel_desc {
                                              * 奇数=(panel_h,panel_w)，偶数直通；
                                              * 运行期可经 epd_set_rotation 覆盖
                                              * （屏幕方向设置），desc 本身 const */
+    uint16_t            dpi;                /* 对角 PPI（诊断字段，2026-09-03：
+                                             * 不参与档位/布局计算；上机对照
+                                             * 「物理字高 mm = px÷dpi×25.4」
+                                             * 判同档异 PPI 视觉风险，如
+                                             * 4.2" 119 vs 3.4" 150 同为 MID） */
 
     /* —— 色彩 —— */
     epd_color_mode_t    color_mode;

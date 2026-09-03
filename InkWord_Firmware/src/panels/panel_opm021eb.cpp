@@ -301,6 +301,7 @@ const epd_panel_desc_t g_panel_opm021eb = {
     .panel_w    = 122,
     .panel_h    = 250,
     .gfx_rotation = 0,       /* 竖屏持机（gfx 122x250，LAYOUT_TINY） */
+    .dpi         = 131,       /* 对角 PPI（诊断字段：2.13" 对角 278px；换算 mm=px÷PPI×25.4） */
     .color_mode = EPD_COLOR_BW,
     .plane_count = 1,
     .palette    = {

@@ -241,6 +241,7 @@ const epd_panel_desc_t g_panel_e042a13 = {
     .panel_h    = 300,
     .gfx_rotation = 0,       /* 横向原生面板，rotation=0 零转置直通
                               * （gfx 400x300，§6.3）；转置泛化已就绪 */
+    .dpi         = 119,       /* 对角 PPI（诊断字段：4.2" 对角 500px；换算 mm=px÷PPI×25.4） */
     .color_mode = EPD_COLOR_3C,
     .plane_count = 2,        /* B/W 白位平面 + 红位平面（§9.3） */
     .palette    = {

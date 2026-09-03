@@ -348,6 +348,7 @@ const epd_panel_desc_t g_panel_e042a13bw = {
     .panel_w    = 400,
     .panel_h    = 300,
     .gfx_rotation = 0,       /* 横向原生面板（gfx 400x300，LAYOUT_MID） */
+    .dpi         = 119,       /* 对角 PPI（诊断字段：4.2" 对角 500px；换算 mm=px÷PPI×25.4） */
     .color_mode = EPD_COLOR_BW,
     .plane_count = 1,        /* BW 单平面（三色兄弟为 2） */
     .palette    = {
