@@ -16,6 +16,9 @@
  *   SET 短按=遮蔽/揭晓释义（闪卡自测；待机页=轮换下一条引文）/ 长按=收藏/取消当前词（左栏 * 标记；收藏视图内=移出序列）；
  *   RST 短按=回到当前模式第一条 / 长按=临时视图进出（错词本或收藏浏览，
  *        按当前所在视图退出，否则进错词本）。
+ * 上述长按动作出厂映射可由用户改绑（2026-09-03 shortcut_map：设置页
+ *  「快捷键」子模式，上/下/左/右/SET/RST 六槽位；守卫——中键菜单锚点、
+ *  错词本/收藏视图内 RST 退出与 SET 移出收藏不可覆盖，见 shortcut_try_long）。
  *
  * 阅读模式（P3，长按下循环切换进入）：上/下=翻页，左/右=字号缩放
  * （16/20/24px 三级循环，按当前页首字符就近保持阅读位置），RST=回
@@ -80,6 +83,7 @@
 #include "reader_engine.h"   /* 阅读模式（P3）：书分页/字号/进度 */
 #include "ble_provision.h"
 #include "power_manager.h"   /* P5 深睡/唤醒分流与入睡检查 */
+#include "shortcut_map.h" /* 2026-09-03 用户自定义长按快捷键（六槽位） */
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -180,6 +184,135 @@ static void base_render(void)
  * 唤醒后首个中键事件后清位（见 on_button 注释） */
 static bool s_wake_swallow_center = false;
 
+/* ---- 用户自定义长按快捷键执行器（2026-09-03，shortcut_map）----
+ * 编排镜像 menu_ui act_*（去掉菜单自退；覆盖层进入均经 page_router_push
+ * 栈化，enter 失败长震留在当前页）。默认/无动作不由此处理。 */
+static void shortcut_exec(sk_action_t act)
+{
+    switch (act) {
+    case SK_ACT_MENU:
+        page_router_push(&g_menu_ui_page);
+        break;
+    case SK_ACT_MODE:   /* =出厂下键长按体 */
+        haptic_event(HAPTIC_MODE);
+        ui_sfx_play(UI_SFX_MODE);
+        study_mode_switch_next();
+        page_router_render_top();
+        break;
+    case SK_ACT_COLLECTION:   /* =菜单 act_collection */
+        if (learning_state_collected_count() == 0) {
+            haptic_event(HAPTIC_ERROR);   /* 空收藏：边界反馈不进入 */
+            return;
+        }
+        study_mode_enter_collection();   /* 计数已预检非零，必成功 */
+        haptic_event(HAPTIC_MODE);
+        page_router_render_top();
+        break;
+    case SK_ACT_WRONGBOOK:   /* =出厂 RST 长按体（非临时视图分支） */
+        if (!study_mode_enter_wrongbook()) {
+            haptic_event(HAPTIC_ERROR);   /* 无错词：边界反馈 */
+            return;
+        }
+        haptic_event(HAPTIC_MODE);
+        page_router_render_top();
+        break;
+    case SK_ACT_VOICE:   /* =菜单 act_voice_search */
+        if (!study_mode_enter_voice_search()) {
+            haptic_event(HAPTIC_ERROR);   /* 无网/未配 Key：边界反馈 */
+            page_router_render_top();
+            return;
+        }
+        haptic_event(HAPTIC_MODE);
+        voice_search_reset();
+        page_router_render_top();
+        break;
+    case SK_ACT_CHAT:   /* 自由对话直入（菜单 A1 二级页默认项；预检在
+                          * enter_chat，失败码仅区分长震不显原因文案） */
+    {
+        chat_request_t req;
+        memset(&req, 0, sizeof(req));
+        strlcpy(req.title, "自由对话", sizeof(req.title));
+        if (study_mode_enter_chat(&req) != 0) {
+            haptic_event(HAPTIC_ERROR);
+            page_router_render_top();
+            return;
+        }
+        haptic_event(HAPTIC_MODE);
+        page_router_push(&g_chat_page);
+        break;
+    }
+    case SK_ACT_QUIZ:   /* =菜单 act_quiz */
+        if (!study_mode_enter_quiz()) {
+            haptic_event(HAPTIC_ERROR);   /* 词库不足：边界反馈 */
+            page_router_render_top();
+            return;
+        }
+        haptic_event(HAPTIC_MODE);
+        page_router_push(&g_quiz_page);
+        break;
+    case SK_ACT_BROWSE:   /* =菜单 act_browse */
+        if (!study_mode_enter_browse()) {
+            haptic_event(HAPTIC_ERROR);   /* 空词库：边界反馈 */
+            page_router_render_top();
+            return;
+        }
+        haptic_event(HAPTIC_MODE);
+        page_router_push(&g_browse_page);
+        page_router_render_top();
+        break;
+    case SK_ACT_READER:
+        haptic_event(HAPTIC_MODE);
+        study_mode_set(MODE_READER);   /* 临时视图内被拒（安全无操作） */
+        page_router_render_top();
+        break;
+    case SK_ACT_GHOST:   /* =出厂上键长按体 */
+        refresh_force_full();
+        break;
+    case SK_ACT_PORTAL:   /* =出厂左键长按体 */
+        lan_portal_enter();
+        break;
+    case SK_ACT_LAN:   /* =出厂右键长按体 */
+        lan_server_enter_receive_page();
+        break;
+    case SK_ACT_COLLECT:   /* =出厂 SET 长按体（星标/收藏切换） */
+        if (study_mode_current() == MODE_READER) return;
+        haptic_event(HAPTIC_REVIEW);
+        learning_state_toggle_collect(study_mode_current_word_index());
+        if (study_mode_current() == MODE_COLLECTION &&
+            study_mode_after_uncollect()) {
+            page_router_render_top();   /* 清空退回闪卡或游标收缩 */
+            return;
+        }
+        page_router_render_top();
+        break;
+    case SK_ACT_SETTINGS:
+        page_router_push(&g_settings_ui_page);
+        break;
+    case SK_ACT_SPEAK:
+        study_mode_handle_action(3);   /* 发音（含 READER/门控内检） */
+        break;
+    default:
+        break;   /* NONE/DEFAULT 不由本执行器处理 */
+    }
+}
+
+/* 长按拦截入口（base 页长按 switch 前调用）：true=用户映射命中已执行，
+ * false=走出厂长按。守卫——中键菜单锚点恒出厂；错词本/收藏视图内
+ * RST=退出（逃生语义）、SET=移出收藏（序列收缩语义）不可覆盖 */
+static bool shortcut_try_long(nav_key_t id)
+{
+    if (id == NAV_CENTER) return false;
+    study_mode_t m = study_mode_current();
+    if (id == NAV_RST && (m == MODE_WRONGBOOK || m == MODE_COLLECTION))
+        return false;
+    if (id == NAV_SET && m == MODE_COLLECTION)
+        return false;
+    sk_action_t act = shortcut_get(id);
+    if (act == SK_ACT_DEFAULT) return false;   /* 键缺失/默认=出厂 */
+    shortcut_exec(act);
+    return true;
+}
+
 /* base 页按键编排（P2 路由补完收编：原 on_button 的 dispatch 后段落
  * 整体迁入，行为零变化）：pron 短事务（与栈互斥，base 层触发）→
  * 语音查词/LAN/待机页转发 → 长按功能（菜单/清残影/模式/门户/LAN/
@@ -236,8 +369,10 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
 
     /* 长按功能集中在五键上：中=功能菜单，上=清残影，下=模式切换，
      * 左=AP 门户（隔离环境下 STA 页面不可达时的可靠通道），
-     * 右=LAN 接收页 */
+     * 右=LAN 接收页；2026-09-03 起六槽位可经 shortcut_map 改绑
+     * （守卫见 shortcut_try_long，未定制键走出厂 switch） */
     if (event == BUTTON_EVENT_LONG_PRESS) {
+        if (shortcut_try_long(id)) return true;
         switch (id) {
         case NAV_CENTER:
             page_router_push(&g_menu_ui_page);   /* T1.4：enter=menu_ui_enter */

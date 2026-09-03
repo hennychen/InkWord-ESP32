@@ -43,6 +43,14 @@
 #define NVS_KEY_SET_DAILY   "set_daily" /* 每日目标量默认组（sd_<id> 族） */
 #define NVS_KEY_SD_PFX      "sd_"       /* 每日目标量卡组键前缀（u8） */
 
+/* ---- 长按快捷键（shortcut_map；u8 = sk_action_t 枚举，缺省=出厂） ---- */
+#define NVS_KEY_SK_UP       "sk_up"     /* 上长按 */
+#define NVS_KEY_SK_DN       "sk_dn"     /* 下长按 */
+#define NVS_KEY_SK_LF       "sk_lf"     /* 左长按 */
+#define NVS_KEY_SK_RT       "sk_rt"     /* 右长按 */
+#define NVS_KEY_SK_SET      "sk_set"    /* SET 长按 */
+#define NVS_KEY_SK_RST      "sk_rst"    /* RST 长按 */
+
 /* ---- 学习状态（study_mode_machine / deck_manager / learning_state） ---- */
 #define NVS_KEY_LAST_MODE   "last_mode" /* 上次学习模式（u8，恢复用） */
 #define NVS_KEY_DECK_ACTIVE "deck_active" /* 活动卡组（str；缺省=默认组） */

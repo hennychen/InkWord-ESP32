@@ -51,6 +51,7 @@ extern bool deck_flow_switch(int idx);
 #include "voice_search.h" /* 语音查词状态机（同设计） */
 #include "chat_mode.h"    /* A1：chat_request_t（对话二级页确认组包） */
 #include "sync_client.h"  /* A3：对话周报拉取（chat-review 端点） */
+#include "shortcut_map.h" /* 2026-09-03：按键说明页学习页长按列动态化 */
 
 #include "freertos/FreeRTOS.h"   /* A3：周报拉取一次性任务 */
 #include "freertos/task.h"
@@ -831,22 +832,28 @@ static void draw_review(bool partial)
 }
 
 /* ---- 按键说明页（表驱动分页只读，上/下翻页；行文全半角标点=字库安全
- *      先例，组头行 key=NULL 整行居左作小节分隔） ---- */
+ *      先例，组头行 key=NULL 整行居左作小节分隔）----
+ * 2026-09-03 学习页组长按列动态化：可定制行（上/下/左/右/SET/RST）
+ * text=NULL + nav/short_txt 填槽位与短按段，绘制时经 shortcut_map
+ * 组合「短按段 / 长按动作名」（DEFAULT=出厂名），说明页与设置页
+ * 值列同词表；中键菜单锚点与其余视图文案恒静态 */
 
 typedef struct {
     const char *key;    /* 键名（NULL = 组头行） */
-    const char *text;   /* 「短按 / 长按」两段式 */
+    const char *text;   /* 「短按 / 长按」两段式（NULL = 动态行） */
+    nav_key_t   nav;    /* 动态行长按槽位（text==NULL 时有效） */
+    const char *short_txt; /* 动态行短按段（text==NULL 时有效） */
 } mu_keyrow_t;
 
 static const mu_keyrow_t s_keys[] = {
     { NULL,     "[ 学习页 ]" },
-    { "上",     "上一词 / 清残影" },
-    { "下",     "下一词 / 换模式" },
-    { "左",     "自评忘记 / AP 门户" },
-    { "右",     "自评简单 / LAN 页" },
-    { "中",     "发音 / 功能菜单" },
-    { "SET",    "遮蔽 / 收藏切换" },
-    { "RST",    "进设置 / 错词本" },
+    { "上",     NULL, NAV_UP,    "上一词" },
+    { "下",     NULL, NAV_DOWN,  "下一词" },
+    { "左",     NULL, NAV_LEFT,  "自评忘记" },
+    { "右",     NULL, NAV_RIGHT, "自评简单" },
+    { "中",     "发音 / 功能菜单" },   /* 锚点不可定制，恒出厂 */
+    { "SET",    NULL, NAV_SET,   "遮蔽" },
+    { "RST",    NULL, NAV_RST,   "进设置" },
     { "*",      "词卡已收藏标记" },
     { NULL,     "[ 复习词表 ]" },
     { "上/下",  "选择 · 详情翻义" },
@@ -892,8 +899,18 @@ static void draw_keys_body(void)
         if (idx >= MU_KEYS_COUNT) break;
         int y = MU_LIST_TOP + 2 + i * MU_INFO_LH;
         if (s_keys[idx].key) {
+            const char *text = s_keys[idx].text;
+            char dyn[40];   /* 动态行：短按段(≤12B)+" / "+动作名(≤12B) */
+            if (!text) {
+                sk_action_t a = shortcut_get(s_keys[idx].nav);
+                if (a == SK_ACT_DEFAULT)
+                    a = shortcut_factory_action(s_keys[idx].nav);
+                snprintf(dyn, sizeof(dyn), "%s / %s",
+                         s_keys[idx].short_txt, shortcut_action_name(a));
+                text = dyn;
+            }
             cjk_text_draw(MU_MARGIN_X + MU_KEYS_LBL_W, y, MU_FONT_LVL,
-                          s_keys[idx].text, EPD_GFX_BLACK);
+                          text, EPD_GFX_BLACK);
             cjk_text_draw(MU_MARGIN_X, y, MU_FONT_LVL,
                           s_keys[idx].key, EPD_GFX_BLACK);
         } else {

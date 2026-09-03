@@ -21,7 +21,11 @@
  * 循环；存面板注册名字符串，切换重启生效——画布/fb/布局档均
  * 派生自 desc 不热切；错选屏不亮的恢复=按住 RST 侧键上电忽略
  * 覆盖，见 epd_driver_init；紧凑档值列降级「自定」二态，完整
- * 型号串口 LOG / device-info 可查）。
+ * 型号串口 LOG / device-info 可查）
+ * + 快捷键（2026-09-03：值列 = 已自定义键位数/「默认」；中键进入
+ * 长按键配置子模式——上/下/左/右/SET/RST 六槽位 × shortcut_map
+ * 动作目录循环切换，即改即存 NVS；映射执行与守卫见 main.cpp
+ * shortcut_try_long 与 shortcut_map.h）。
  *
  * 取值 API 与 UI 分层：settings_audio/haptic_enabled 供 haptic.c /
  * ui_sfx.c / study_mode_machine.c 门控（纯 NVS 惰性缓存，无 UI 依赖，
@@ -42,6 +46,8 @@
  *   / set_panel str（P1 运行期选屏：面板注册名，epd_driver_init
  *   读键覆盖 EPD_PANEL_DEFAULT_ID；缺失=跟随构建默认，「默认」选项
  *   删键——deck_active 同哲学）
+ *   / sk_up/sk_dn/sk_lf/sk_rt/sk_set/sk_rst u8（2026-09-03 长按
+ *   快捷键：sk_action_t 枚举值，缺省=出厂动作；见 shortcut_map.h）
  *   ——均默认开/标准/跟随（键缺失=默认，不写默认值）。
  */
 #ifndef INKWORD_SETTINGS_UI_H

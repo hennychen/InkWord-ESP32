@@ -2,20 +2,25 @@
  * @file settings_ui.c
  * @brief 设置页覆盖层实现（v1.2 T2.5，见 settings_ui.h 分层边界）
  *
- * 渲染自足（不依赖 menu_ui 内部几何宏）：状态栏「设置」+ 10 行项
+ * 渲染自足（不依赖 menu_ui 内部几何宏）：状态栏「设置」+ 12 行项
  * （反选高亮同复习词表范式）+ 底部提示栏（TINY 档省略）；进入全刷，
  * 移动/切换局刷内容区（菜单翻页同策略）。几何按布局档位派生
  * （2026-08-25 起，TINY 竖屏修正见 draw_page 注）。
  *
+ * 「快捷键」行（2026-09-03）中键进入长按键配置子模式：6 行 =
+ * 上/下/左/右/SET/RST 长按槽位，值列 = shortcut_map 动作名，中键
+ * 循环切换即改即存（menu_ui 二级页先例；行集/标题切换全刷）。
+ *
  * 滚动窗口（2026-08-27）：7 行后短屏放不下（MID 240 高横屏可用
  * 184px < 7×44，原居中公式 top=-30 末行 y=234 出屏——屏幕方向项
  * 不可见真机实测），行数超容量时改滚动窗口：选中行驱动窗口滚动
- * （复习词表范式），状态栏右侧「n/7」位置指示（题号局刷同款）。
+ * （复习词表范式），状态栏右侧「n/N」位置指示（题号局刷同款）。
  * 全显档位（TINY 竖屏/LARGE）居中版式不变。
  */
 #include "settings_ui.h"
 #include "page_router.h" /* T1.4：g_settings_ui_page/覆盖层栈（渲染恢复经 render_top） */
 #include "daily_plan.h"
+#include "shortcut_map.h"  /* 2026-09-03 快捷键子模式：长按键→动作映射 */
 
 #include "epd_driver.h"
 #include "epd_panel.h"    /* P1 运行期选屏：注册表枚举（面板型号行） */
@@ -165,11 +170,24 @@ void settings_volume_set(int v)
 
 /* ---- 覆盖层 UI（menu_ui 范式镜像） ---- */
 
-#define SET_ITEMS 11
+#define SET_ITEMS 12
 
 static bool s_active = false;
 static int  s_sel = 0;          /* 当前编辑行 */
 static int  s_win = 0;          /* 滚动窗口首行（全显档位无意义恒 0） */
+
+/* ---- 长按快捷键子模式（menu_ui 二级页先例；2026-09-03）----
+ * 「快捷键」行中键进入：6 行 = 可定制长按键位，值列 = 当前动作
+ * （shortcut_map 词表）；中键循环切换动作（即改即存 NVS），
+ * SET 返回设置主列表（光标留在「快捷键」行），RST 照常退出设置页 */
+#define SK_ROWS 6
+
+static bool s_sk = false;       /* 子模式激活 */
+static int  s_sk_sel = 0;       /* 子模式当前行（0..5 = 上/下/左/右/SET/RST） */
+
+static const nav_key_t s_sk_keys[SK_ROWS] = {
+    NAV_UP, NAV_DOWN, NAV_LEFT, NAV_RIGHT, NAV_SET, NAV_RST,
+};
 
 /* 行标签（2026-08-25 TINY 短版）：106/112px 正文宽下 5 字标签（80px）
  * 与右对齐值列（如「99 天」40px）压字，两枚 5 字标签缩 3 字；
@@ -182,11 +200,11 @@ static const char *set_label(int i)
 {
     static const char *k_full[SET_ITEMS] = {
         "每日新词量", "发音", "震动", "字号", "单词大小", "粗细", "测验快答",
-        "考试倒计时", "屏幕方向", "音量", "面板型号",
+        "考试倒计时", "屏幕方向", "音量", "面板型号", "快捷键",
     };
     static const char *k_tiny[SET_ITEMS] = {
         "新词量", "发音", "震动", "字号", "单词大小", "粗细", "测验快答",
-        "倒计时", "屏幕方向", "音量", "面板",
+        "倒计时", "屏幕方向", "音量", "面板", "快捷键",
     };
     return layout_profile_get()->kind == LAYOUT_TINY ? k_tiny[i]
                                                       : k_full[i];
@@ -226,7 +244,7 @@ static void row_value(int i, char *buf, size_t bufsz)
         else       snprintf(buf, bufsz, "%s", "关");
         break;
     }
-    default: snprintf(buf, bufsz, "%s", rot_value_text()); break;
+    case 8: snprintf(buf, bufsz, "%s", rot_value_text()); break;
     case 9:                              /* 音量：0=静音文案，其余数字档 */
         if (settings_volume() == 0) snprintf(buf, bufsz, "%s", "静音");
         else                         snprintf(buf, bufsz, "%d", settings_volume());
@@ -247,7 +265,46 @@ static void row_value(int i, char *buf, size_t bufsz)
         }
         break;
     }
+    case 11: {   /* 快捷键（2026-09-03）：已自定义键位数（0=「默认」
+        未定制）；配置子模式见下方 s_sk 按键分支 */
+        int n = shortcut_custom_count();
+        if (n == 0) snprintf(buf, bufsz, "%s", "默认");
+        else        snprintf(buf, bufsz, "%d 项", n);
+        break;
     }
+    default: snprintf(buf, bufsz, "%s", "--"); break;
+    }
+}
+
+/* 子模式行数（draw_page 滚动窗口/位置指示统一消费） */
+static int set_items_now(void)
+{
+    return s_sk ? SK_ROWS : SET_ITEMS;
+}
+
+/* 当前层级行标签（含子模式分派） */
+static const char *set_row_label(int i)
+{
+    if (!s_sk) return set_label(i);
+    static const char *k[SK_ROWS] = {
+        "长按 上", "长按 下", "长按 左", "长按 右", "长按 SET", "长按 RST",
+    };
+    static const char *t[SK_ROWS] = { "上", "下", "左", "右", "SET", "RST" };
+    return layout_profile_get()->kind == LAYOUT_TINY ? t[i] : k[i];
+}
+
+/* 当前层级行值（含子模式分派；draw_page 统一消费） */
+static void set_row_value(int i, char *buf, size_t bufsz)
+{
+    if (!s_sk) { row_value(i, buf, bufsz); return; }
+    snprintf(buf, bufsz, "%s",
+             shortcut_action_name(shortcut_get(s_sk_keys[i])));
+}
+
+/* 当前层级选中行（快捷键子模式光标独立于主列表 s_sel） */
+static int sel_now(void)
+{
+    return s_sk ? s_sk_sel : s_sel;
 }
 
 static void draw_row(int row, const char *label, const char *value,
@@ -257,9 +314,9 @@ static void draw_row(int row, const char *label, const char *value,
     int margin = w > 200 ? 16 : 8;
     int y = top + (row - s_win) * lh;    /* 滚动窗口：行号-窗口首行 */
 
-    if (row == s_sel)                       /* 反选：黑底白字整行 */
+    if (row == sel_now())                    /* 反选：黑底白字整行 */
         epd_gfx_fill_rect(margin, y, w - 2 * margin, lh - 4, EPD_GFX_BLACK);
-    int fg = (row == s_sel) ? EPD_GFX_WHITE : EPD_GFX_BLACK;
+    int fg = (row == sel_now()) ? EPD_GFX_WHITE : EPD_GFX_BLACK;
     /* cjk_text_draw 的 y 是字形 cell 顶（cjk_text.h 坐标语义，非
      * FreeSans 基线），行内垂直居中 = 顶 + (行高-cell 高)/2。原基线
      * 式 lh*3/4 把字压低 14/17px：选中行字溢出反选框（白字落框外
@@ -292,32 +349,36 @@ static void draw_page(bool full)
     int avail = h - status_h - (compact ? 18 : 24);
     int vis = avail / lh;
     if (vis < 1) vis = 1;
-    bool scroll = vis < SET_ITEMS;
+    int items = set_items_now();   /* 主列表 12 行 / 快捷键子模式 6 行 */
+    int sel = sel_now();
+    bool scroll = vis < items;
     int top = scroll ? status_h + 4
-                     : status_h + (avail - SET_ITEMS * lh) / 2;
+                     : status_h + (avail - items * lh) / 2;
 
     if (full) {
         epd_gfx_fill_screen(EPD_GFX_WHITE);
-        cjk_text_draw(margin, (status_h - 16) / 2, 0, "设置", EPD_GFX_BLACK);
+        cjk_text_draw(margin, (status_h - 16) / 2, 0,
+                     s_sk ? (compact ? "快捷键" : "长按快捷键") : "设置",
+                     EPD_GFX_BLACK);
         epd_gfx_draw_hline(margin, status_h, w - 2 * margin, EPD_GFX_BLACK);
     } else {
         epd_gfx_fill_rect(0, status_h, w, h - status_h, EPD_GFX_WHITE);
     }
 
-    int first = 0, last = SET_ITEMS;
+    int first = 0, last = items;
     if (scroll) {
         /* 窗口对齐选中行（上下越界滚动），再钳全局范围 */
-        if (s_sel < s_win) s_win = s_sel;
-        if (s_sel >= s_win + vis) s_win = s_sel - vis + 1;
-        if (s_win > SET_ITEMS - vis) s_win = SET_ITEMS - vis;
+        if (sel < s_win) s_win = sel;
+        if (sel >= s_win + vis) s_win = sel - vis + 1;
+        if (s_win > items - vis) s_win = items - vis;
         if (s_win < 0) s_win = 0;
         first = s_win;
         last = s_win + vis;
 
-        /* 位置指示「n/7」：状态栏右侧（题号同款）；清除旧值区域防
+        /* 位置指示「n/N」：状态栏右侧（题号同款）；清除旧值区域防
          * 数字宽度变化残留，局刷窗口含状态栏（题号局刷同策略） */
         char pos[10];
-        snprintf(pos, sizeof(pos), "%d/%d", s_sel + 1, SET_ITEMS);
+        snprintf(pos, sizeof(pos), "%d/%d", sel + 1, items);
         int pw = cjk_text_width(0, pos);
         epd_gfx_fill_rect(w - margin - pw - 8, 4, pw + 8, status_h - 8,
                           EPD_GFX_WHITE);
@@ -327,8 +388,8 @@ static void draw_page(bool full)
 
     for (int i = first; i < last; i++) {
         char val[16];
-        row_value(i, val, sizeof(val));
-        draw_row(i, set_label(i), val, top, lh, font_lvl);
+        set_row_value(i, val, sizeof(val));
+        draw_row(i, set_row_label(i), val, top, lh, font_lvl);
     }
 
     /* 底部提示栏：TINY 档省略（menu_ui MU_HINT_H=0 同款——提示行 16px
@@ -352,7 +413,9 @@ static void draw_page(bool full)
                           EPD_GFX_BLACK);
         } else {
             cjk_text_draw(margin, h - (compact ? 16 : 18), 0,
-                          "上/下 选择 · 中 切换 · SET 退出", EPD_GFX_BLACK);
+                          s_sk ? "上/下 选键 · 中 换动作 · SET 返回"
+                               : "上/下 选择 · 中 切换 · SET 退出",
+                          EPD_GFX_BLACK);
         }
     }
 
@@ -371,6 +434,7 @@ void settings_ui_enter(void)
     s_active = true;
     s_sel = 0;
     s_win = 0;                              /* 滚动窗口复位（进入即顶行） */
+    s_sk = false;                           /* 上会话子模式作废（防御） */
     s_hint_reboot = false;                  /* 上会话提示作废 */
     draw_page(true);
 }
@@ -398,6 +462,38 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
     if (event == BUTTON_EVENT_LONG_PRESS) return;   /* 长按全忽略防误触 */
 
     if (event != BUTTON_EVENT_SHORT_PRESS) return;
+
+    /* 快捷键子模式路由（前置；RST 不拦截→落到下方统一退出设置页，
+     * 「任意层级 RST 直接退出」菜单哲学同款） */
+    if (s_sk) {
+        switch (id) {
+        case NAV_UP:
+            s_sk_sel = (s_sk_sel + SK_ROWS - 1) % SK_ROWS;
+            draw_page(false);
+            return;
+        case NAV_DOWN:
+            s_sk_sel = (s_sk_sel + 1) % SK_ROWS;
+            draw_page(false);
+            return;
+        case NAV_CENTER: {   /* 当前键位动作循环步进（即改即存 NVS） */
+            nav_key_t k = s_sk_keys[s_sk_sel];
+            sk_action_t next = shortcut_action_next(shortcut_get(k));
+            shortcut_set(k, next);
+            draw_page(false);
+            LOG_I("shortcut: key %d -> %s", k,
+                  shortcut_action_name(shortcut_get(k)));
+            return;
+        }
+        case NAV_SET:        /* 返回设置主列表（标题变化须全刷） */
+            s_sk = false;
+            s_sk_sel = 0;
+            s_sel = 11;      /* 光标留在「快捷键」行 */
+            draw_page(true);
+            return;
+        default:
+            break;   /* RST 落到下方退出分支 */
+        }
+    }
 
     switch (id) {
     case NAV_UP:
@@ -502,6 +598,14 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
             }
             break;   /* 统一路径 draw_page(false)：值列+提示行一次局刷 */
         }
+        case 11:                            /* 快捷键（2026-09-03）：进入
+            长按键配置子模式（menu_ui 二级页先例）；标题/行集切换
+            须全刷重排，不走统一 draw_page(false) */
+            s_sk = true;
+            s_sk_sel = 0;
+            draw_page(true);
+            LOG_I("settings: shortcut config entered");
+            return;
         }
         draw_page(false);
         LOG_I("settings: row %d toggled", s_sel);
@@ -510,6 +614,7 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
     case NAV_SET:
     case NAV_RST:                           /* 退出（菜单退出同语义） */
         s_active = false;
+        s_sk = false;                       /* 子模式随页清态（防御） */
         page_router_pop_if(&g_settings_ui_page);  /* T1.4：出栈归位 */
         ui_force_font_refresh();            /* 字号档可能已变（见下） */
         page_router_render_top();           /* 恢复学习页（全刷） */
