@@ -16,6 +16,19 @@
 > 符号名，漂移时以符号搜索为准（如全局搜 `SB_QUOTE_X0`）。
 > 本项目既有文档（PRD / WIRING）不标行号，本文档为设计文档新增此体例。
 >
+> **实现演进勘注（2026-09-03，代码为权威）**：P1 收官与架构优化系列落地后，
+> 本文若干机制描述与现状存在已勘误偏差，正文保留设计原貌：
+> - 「选择机制编译期 INKWORD_PANEL_ID」：实现三段演进——Phase 3 落地为
+>   INKWORD_PANEL_* 宏链 → 2026-09-03 裁剪，面板 env 直接注入
+>   `-D EPD_PANEL_DEFAULT_ID="注册名"`（epd_panel.h 仅 #ifndef 兜底）；
+> - 「量产预留 NVS 运行期选屏」：P1 收官（2026-09-02）已落地——NVS
+>   `set_panel` 键运行期覆盖默认 ID（settings_keys.h 键表 / epd_driver_init）；
+> - 新屏接入三步中的「epd_panel.h 加条件分支」：已取消，现仅需 env 注入
+>   DEFAULT_ID（固件 README 新屏 SOP 已同步）；
+> - 模块布局：main.cpp 已拆分（word_card_ui 渲染族 / sync_session 云端编排）；
+>   NVS 键集中 settings_keys.h；epd_bus 新增族标准电源序列
+>   （bus_ssd16_* / bus_uc_*，byte 级一致者收敛）。
+>
 > **备份纪律（T2.4 起，修 E1）**：历史 .bak 存量已全库清零（git 从未跟踪
 > 过 .bak；.gitignore `*.bak*` 防增量）。现行纪律为「commit 即备份」：
 > 改动前不再留 .bak 副本，验证通过即分阶段 commit，回退走 git 历史。

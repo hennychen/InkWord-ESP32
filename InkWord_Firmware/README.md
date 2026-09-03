@@ -278,7 +278,7 @@ VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `i
 
 1. **建面板单元** `src/panels/panel_<型号>.cpp`：定义 `const epd_panel_desc_t`（几何/色彩/时序/调色板/ops 函数表），驱动序列一比一移植官方 demo 或规格书（GxEPD2 无对应类时手写 SPI 序列，参见 4.2" 单元）；
 2. **注册** [`src/epd_panel.c`](src/epd_panel.c)：extern 声明 + `s_registry[]` 追加一行；
-3. **加 env** [`platformio.ini`](platformio.ini)：复制 `inkword-s3-e042` 段改宏名，[`src/epd_panel.h`](src/epd_panel.h) 加 `EPD_PANEL_DEFAULT_ID` 条件分支。
+3. **加 env** [`platformio.ini`](platformio.ini)：复制 `inkword-s3-e042` 段，build_flags 注入 `'-D EPD_PANEL_DEFAULT_ID="新注册名"'`（epd_panel.h 已无宏链无需改动，2026-09-03 裁剪；烧统一固件时也可免 env，经设置页 NVS 选屏运行期覆盖）。
 
 **bring-up 铁律**（4.2" 屏实战沉淀，全部真机实证）：
 - **BUSY 极性先核对**：UC8253/UC8xxx 系 LOW=忙，SSD16xx 系 HIGH=忙——判反极性会把「空闲正常态」误读为「无响应/卡死」，`desc.busy_level` 必须首验；
@@ -297,7 +297,9 @@ VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `i
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| **主入口** | [`main.cpp`](src/main.cpp) | 启动流程编排、按键路由、单词卡片 UI 渲染（局刷/全刷策略）、后台心跳/OTA任务 |
+| **主入口** | [`main.cpp`](src/main.cpp) | 设备装配（分阶段 setup）、主 loop、base 页渲染与按键编排、deck_flow_switch（巨石拆分后 601 行；渲染族迁 word_card_ui、云端编排迁 sync_session） |
+| **学习词卡 UI** | [`word_card_ui`](src/word_card_ui.h) | 单词卡片/qa/poem 版式、释义分页、状态栏、pron 屏显（自 main 拆出，黄金帧基线不变） |
+| **页面路由** | [`page_router`](src/page_router.h) | 页面栈 push/pop/按键分发 + 显示通道注册制（display_claim/busy，前台占用单真相源） |
 | **日志** | [`debug_log`](src/debug_log.h) | 统一 LOG_I / LOG_W / LOG_E / LOG_D 宏封装 |
 | **屏幕驱动** | [`epd_driver`](src/epd_driver.h) + [`epd_panel`](src/epd_panel.h) + `src/panels/*` | 多屏注册表架构：面板单元自包含驱动序列（ops 函数表），L3 渲染层（canvas 转置/双平面展开/局刷调度）面板无关；epd_gfx_* C 接口；双坐标体系（面板物理坐标 / GFX 层坐标，生效旋转派生——面板默认 gfx_rotation 可经 epd_set_rotation 运行期覆盖，设置页「屏幕方向」横/竖屏即改即生效，2026-08-26） |
 | **音频播放** | [`audio_player`](src/audio_player.h) + `src/mp3/`（libhelix 内嵌） | I2S + ES8311 CODEC DAC, WAV/MP3 异步任务队列播放（提交即返、重按打断重播；P0A）；MP3 帧级采样率动态切换 8k~48k（2026-08-27），音量 0~100 经 es8311 数字音量（见 §1.3） |
@@ -306,18 +308,18 @@ VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `i
 | **AI 对话** | [`chat_mode`](src/chat_mode.h) | MODE_CHAT 五态状态机（录音→上传→读流→句级流水线播放；常驻任务+触发位），录音复用 mic_recorder、播放走 audio_play_file 零新路径，三色屏降级纯语音+震动；P0-1 流式：NDJSON 增量读 + barge-in 3s 拾起（abort 截后端生成）+ replay 重播 + 老后端首行探测回退（docs/AI_CHAT_MODE.md §2b/§4） |
 | **按键** | [`button_handler`](src/button_handler.h) | 五向导航开关轮询去抖, 区分短按 / 长按 (1.5s) |
 | **存储** | [`storage_manager`](src/storage_manager.h) | SD 卡 SPI 挂载至 `/sdcard`, 文件读写 |
-| **刷新调度** | [`refresh_scheduler`](src/refresh_scheduler.h) | 局刷计数, 达阈值例行全刷（学习页阈值 8；待机页引文轮换阈值 12 低频保养） |
-| **词库** | [`word_parser`](src/word_parser.h) | 解析 `words.json` 至 PSRAM 词池（4000 词；raw 按文件实际大小分配——2026-08-27 修复：曾固定预分配 2MB 致 SD 词库路径峰值超 8MB PSRAM、cJSON 中途 malloc 失败静默回退内嵌库，修复后 boot 提速 5.6×）；出厂内嵌兑底词库约 2400 条（`src/default_words.json` embed，无 SD 卡开箱即用，SD 卡 `words.json` 优先；生成链 [`tools/default_vocab`](../tools/default_vocab/README.md)） |
+| **刷新调度** | [`refresh_scheduler`](src/refresh_scheduler.h) | 局刷计数, 达阈值例行全刷（阈值 = desc.partial_count_full_refresh × 页面系数：学习 100% / 待机 150% / 配网 125%，T1.7 系数化档位表） |
+| **词库** | [`word_parser`](src/word_parser.h) | 解析 `words.json` 至 PSRAM 词池（4000 词；raw 按文件实际大小分配——2026-08-27 修复：曾固定预分配 2MB 致 SD 词库路径峰值超 8MB PSRAM、cJSON 中途 malloc 失败静默回退内嵌库，修复后 boot 提速 5.6×）；出厂内嵌兜底词库约 2400 条（`src/default_words.json` embed，无 SD 卡开箱即用，SD 卡 `words.json` 优先；生成链 [`tools/default_vocab`](../tools/default_vocab/README.md)） |
 | **SRS 引擎** | [`srs_engine`](src/srs_engine.h) | FSRS-4.5 间隔重复算法（M4 路径 A 2026-08-22；纯算法，与后端 FsrsService 对拍，`pio test -e native-test`） |
 | **学习状态** | [`learning_state`](src/learning_state.h) | 每词 FSRS stability/difficulty/连错/收藏；LR03 sparse NVS + 脏标记延迟落盘（旧 LR02 升级自动作废）；到期词视图（due_count/due_at，会话 done bitmap 去重）；今日统计（新学/复习次数/连续天数，NVS lr_stats UTC+8 跨日结算，2026-08-24） |
 | **模式状态机** | [`study_mode_machine`](src/study_mode_machine.h) | 闪卡 / 听写 / 复习 / 阅读四模式切换（复习序列=FSRS 到期词，自评即出队）+ 听-跟一体流（云端词播完自动进跟读评测，P1）+ AI 对话临时视图 MODE_CHAT 进出（P2B） |
 | **CJK 字库/文本** | [`cjk_font`](src/cjk_font.h) + [`cjk_text`](src/cjk_text.h) | 三级点阵字库 bin（16/20/24px，3892 字，646KB 嵌入）+ UTF-8 混排绘制层（词卡释义/tag、阅读器、待机页共用；CJK 按字断行 / ASCII 按词断，墨迹盒变宽渲染；断行量测/分页绘制 API 与绘制同源，词卡释义分页基建） |
 | **Wi-Fi 联网** | [`wifi_manager`](src/wifi_manager.h) | 网络栈/STA 连接、NVS 凭据持久化、SoftAP、AP 扫描、快速+慢速断线重连、异步连接 |
-| **HTTP 同步** | [`sync_client`](src/sync_client.h) | 增量词库拉取、学习记录回传、心跳上报、天气拉取（附带校时） |
+| **HTTP 同步** | [`sync_client`](src/sync_client.h) + [`sync_session`](src/sync_session.h) | sync_client=纯 HTTP 客户端（增量词库拉取/回传/心跳/天气拉取附带校时）；sync_session=云端编排层（凭据装载/MAC 幂等注册/401 换钥自愈/静默心跳会话/后台任务，自 main 拆出） |
 | **OTA** | [`ota_manager`](src/ota_manager.h) | 双分区升级: 下载 / 校验 / 切换 / 回滚 |
 | **Wi-Fi 配置 UI** | [`wifi_config_ui`](src/wifi_config_ui.h) | 扫描列表 + QWERTY 软键盘配网向导（经功能菜单进入；独立任务+队列） |
 | **快捷菜单** | [`menu_ui`](src/menu_ui.h) | 长按中键进入的功能菜单分组 12 行（2026-08-24：[学习] 收藏列表/模式选择/AI 对话、[同步] 音频同步/Wi-Fi 配网/AP 门户/LAN 接收页、[系统] 设备信息/按键说明；组头小字不可选中光标跳过）（三段式反选列表+徽标，几何按 layout_profile 档位运行期派生；回调内同步绘制，无任务无队列；设计见 [`docs/MENU_DESIGN.md`](../docs/MENU_DESIGN.md)） |
-| **LAN 直传/配网门户** | [`lan_display_server`](src/lan_display_server.h) | 设备端 HTTP 服务器 + 内嵌发送页 + Wi-Fi 配网页 + mDNS + SoftAP captive portal + DNS 劫持 |
+| **LAN 直传/配网门户** | [`lan_display_server`](src/lan_display_server.h) + [`lan_pages`](src/lan_pages.h) | 设备端 HTTP 服务器 + mDNS + SoftAP captive portal + DNS 劫持；内嵌网页资产（发送页/配网页）外移 lan_pages.h |
 | **待机页** | [`standby_page`](src/standby_page.h) | 无词库时的《传习录》引文整页（引文独占：居中楷体 Bold 24px 点阵每 5 分钟轮换 + 右下角出处；HTTP Date+后端双校时、NVS 天气缓存；轮换默认局刷 + 差分/计数智能分流全刷防残影；深睡时钟 checkpoint/restore RTC 差分交接） |
 | **电源管理** | [`power_manager`](src/power_manager.h) | SoC 深睡 + 定时唤醒（P5）：无操作 10 分钟入睡全流程、唤醒原因分流、静默心跳会话入口（见下文「电源管理」节） |
 
@@ -330,7 +332,7 @@ setup() (Arduino)
   ├─ 1.5 电源分流 (P5): TIMER 唤醒 → 静默心跳会话 (校时/上报/OTA 后回睡, 不返回);
   │     中键唤醒 → 时钟 RTC 差分恢复 + 幻影按键吞除武装 (见「电源管理」节)
   ├─ 2. SD 卡挂载 + 屏幕初始化 (含 NVS 屏幕方向恢复, 幂等) + 音频 + 按键
-  ├─ 3. 刷新调度器 (局刷阈值=8)
+  ├─ 3. 刷新调度器（局刷阈值 = desc.partial_count × 页面系数）
   ├─ 4. Wi-Fi 联网 (尝试已保存凭据, 关闭 Modem-Sleep)
   ├─ 4.5 Wi-Fi 配置 UI 初始化 ── 无凭据时自动开启 AP 配网门户 (captive portal)
   ├─ 5. 标记固件有效 (防 OTA 回滚)
@@ -358,7 +360,7 @@ setup() (Arduino)
 > 云端约定（`audio_sync` 菜单同步）；缺文件短震、不回退测试音；云端词
 > 播完自动进跟读评测（P1 听-跟一体流，三态屏 + 震动映射）。
 > **默认词库读音（2026-08-27）**：英文 2134 条真人 MP3 已回填 `audio` 字段
-> （`{slug}.mp3`，dictionaryapi.dev 优先/有道兑底，32k mono；生成链
+> （`{slug}.mp3`，dictionaryapi.dev 优先/有道兜底，32k mono；生成链
 > [`tools/default_vocab/fetch_audio.py`](../tools/default_vocab/README.md)，
 > 拷贝至 SD 卡 `/sdcard/audio/` 即用）。
 > **AI 对话**为第五临时视图（MODE_CHAT，P2B）：功能菜单进入，
@@ -878,32 +880,66 @@ MID 同路径）。
 ```
 InkWord_Firmware/
 ├── src/
-│   ├── main.cpp                # 主入口 (Arduino setup/loop)
+│   ├── main.cpp                # 设备装配+主 loop+base 页+deck_flow_switch（巨石拆分后 601 行）
+│   ├── word_card_ui.{cpp,h}    # 学习词卡/qa/poem 版式+释义分页+状态栏（自 main 拆出）
 │   ├── debug_log.{c,h}         # 日志封装
 │   ├── gpio_config.h           # 全局引脚映射
+│   ├── page_router.{c,h}       # 页面栈路由（push/pop/dispatch + display 注册制）
+│   ├── epd_driver.{cpp,h}      # L3 墨水屏驱动适配层 (epd_gfx_* C API)
+│   ├── epd_panel.{c,h}         # L2 面板描述符注册表（NVS 运行期选屏 / env 编译期默认）
+│   ├── panels/                 # L0/L1 面板单元（7 屏：epd_bus 族原语+电源序列+各屏序列）
+│   ├── epd_geom.{c,h}          # 窗口转置/矩形钳位纯函数（native-test）
+│   ├── layout_profile.{c,h}    # L4 布局档位层（短边分档 TINY~LARGE，native-test）
 │   ├── GxEPD2_374_DEPG0370.{cpp,h} # GxEPD2 面板类 (DEPG0370 专用初始化序列)
-│   ├── Fonts/Arial14pt7b.h    # 字体 (fontconvert 生成)
-│   ├── epd_driver.{cpp,h}      # 墨水屏驱动适配层 (epd_gfx_* C API)
+│   ├── Fonts/                  # 字体 (fontconvert 生成)
+│   ├── probe/                  # 屏驱探针归档（主构建排除，probe env 显式纳入）
+│   ├── mp3/                    # 提示音 MP3 资源
+│   ├── settings_keys.h         # NVS 键权威表（单一登记处）
 │   ├── audio_player.{c,h}      # I2S 音频（ES8311 CODEC DAC，异步任务队列）
-│   ├── audio_sync.{c,h}        # 云端词条音频补齐（P0C）
+│   ├── audio_sync.{c,h}        # 云端词条音频补齐
 │   ├── es8311.{c,h}            # ES8311 CODEC 驱动（I2C 寄存器，移植自 esp-adf）
-│   ├── mic_recorder.{c,h}      # ES8311 ADC 录音（P1/P2B）
-│   ├── chat_mode.{c,h}         # AI 对话状态机（P2B）
+│   ├── i2c_bus.{c,h}           # I2C 总线共享
+│   ├── mic_recorder.{c,h}      # ES8311 ADC 录音
+│   ├── chat_mode.{c,h}         # AI 对话状态机
+│   ├── chat_ui.{c,h}           # AI 对话页 UI
+│   ├── voice_search.{c,h}      # 语音搜词
 │   ├── button_handler.{c,h}    # 按键扫描去抖
+│   ├── haptic.{c,h} / ui_sfx.{c,h} # 震动/提示音反馈
 │   ├── storage_manager.{c,h}   # SD 卡存储
-│   ├── refresh_scheduler.{c,h} # 刷新调度
-│   ├── word_parser.{c,h}       # 词库解析
+│   ├── word_loader.{c,h}       # 词库装载
+│   ├── word_parser.{c,h}       # 词库解析（native-test）
+│   ├── catalog_index.{c,h}     # 目录索引（native-test）
+│   ├── cjk_font.{c,h} / cjk_text.{c,h} / cjk_font_sd.{c,h} # CJK 字库/文本测量/SD 级联
 │   ├── srs_engine.{c,h}        # FSRS-4.5 算法（M4，与后端对拍）
 │   ├── study_mode_machine.{c,h}# 学习模式状态机
+│   ├── deck_manager.{c,h}      # 词库组管理
+│   ├── learning_state.{c,h}    # 学习进度持久化
+│   ├── daily_plan.{c,h}        # 每日组配额（native-test）
+│   ├── quiz_session.{c,h} / quiz_ui.{c,h}  # 测验会话/UI（session 为 native-test）
+│   ├── card_layout.{c,h}       # 词卡版式纯函数（native-test）
+│   ├── browse_mode.{c,h}       # 目录浏览模式
+│   ├── review_ui.{c,h}         # 复习词表 UI
+│   ├── reader_engine.{c,h}     # 阅读引擎
+│   ├── menu_ui.{c,h}           # 快捷菜单（长按中键入口）
+│   ├── menu_icons.h            # 菜单图标位图
+│   ├── settings_ui.{c,h}       # 设置页（含运行期选屏/字号）
+│   ├── standby_page.{c,h}      # 待机页（引文+天气+农历）
+│   ├── lunar_calendar.{c,h}    # 农历查表（swift NSCalendar 离线生成）
+│   ├── weather_icons.h         # 40×40 天气图标位图（脚本生成）
+│   ├── power_manager.{c,h}     # 电源/睡眠管理
+│   ├── max17048.{c,h}          # 电量计驱动
 │   ├── wifi_manager.{c,h}      # Wi-Fi 联网
 │   ├── wifi_config_ui.{c,h}    # Wi-Fi 配置 UI（软键盘）
-│   ├── menu_ui.{c,h}           # 快捷菜单（长按中进入的功能菜单）
-│   ├── lan_display_server.{cpp,h} # LAN 直传/配网门户（HTTP 服务+内嵌网页+mDNS+DNS 劫持）
-│   ├── sync_client.{c,h}       # HTTP 同步（含天气拉取/校时）
+│   ├── ble_provision.{cpp,h}   # BLE 配网
+│   ├── lan_display_server.{cpp,h} # LAN 直传/配网门户（HTTP+mDNS+DNS 劫持；网页资产外移后 1212 行）
+│   ├── lan_pages.h             # LAN 内嵌网页资产（发送页/配网页 HTML）
+│   ├── lan_proto.{c,h}         # LAN 直传协议 v2 帧分类（native-test）
+│   ├── sync_client.{c,h}       # 纯 HTTP 同步客户端（含天气拉取/校时）
+│   ├── sync_session.{cpp,h}    # 云端同步编排层（自 main 拆出：注册/换钥/心跳/后台任务）
 │   ├── ota_manager.{c,h}       # OTA 升级
-│   ├── standby_page.{c,h}      # 无词库待机页（《传习录》引文+出处）
-│   ├── lunar_calendar.{c,h}    # 农历查表（swift NSCalendar 离线生成，2025~2035）
-│   ├── weather_icons.h         # 40×40 天气图标位图（脚本生成）
+│   ├── selftest_frame.{c,h} / selftest_diff.{c,h} / selftest_golden.h # 黄金帧自检（diff 为 native-test）
+│   ├── refresh_scheduler.{c,h} # 刷新调度
+│   ├── toolchain_stubs.c       # 工具链桩
 │   ├── CMakeLists.txt          # ESP-IDF 组件注册
 │   └── idf_component.yml       # ESP-IDF 组件依赖清单
 ├── tools/
