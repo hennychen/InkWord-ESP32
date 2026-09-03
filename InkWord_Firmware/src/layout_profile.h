@@ -4,7 +4,7 @@
  *        （PANEL_COMPAT_DESIGN §8.1 / §11.2；Phase 5 交付物）
  *
  * 档位与面板解耦：同一档位覆盖多块屏（MID = 3.7" 416x240 与
- * 4.2" 400x300）。单面板编译期选定（INKWORD_PANEL_ID），gfx 尺寸
+ * 4.2" 400x300）。档位运行期按 gfx 短边自选（首次调用后缓存），gfx 尺寸
  * 运行期恒定，首次调用后缓存；调用方均在主 loop 上下文
  * （standby / reader / main），无并发。
  *
@@ -79,6 +79,9 @@ typedef struct {
 
 /** 按运行期 gfx 短边分档（首调缓存；须在 epd_driver_init 之后调用） */
 const layout_profile_t *layout_profile_get(void);
+
+/** 清档位缓存（native-test 专用：改桩 gfx 尺寸后重新分派） */
+void layout_profile_test_reset(void);
 
 #ifdef __cplusplus
 }

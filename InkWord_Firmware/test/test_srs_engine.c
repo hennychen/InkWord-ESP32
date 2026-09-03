@@ -132,11 +132,22 @@ extern void test_selftest_diff_identical(void);
 extern void test_selftest_diff_single_byte(void);
 extern void test_selftest_diff_multi_first_offset(void);
 extern void test_selftest_diff_null_off_safe(void);
+/* T3.2 mask 纯函数：区域差异不计数/非区域计灵敏/置白/越界钳位 */
+extern void test_selftest_mask_region_diff_ignored(void);
+extern void test_selftest_mask_outside_diff_kept(void);
+extern void test_selftest_mask_whitens_region(void);
+extern void test_selftest_mask_rect_clamped(void);
 /* LAN 直传协议 v2 帧分类/头解析（T2.3 lan_proto 纯函数层） */
 extern void test_lan_classify_color_panel_paths(void);
 extern void test_lan_classify_bw_panel_degrades(void);
 extern void test_lan_v2_header_valid_bw_and_color(void);
 extern void test_lan_v2_header_rejections(void);
+/* 布局档位分派（P2c layout_profile 纯函数层，epd_gfx 桩驱动） */
+extern void test_layout_dispatch_boundaries(void);
+extern void test_layout_rotation_invariant(void);
+extern void test_layout_narrow_tiny(void);
+extern void test_layout_cached_pointer_stable(void);
+extern void test_layout_profile_sanity_all_kinds(void);
 
 /* poem 默写数据通路（v1.4 T4.4）：同 runner 挂载 */
 extern void test_word_parser_poem_dictation_fields(void);
@@ -232,9 +243,18 @@ int main(void)
     RUN_TEST(test_selftest_diff_single_byte);
     RUN_TEST(test_selftest_diff_multi_first_offset);
     RUN_TEST(test_selftest_diff_null_off_safe);
+    RUN_TEST(test_selftest_mask_region_diff_ignored);
+    RUN_TEST(test_selftest_mask_outside_diff_kept);
+    RUN_TEST(test_selftest_mask_whitens_region);
+    RUN_TEST(test_selftest_mask_rect_clamped);
     RUN_TEST(test_lan_classify_color_panel_paths);
     RUN_TEST(test_lan_classify_bw_panel_degrades);
     RUN_TEST(test_lan_v2_header_valid_bw_and_color);
     RUN_TEST(test_lan_v2_header_rejections);
+    RUN_TEST(test_layout_dispatch_boundaries);
+    RUN_TEST(test_layout_rotation_invariant);
+    RUN_TEST(test_layout_narrow_tiny);
+    RUN_TEST(test_layout_cached_pointer_stable);
+    RUN_TEST(test_layout_profile_sanity_all_kinds);
     return UNITY_END();
 }

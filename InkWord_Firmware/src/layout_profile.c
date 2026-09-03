@@ -50,10 +50,12 @@ static const layout_profile_t k_profiles[] = {
                       * 预估，「7.5" 上机校准」 */
 };
 
+/* 档位缓存：首调填充；文件级供 test_reset 清（原 get 内 static 上提） */
+static layout_profile_t s_prof;
+static bool s_ready = false;
+
 const layout_profile_t *layout_profile_get(void)
 {
-    static layout_profile_t s_prof;
-    static bool s_ready = false;
     if (!s_ready) {
         int w = epd_gfx_width(), h = epd_gfx_height();
         int short_px = (w < h) ? w : h;
@@ -69,4 +71,8 @@ const layout_profile_t *layout_profile_get(void)
         s_ready = true;
     }
     return &s_prof;
+}
+
+void layout_profile_test_reset(void) { /* native-test 专用：清缓存 */
+    s_ready = false;
 }
