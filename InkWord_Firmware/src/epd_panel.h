@@ -106,26 +106,12 @@ typedef struct epd_panel_desc {
     } ops;
 } epd_panel_desc_t;
 
-/* Phase 3 构建矩阵：面板轴编译期选择（§7.1/§14.1，platformio.ini
- * env 注入 -D 宏；板级轴 INKWORD_BOARD_* 与此正交，二维自由组合）。
- * 新增面板：在此追加一个 elif 分支 + platformio.ini 对应 env */
-#if defined(INKWORD_PANEL_E042A13)
-#define EPD_PANEL_DEFAULT_ID "e042a13_ssd1619"  /* 4.2" 400x300 BWR 三色 */
-#elif defined(INKWORD_PANEL_WF0270)
-#define EPD_PANEL_DEFAULT_ID "wf0270_ssd1680"  /* 2.7" 264x176 BWR 三色 */
-#elif defined(INKWORD_PANEL_GDEW027C44)
-#define EPD_PANEL_DEFAULT_ID "gdew027c44_il91874"  /* 2.7" 264x176 BWR
-                                                     * 三色（真机验证面板） */
-#elif defined(INKWORD_PANEL_E042A13BW)
-#define EPD_PANEL_DEFAULT_ID "e042a13bw_ssd1619"  /* 4.2" 400x300 BW
-                              * （E042A13-A0 黑白版，骨架：bring-up 待硬件） */
-#elif defined(INKWORD_PANEL_WFT0290)
-#define EPD_PANEL_DEFAULT_ID "wft0290_bw"  /* 2.9" 128x296 BW 竖屏
-                              * （WFT0290CZ10，骨架：bring-up 待硬件） */
-#elif defined(INKWORD_PANEL_OPM021EB)
-#define EPD_PANEL_DEFAULT_ID "opm021eb_bw"  /* 2.13" 122x250 BW 竖屏
-                              * （电子标签，骨架：bring-up 待硬件） */
-#else
+/* 编译期默认面板 id：面板 env 直接注入 -D EPD_PANEL_DEFAULT_ID="..."
+ * （platformio.ini；原 INKWORD_PANEL_* 中转宏链裁剪，P3 注册表收敛：
+ * 加面板只改 platformio.ini env + panels/ 注册单元，本头不再维护
+ * 型号清单）；未注入（统一固件 inkword-s3 / probe env）时兜底
+ * DEPG0370，运行期 NVS set_panel 覆盖优先于本默认 */
+#ifndef EPD_PANEL_DEFAULT_ID
 #define EPD_PANEL_DEFAULT_ID "depg0370_uc8253"  /* 默认：3.7" 240x416 BW */
 #endif
 
@@ -135,6 +121,19 @@ typedef struct epd_panel_desc {
  * @return 命中返回描述符指针（静态生存期）；未命中返回 NULL。
  */
 const epd_panel_desc_t *epd_panel_get_by_id(const char *id);
+
+/**
+ * @brief 注册表面板总数（P1 运行期选屏：设置页「面板型号」行循环
+ *        选择 / device-info 列举消费）。
+ */
+int epd_panel_registry_count(void);
+
+/**
+ * @brief 按注册序取面板描述符（与 get_by_id 同源注册表）。
+ * @param idx 注册序号，0 <= idx < epd_panel_registry_count()。
+ * @return 越界返回 NULL。
+ */
+const epd_panel_desc_t *epd_panel_at(int idx);
 
 #ifdef __cplusplus
 }

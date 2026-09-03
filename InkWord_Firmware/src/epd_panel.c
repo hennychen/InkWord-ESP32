@@ -10,9 +10,10 @@
  *   2. 此处 extern 声明；
  *   3. s_registry[] 追加一行。
  * Phase 3 构建矩阵落地：面板单元当前均无条件编入（S3 16MB Flash
- * 充裕，注册表完整保留运行期查表能力 —— NVS 运行期选屏预留）；
- * INKWORD_PANEL_* 宏只切换 EPD_PANEL_DEFAULT_ID（epd_panel.h），
- * 未选单元的编译期排除留作 Flash 紧张时的优化项
+ * 充裕，注册表完整保留运行期查表能力）；面板 env 经 -D EPD_PANEL_DEFAULT_ID 直钉默认（P3 宏链裁剪），
+ * 未选单元的编译期排除留作 Flash 紧张时的优化项。P1 收官（2026-09-02）：NVS set_panel 运行期
+ * 选屏落地（epd_driver_init 读键覆盖默认 ID，详见该处注释），
+ * 本文件枚举 API（registry_count/at）供设置页循环选择使用
  */
 #include "epd_panel.h"
 
@@ -61,4 +62,16 @@ const epd_panel_desc_t *epd_panel_get_by_id(const char *id)
         }
     }
     return NULL;
+}
+
+int epd_panel_registry_count(void)
+{
+    return (int)(sizeof(s_registry) / sizeof(s_registry[0]));
+}
+
+const epd_panel_desc_t *epd_panel_at(int idx)
+{
+    if (idx < 0 || (size_t)idx >= sizeof(s_registry) / sizeof(s_registry[0]))
+        return NULL;
+    return s_registry[idx];
 }
