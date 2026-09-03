@@ -304,21 +304,13 @@ static int panel_partial(const uint8_t *prev, const uint8_t *new_,
 
 static void panel_power_off(void)
 {
-    /* GxEPD2 _PowerOff 忠实：0x02 关高压 rails（VCI 3.3V 保持供电）。
-     * 完成后归零 s_ready —— 下次刷新完整重配 */
-    if (!s_ready) return;
-    bus_cmd(0x02);
-    bus_wait_idle(&g_panel_wft0290, 1000);
-    s_ready = false;
+    /* P2d：UC8151D 系关电收敛 epd_bus（两家面板 byte 级一致） */
+    bus_uc_power_off(&g_panel_wft0290, &s_ready);
 }
 
 static void panel_deep_sleep(void)
 {
-    /* 深睡 0x07/0xA5（~µA 级），RST 硬复位唤醒 + uc_init 重初始化 */
-    bus_cmd(0x07);
-    bus_dat(0xA5);
-    delay(200);
-    s_ready = false;
+    bus_uc_deep_sleep(&s_ready);
 }
 
 /* —— desc 注册（三轮实锤回填：controller=UC8151D、busy_level=0、

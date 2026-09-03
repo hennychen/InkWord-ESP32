@@ -197,6 +197,50 @@ uint8_t bus_diag_read_status(uint8_t cmd, bool delay_50ms)
     return flg;
 }
 
+/* ---- 族标准电源序列（P2d 家族化：byte 级一致者单点，见头注释） ---- */
+
+void bus_ssd16_power_off(const epd_panel_desc_t *d, bool *ready)
+{
+    /* SSD16xx 标准关电（GxEPD2 GDEY042Z98/_PowerOff 同款；wf0270 /
+     * e042a13 / e042a13bw 三家一致）：0x22/0xC3 + 0x20。完成后归零
+     * *ready —— 下次刷新完整重配（无状态铁律，不赌关电后 RAM
+     * 窗口/计数器存活） */
+    if (!*ready) return;
+    bus_cmd(0x22); bus_dat(0xC3);
+    bus_cmd(0x20);
+    bus_wait_idle(d, d->busy_timeout_ms);
+    *ready = false;
+}
+
+void bus_ssd16_deep_sleep(bool *ready)
+{
+    /* Waveshare Sleep(_new) 一比一：0x10 check 0x01 深睡（~µA 级），
+     * RST 硬复位唤醒 + panel_init 重初始化（三家 demo 实证同款） */
+    bus_cmd(0x10); bus_dat(0x01);
+    *ready = false;
+}
+
+void bus_uc_power_off(const epd_panel_desc_t *d, bool *ready)
+{
+    /* GxEPD2 _PowerOff 忠实（opm021eb / wft0290 一致）：0x02 关高压
+     * rails（VCI 3.3V 保持供电）。完成后归零 *ready —— 下次刷新
+     * 完整重配 */
+    if (!*ready) return;
+    bus_cmd(0x02);
+    bus_wait_idle(d, 1000);
+    *ready = false;
+}
+
+void bus_uc_deep_sleep(bool *ready)
+{
+    /* UC 系深睡 0x07/0xA5（~µA 级）+ 200ms 稳定窗，RST 硬复位唤醒
+     * + uc_init 重初始化（两家面板一致） */
+    bus_cmd(0x07);
+    bus_dat(0xA5);
+    delay(200);
+    *ready = false;
+}
+
 /* desc.ops.diag 族标准实现（原 epd_driver_init 2d 段逻辑下沉，T1.8：
  * L3 不再感知控制器型号）。连读两次看稳定性；函数体整体门控，
  * 生产态空实现（链接符号保留，零体积零延迟） */

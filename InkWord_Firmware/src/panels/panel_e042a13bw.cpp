@@ -330,21 +330,13 @@ static int panel_partial(const uint8_t *prev, const uint8_t *new_, uint8_t passe
 
 static void panel_power_off(void)
 {
-    /* SSD16xx 标准关电序列（与三色版相同）：0x22/0xC3 + 0x20。
-     * 完成后归零 s_ready —— 下次刷新完整重配（无状态铁律） */
-    if (!s_ready) return;
-    bus_cmd(0x22); bus_dat(0xC3);
-    bus_cmd(0x20);
-    bus_wait_idle(&g_panel_e042a13bw, g_panel_e042a13bw.busy_timeout_ms);
-    s_ready = false;
+    /* P2d：SSD16xx 族关电收敛 epd_bus（三家面板 byte 级一致） */
+    bus_ssd16_power_off(&g_panel_e042a13bw, &s_ready);
 }
 
 static void panel_deep_sleep(void)
 {
-    /* Waveshare Sleep 一比一：0x10 check 0x01 深睡（~µA 级），
-     * RST 硬复位唤醒 + panel_init 重初始化 */
-    bus_cmd(0x10); bus_dat(0x01);
-    s_ready = false;
+    bus_ssd16_deep_sleep(&s_ready);
 }
 
 /* —— desc 注册（BW 面板，与三色兄弟屏同族 SSD1619）——

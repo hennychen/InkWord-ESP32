@@ -86,6 +86,26 @@ int bus_detect_alive(const epd_panel_desc_t *d);
  * 同款）。判族口径：期望空闲电平 = !busy_level（UC 族 idle HIGH /
  * SSD16xx idle LOW）。异常 → fail-safe -1（epd_driver_init LOG_E 退出） */
 
+/* —— 族标准电源序列（P2d 家族化） ——
+ * 仅收敛族内 byte 级一致的关电/深睡（SSD16xx 三家 / UC8151D 系
+ * 两家，真值表见 epd_bus.cpp）；各面板 init/refresh 序列有屏间
+ * 实质差异（OTP 预载 vs 显式初始链 / 激活命令不同），按「序列
+ * 字节不动」铁律留在面板文件。s_ready 指针传参：各面板 static
+ * 状态保持隔离（无状态铁律不变）；后续 SSD16xx/UC 新屏直接复用，
+ * 防第三种抄写变体 */
+
+void bus_ssd16_power_off(const epd_panel_desc_t *d, bool *ready);
+/* SSD16xx 关电：0x22/0xC3 + 0x20 + 等空闲（超时取 desc） */
+
+void bus_ssd16_deep_sleep(bool *ready);
+/* SSD16xx 深睡：0x10 check 0x01（~µA 级），RST 硬复位唤醒重配 */
+
+void bus_uc_power_off(const epd_panel_desc_t *d, bool *ready);
+/* UC8151D 系关电：0x02 关高压 rails + 1s 等空闲（VCI 保持供电） */
+
+void bus_uc_deep_sleep(bool *ready);
+/* UC 系深睡：0x07/0xA5 + 200ms 稳定窗，RST 硬复位唤醒重配 */
+
 /* —— 状态读诊断（T1.8：desc.ops.diag 标准实现） —— */
 
 uint8_t bus_diag_read_status(uint8_t cmd, bool delay_50ms);

@@ -221,22 +221,13 @@ static int panel_partial(const uint8_t *prev, const uint8_t *new_, uint8_t passe
 
 static void panel_power_off(void)
 {
-    /* SSD16xx 标准关电序列（GxEPD2 GDEY042Z98/_PowerOff 同款）：
-     * 0x22/0xC3 + 0x20。完成后归零 s_ready —— 下次刷新完整重配
-     * （无状态铁律，不赌关电后 RAM 窗口/计数器存活） */
-    if (!s_ready) return;
-    bus_cmd(0x22); bus_dat(0xC3);
-    bus_cmd(0x20);
-    bus_wait_idle(&g_panel_e042a13, g_panel_e042a13.busy_timeout_ms);
-    s_ready = false;
+    /* P2d：SSD16xx 族关电收敛 epd_bus（三家面板 byte 级一致） */
+    bus_ssd16_power_off(&g_panel_e042a13, &s_ready);
 }
 
 static void panel_deep_sleep(void)
 {
-    /* Waveshare Sleep_new 一比一：0x10 check 0x01 深睡（~µA 级），
-     * RST 硬复位唤醒 + panel_init 重初始化（demo 注释实证路径） */
-    bus_cmd(0x10); bus_dat(0x01);
-    s_ready = false;
+    bus_ssd16_deep_sleep(&s_ready);
 }
 
 /* —— desc 注册（第二面板单元，色彩面板首例）——
