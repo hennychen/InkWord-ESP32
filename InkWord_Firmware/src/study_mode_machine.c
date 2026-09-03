@@ -30,6 +30,7 @@
 
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "settings_keys.h"   /* P2b：NVS 键权威表 */
 
 static const char *TAG = "MODE";
 
@@ -92,9 +93,9 @@ void study_mode_init(void)
 {
     /* 从 NVS 恢复上次模式（错词本/收藏/对话是临时视图，不接受恢复） */
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) == ESP_OK) {
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
         uint8_t m = 0;
-        if (nvs_get_u8(h, "last_mode", &m) == ESP_OK &&
+        if (nvs_get_u8(h, NVS_KEY_LAST_MODE, &m) == ESP_OK &&
             m < MODE_COUNT && m != MODE_WRONGBOOK && m != MODE_COLLECTION &&
             m != MODE_CHAT && m != MODE_QUIZ && m != MODE_BROWSE &&
             m != MODE_VOICE) {
@@ -123,8 +124,8 @@ static void apply_mode(study_mode_t mode)
     s_reveal = true;
 
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, "last_mode", (uint8_t)s_current);
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, NVS_KEY_LAST_MODE, (uint8_t)s_current);
         nvs_commit(h);
         nvs_close(h);
     }
@@ -158,8 +159,10 @@ const char *study_mode_name(study_mode_t mode)
     return (mode >= 0 && mode < MODE_COUNT) ? s_names[mode] : "Unknown";
 }
 
-/* ---- 模式相关渲染桩：实际由 UI 渲染模块填充 ---- */
-extern void ui_render_word(study_mode_t mode, int index);  /* 定义在 main.c */
+/* ---- 模式相关渲染桩：实际由 UI 渲染模块填充 ----
+ * T2.2 base 收敛：翻页/重置/seek/字号四处直渲改 page_router_render_top
+ * （base_render 单入口分流，current_word_index 同口径闭环） */
+#include "page_router.h"
 
 /* ---- 跟读评测编排（P1：听-跟一体流，任务化不阻塞按键） ----
  * 反馈优先 haptic（PRD 5.4）：录音起一短震、≥60 双短震（HAPTIC_PASS
@@ -302,7 +305,7 @@ void study_mode_handle_action(int action)
     /* 仅画面变化的动作触发重绘：翻页(prev/next)与翻义(confirm) 局刷内容区；
      * speak(3) 只播放音频，不浪费刷新次数 */
     if (action == 0 || action == 1 || action == 2) {
-        ui_render_word(s_current, seq_word_index(s_cursor));
+        page_router_render_top();
     }
 }
 
@@ -316,7 +319,7 @@ void study_mode_reset_cursor(void)
     s_cursor = 0;
     s_reveal = true;
     LOG_D("cursor reset to #0");
-    ui_render_word(s_current, seq_word_index(s_cursor));
+    page_router_render_top();
 }
 
 bool study_mode_enter_wrongbook(void)
@@ -492,7 +495,7 @@ void study_mode_seek(int word_index)
     s_cursor = word_index;
     s_reveal = true;
     LOG_I("seek to word #%d", word_index);
-    ui_render_word(s_current, seq_word_index(s_cursor));
+    page_router_render_top();
 }
 
 bool study_mode_after_uncollect(void)
@@ -547,7 +550,7 @@ void study_mode_reader_font_step(int dir)
 {
     if (s_current != MODE_READER || !reader_ready()) return;
     s_cursor = reader_font_step(dir, s_cursor);
-    ui_render_word(s_current, s_cursor);
+    page_router_render_top();   /* base READER 分支 seq_pos 同口径 */
 }
 
 int study_mode_seq_pos(void)

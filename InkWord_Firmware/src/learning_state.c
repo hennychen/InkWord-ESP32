@@ -19,6 +19,7 @@
 #include "debug_log.h"
 
 #include "nvs.h"
+#include "settings_keys.h"   /* P2b：NVS 键权威表 */
 #include "esp_timer.h"
 #include "esp_heap_caps.h"   /* 状态数组 PSRAM（词库扩容 2026-08-20） */
 #include "freertos/FreeRTOS.h"  /* portMUX：队列跨 task 访问的临界区 */
@@ -105,7 +106,10 @@ typedef struct __attribute__((packed)) {
     lr_dentry_t e[LR_DSTATS_MAX];
 } lr_dstats_t;                  /* 8 + 72 = 80B */
 
-static lr_dstats_t s_dstats = { LR_DSTATS_MAGIC, 0, 0, {0, 0, 0}, {{0}} };
+static lr_dstats_t s_dstats = { LR_DSTATS_MAGIC, 0, 0, {0, 0, 0},
+                               {{{0}, 0, 0}} }; /* e[0] 全字段显式，余条目零填
+                                                      *（数组部分初始化不触发
+                                                      * -Wmissing-field-initializers）*/
 static bool s_dstats_dirty = false;
 
 /* 天数序号（Howard Hinnant days_from_civil；跨日差=1 判连续，
@@ -162,10 +166,10 @@ static void stats_roll(int64_t epoch)
 static void stats_load(void)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
     lr_stats_t t;
     size_t len = sizeof(t);
-    if (nvs_get_blob(h, "lr_stats", &t, &len) == ESP_OK &&
+    if (nvs_get_blob(h, NVS_KEY_LR_STATS, &t, &len) == ESP_OK &&
         len == sizeof(t) && t.magic == LR_STATS_MAGIC)
         s_stats = t;
     nvs_close(h);
@@ -176,10 +180,10 @@ static void stats_load(void)
 static void dstats_load(void)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
     lr_dstats_t t;
     size_t len = sizeof(t);
-    if (nvs_get_blob(h, "lr_stdeck", &t, &len) == ESP_OK &&
+    if (nvs_get_blob(h, NVS_KEY_LR_STDECK, &t, &len) == ESP_OK &&
         len == sizeof(t) && t.magic == LR_DSTATS_MAGIC)
         s_dstats = t;
     else
@@ -277,8 +281,8 @@ static void lr_set_deck(const char *deck_id)
  * "lr_st_<id>"（6+7=13 ≤ 键名 15 上限；与 rd_* 进度键后缀同先例） */
 static void lr_key(char *out, size_t cap)
 {
-    if (!s_deck[0]) snprintf(out, cap, "lr_state");
-    else            snprintf(out, cap, "lr_st_%s", s_deck);
+    if (!s_deck[0]) snprintf(out, cap, NVS_KEY_LR_STATE);
+    else            snprintf(out, cap, NVS_KEY_LR_ST_PFX "%s", s_deck);
 }
 
 typedef struct __attribute__((packed)) {
@@ -386,7 +390,7 @@ static void restore_from_nvs(void)
     lr_key(key, sizeof(key));
 
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
 
     /* LR04：header = magic(4) + deck[8] + count(2) + used(2) */
     size_t len = 0;
@@ -549,7 +553,7 @@ void learning_state_save(void)
     char key[16];
     lr_key(key, sizeof(key));
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READWRITE, &h) == ESP_OK) {
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
         esp_err_t err = nvs_set_blob(h, key, buf, len);
         if (err == ESP_OK) err = nvs_commit(h);
         if (err != ESP_OK) LOG_W("lr_state save failed: %d", (int)err);
@@ -560,8 +564,8 @@ void learning_state_save(void)
     /* 今日统计随同窗口落盘（独立 key，跨词库变化保留；SD01 按组
      * 表同窗口——评分路径两表同脏，写失败独立告警互不阻断） */
     if (s_stats_dirty) {
-        if (nvs_open("inkword", NVS_READWRITE, &h) == ESP_OK) {
-            esp_err_t err = nvs_set_blob(h, "lr_stats", &s_stats, sizeof(s_stats));
+        if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+            esp_err_t err = nvs_set_blob(h, NVS_KEY_LR_STATS, &s_stats, sizeof(s_stats));
             if (err == ESP_OK) err = nvs_commit(h);
             if (err != ESP_OK) LOG_W("lr_stats save failed: %d", (int)err);
             nvs_close(h);
@@ -569,8 +573,8 @@ void learning_state_save(void)
         s_stats_dirty = false;
     }
     if (s_dstats_dirty) {
-        if (nvs_open("inkword", NVS_READWRITE, &h) == ESP_OK) {
-            esp_err_t err = nvs_set_blob(h, "lr_stdeck", &s_dstats, sizeof(s_dstats));
+        if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+            esp_err_t err = nvs_set_blob(h, NVS_KEY_LR_STDECK, &s_dstats, sizeof(s_dstats));
             if (err == ESP_OK) err = nvs_commit(h);
             if (err != ESP_OK) LOG_W("lr_stdeck save failed: %d", (int)err);
             nvs_close(h);

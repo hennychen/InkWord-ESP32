@@ -26,6 +26,7 @@
 
 #include "esp_heap_caps.h"
 #include "nvs.h"
+#include "settings_keys.h"   /* P2b：NVS 键权威表 */
 
 static const char *TAG = "READER";
 
@@ -295,10 +296,10 @@ void reader_set_progress_scope(const char *scope)
 static void progress_save(int page)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u32(h, rd_key("rd_sig"), s_sig);
-    nvs_set_u8(h, rd_key("rd_font"), (uint8_t)s_level);
-    nvs_set_u32(h, rd_key("rd_page"), (uint32_t)page);
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u32(h, rd_key(NVS_KEY_RD_SIG), s_sig);
+    nvs_set_u8(h, rd_key(NVS_KEY_RD_FONT), (uint8_t)s_level);
+    nvs_set_u32(h, rd_key(NVS_KEY_RD_PAGE), (uint32_t)page);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -306,7 +307,7 @@ static void progress_save(int page)
 static void font_level_restore(void)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
     uint32_t sig = 0;
     uint8_t fnt = (uint8_t)layout_profile_get()->reader_level;  /* 档位默认 */
     /* v1.2 T2.5 大字档：无记忆默认级 +1（用户书内 rd_font 记忆
@@ -314,8 +315,8 @@ static void font_level_restore(void)
      * set_font 1/2 均按 +1 处理（24px 为字库上限），逻辑天然兼容 */
     if (settings_font_mode() && fnt + 1 < CJK_FONT_LEVELS)
         fnt++;
-    bool hit = nvs_get_u32(h, rd_key("rd_sig"), &sig) == ESP_OK && sig == s_sig;
-    if (hit && nvs_get_u8(h, rd_key("rd_font"), &fnt) == ESP_OK && fnt >= CJK_FONT_LEVELS)
+    bool hit = nvs_get_u32(h, rd_key(NVS_KEY_RD_SIG), &sig) == ESP_OK && sig == s_sig;
+    if (hit && nvs_get_u8(h, rd_key(NVS_KEY_RD_FONT), &fnt) == ESP_OK && fnt >= CJK_FONT_LEVELS)
         fnt = R_DEF_LEVEL;
     nvs_close(h);
     if (hit) s_level = fnt;
@@ -343,10 +344,10 @@ int reader_font_level(void)      { return s_level; }
 int reader_progress_page(void)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) return -1;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return -1;
     uint32_t sig = 0, page = 0;
-    int r = (nvs_get_u32(h, rd_key("rd_sig"), &sig) == ESP_OK && sig == s_sig &&
-             nvs_get_u32(h, rd_key("rd_page"), &page) == ESP_OK &&
+    int r = (nvs_get_u32(h, rd_key(NVS_KEY_RD_SIG), &sig) == ESP_OK && sig == s_sig &&
+             nvs_get_u32(h, rd_key(NVS_KEY_RD_PAGE), &page) == ESP_OK &&
              (int32_t)page < s_page_n) ? (int)page : -1;
     nvs_close(h);
     return r;

@@ -7,6 +7,7 @@
 #include "deck_manager.h"
 
 #include "nvs.h"
+#include "settings_keys.h"   /* P2b：NVS 键权威表 */
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -65,8 +66,8 @@ static int32_t epoch_ymd(int64_t epoch)
 
 static void dp_goal_key(char *out, size_t cap, const char *deck_id)
 {
-    if (!deck_id || !deck_id[0]) snprintf(out, cap, "set_daily");
-    else                         snprintf(out, cap, "sd_%s", deck_id);
+    if (!deck_id || !deck_id[0]) snprintf(out, cap, NVS_KEY_SET_DAILY);
+    else                         snprintf(out, cap, NVS_KEY_SD_PFX "%s", deck_id);
 }
 
 int daily_plan_goal_deck(const char *deck_id)
@@ -77,7 +78,7 @@ int daily_plan_goal_deck(const char *deck_id)
     dp_goal_key(key, sizeof(key), deck_id);
 
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) == ESP_OK) {
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
         uint8_t v = DP_DEFAULT_GOAL;
         bool hit = nvs_get_u8(h, key, &v) == ESP_OK;   /* 无键保持默认 */
         nvs_close(h);
@@ -102,7 +103,7 @@ void daily_plan_set_goal(int n)
     dp_goal_key(key, sizeof(key), deck_manager_active_id());
 
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READWRITE, &h) == ESP_OK) {
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_u8(h, key, (uint8_t)n);
         nvs_commit(h);
         nvs_close(h);
@@ -123,9 +124,9 @@ bool daily_plan_done(void)
 static int32_t exam_ymd_load(void)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) == ESP_OK) {
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
         uint32_t v = 0;
-        bool hit = nvs_get_u32(h, "set_exam", &v) == ESP_OK;
+        bool hit = nvs_get_u32(h, NVS_KEY_SET_EXAM, &v) == ESP_OK;
         nvs_close(h);
         if (hit && v >= 20250101 && v <= 20991231) return (int32_t)v;
     }
@@ -157,8 +158,8 @@ void exam_set_days(int n)
         /* 清除（n=0），或时钟未同步拒绝设置（保持未设，设置页回显"关"） */
         if (n <= 0) {
             nvs_handle_t h;
-            if (nvs_open("inkword", NVS_READWRITE, &h) == ESP_OK) {
-                nvs_set_u32(h, "set_exam", 0);
+            if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+                nvs_set_u32(h, NVS_KEY_SET_EXAM, 0);
                 nvs_commit(h);
                 nvs_close(h);
             }
@@ -169,8 +170,8 @@ void exam_set_days(int n)
     int32_t ymd = civil_from_days(civil_days(today / 10000, today % 10000 / 100,
                                              today % 100) + n);
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u32(h, "set_exam", (uint32_t)ymd);
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u32(h, NVS_KEY_SET_EXAM, (uint32_t)ymd);
         nvs_commit(h);
         nvs_close(h);
     }

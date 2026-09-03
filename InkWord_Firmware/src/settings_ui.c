@@ -18,14 +18,17 @@
 #include "daily_plan.h"
 
 #include "epd_driver.h"
+#include "epd_panel.h"    /* P1 运行期选屏：注册表枚举（面板型号行） */
 #include "cjk_text.h"
 #include "layout_profile.h"   /* 2026-08-25：档位判定（原 h<200 启发式误判竖屏） */
 #include "es8311.h"      /* 2026-08-27 音量：setter 内即时 apply codec */
 #include "debug_log.h"
 #include "nvs.h"
+#include "settings_keys.h"   /* P2b：NVS 键权威表 */
 
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>    /* P1 面板型号行：strchr 简短名截断 */
 
 static const char *TAG = "SET";
 
@@ -40,10 +43,17 @@ static int8_t s_quizgrid = -1;   /* v1.5 T5.1：测验快答（2×2 方向直选
 static int8_t s_rotmode = -1;    /* 2026-08-26 屏幕方向（0=默认/1=竖/2=横） */
 static int8_t s_vol = -1;        /* 2026-08-27 音量（0~100 步进10，默认75） */
 
+/* P1 运行期选屏（2026-09-02）：面板型号切换后的提示行状态——切换
+ * 置位并记简短名，draw_page 非 full 绘制也重画提示行（「重启生效」
+ * 信息可达性：值列紧凑档仅「自定」二态）；保持到退出设置页全刷，
+ * 行间移动不清（提醒重启仍在效，避免每次移动多刷一行） */
+static bool s_hint_reboot = false;
+static char  s_hint_name[16];
+
 static int8_t load_u8(const char *key, int8_t def)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) == ESP_OK) {
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
         uint8_t v;
         bool hit = nvs_get_u8(h, key, &v) == ESP_OK;
         nvs_close(h);
@@ -55,8 +65,42 @@ static int8_t load_u8(const char *key, int8_t def)
 static void save_u8(const char *key, uint8_t v)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READWRITE, &h) == ESP_OK) {
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_u8(h, key, v);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+/* set_panel（str 键，P1 运行期选屏）：存面板注册名（epd_driver_init
+ * 读键覆盖 EPD_PANEL_DEFAULT_ID）；「默认」=删键（deck_active 哲学） */
+static bool load_panel_override(char *out, size_t outsz)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        size_t len = outsz;
+        bool hit = nvs_get_str(h, NVS_KEY_SET_PANEL, out, &len) == ESP_OK;
+        nvs_close(h);
+        return hit;
+    }
+    return false;
+}
+
+static void save_panel_override(const char *name)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, NVS_KEY_SET_PANEL, name);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static void clear_panel_override(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, NVS_KEY_SET_PANEL);
         nvs_commit(h);
         nvs_close(h);
     }
@@ -64,49 +108,49 @@ static void save_u8(const char *key, uint8_t v)
 
 bool settings_audio_enabled(void)
 {
-    if (s_audio < 0) s_audio = load_u8("set_audio", 1);
+    if (s_audio < 0) s_audio = load_u8(NVS_KEY_SET_AUDIO, 1);
     return s_audio != 0;
 }
 
 bool settings_haptic_enabled(void)
 {
-    if (s_haptic < 0) s_haptic = load_u8("set_haptic", 1);
+    if (s_haptic < 0) s_haptic = load_u8(NVS_KEY_SET_HAPTIC, 1);
     return s_haptic != 0;
 }
 
 int settings_font_mode(void)
 {
-    if (s_font < 0) s_font = load_u8("set_font", 0);
+    if (s_font < 0) s_font = load_u8(NVS_KEY_SET_FONT, 0);
     return s_font > 2 ? 2 : s_font;   /* 三档钳位（脏值防御）：0/1/2 */
 }
 
 int settings_word_size(void)
 {
-    if (s_wordsize < 0) s_wordsize = load_u8("set_word", 0);
+    if (s_wordsize < 0) s_wordsize = load_u8(NVS_KEY_SET_WORD, 0);
     return s_wordsize > 2 ? 2 : s_wordsize;   /* 0=大/1=中/2=小（脏值钳位） */
 }
 
 bool settings_bold_enabled(void)
 {
-    if (s_bold < 0) s_bold = load_u8("set_bold", 0);
+    if (s_bold < 0) s_bold = load_u8(NVS_KEY_SET_BOLD, 0);
     return s_bold != 0;   /* 默认关：常规表，视觉零变化铁律 */
 }
 
 bool settings_quiz_grid(void)
 {
-    if (s_quizgrid < 0) s_quizgrid = load_u8("set_quizgrid", 0);
+    if (s_quizgrid < 0) s_quizgrid = load_u8(NVS_KEY_SET_QUIZGRID, 0);
     return s_quizgrid != 0;
 }
 
 int settings_rotation_mode(void)
 {
-    if (s_rotmode < 0) s_rotmode = load_u8("set_rot", 0);
+    if (s_rotmode < 0) s_rotmode = load_u8(NVS_KEY_SET_ROT, 0);
     return (s_rotmode >= 0 && s_rotmode <= 2) ? s_rotmode : 0;
 }
 
 int settings_volume(void)
 {
-    if (s_vol < 0) s_vol = load_u8("set_vol", 75);   /* 75=0dB 历史听感 */
+    if (s_vol < 0) s_vol = load_u8(NVS_KEY_SET_VOL, 75);   /* 75=0dB 历史听感 */
     return s_vol;
 }
 
@@ -115,13 +159,13 @@ void settings_volume_set(int v)
     if (v < 0) v = 0;
     if (v > 100) v = 100;
     s_vol = (int8_t)v;
-    save_u8("set_vol", (uint8_t)v);
+    save_u8(NVS_KEY_SET_VOL, (uint8_t)v);
     es8311_set_volume(v);   /* 即时生效（codec 未起播时 -1 无害：dac_start 回写） */
 }
 
 /* ---- 覆盖层 UI（menu_ui 范式镜像） ---- */
 
-#define SET_ITEMS 10
+#define SET_ITEMS 11
 
 static bool s_active = false;
 static int  s_sel = 0;          /* 当前编辑行 */
@@ -138,11 +182,11 @@ static const char *set_label(int i)
 {
     static const char *k_full[SET_ITEMS] = {
         "每日新词量", "发音", "震动", "字号", "单词大小", "粗细", "测验快答",
-        "考试倒计时", "屏幕方向", "音量",
+        "考试倒计时", "屏幕方向", "音量", "面板型号",
     };
     static const char *k_tiny[SET_ITEMS] = {
         "新词量", "发音", "震动", "字号", "单词大小", "粗细", "测验快答",
-        "倒计时", "屏幕方向", "音量",
+        "倒计时", "屏幕方向", "音量", "面板",
     };
     return layout_profile_get()->kind == LAYOUT_TINY ? k_tiny[i]
                                                       : k_full[i];
@@ -187,6 +231,22 @@ static void row_value(int i, char *buf, size_t bufsz)
         if (settings_volume() == 0) snprintf(buf, bufsz, "%s", "静音");
         else                         snprintf(buf, bufsz, "%d", settings_volume());
         break;
+    case 10: {   /* 面板型号（P1 运行期选屏，2026-09-02）：值列显示
+        NVS 覆盖意图（键缺失=「默认」）；紧凑档正文宽放不下 ASCII
+        注册名（"gdew027c44" 10 字符 80px > 106/112px 可用宽），降级
+        「自定」二态——完整型号串口 LOG / device-info 可查 */
+        char id[32];
+        if (!load_panel_override(id, sizeof(id))) {
+            snprintf(buf, bufsz, "%s", "默认");
+        } else if (layout_profile_get()->kind <= LAYOUT_SMALL) {
+            snprintf(buf, bufsz, "%s", "自定");
+        } else {
+            char *cut = strchr(id, '_');   /* 简短名：家族后缀截断 */
+            if (cut) *cut = 0;
+            snprintf(buf, bufsz, "%s", id);
+        }
+        break;
+    }
     }
 }
 
@@ -274,14 +334,32 @@ static void draw_page(bool full)
     /* 底部提示栏：TINY 档省略（menu_ui MU_HINT_H=0 同款——提示行 16px
      * 全长约 216px 超 106/112px 正文宽）；SMALL 及以上照画，滚动档位
      * 末行底 status_h+4+vis*lh ≤ h-(18|24)+4 与提示行 (h-16|h-18)
-     * 无重叠（SMALL/MID 实算验证） */
-    if (full && layout_profile_get()->kind != LAYOUT_TINY)
-        cjk_text_draw(margin, h - (compact ? 16 : 18), 0,
-                      "上/下 选择 · 中 切换 · SET 退出", EPD_GFX_BLACK);
+     * 无重叠（SMALL/MID 实算验证）。s_hint_reboot（面板型号切换后）
+     * 非 full 绘制也重画此行（「重启生效」信息可达性），局刷窗口连带
+     * 扩至全屏；SMALL 提示缩 4 字版（全长带型号名超宽同因） */
+    if ((full || s_hint_reboot) &&
+        layout_profile_get()->kind != LAYOUT_TINY) {
+        if (!full)   /* 非 full 路径画布未整屏清底，提示行区域先清 */
+            epd_gfx_fill_rect(margin, h - (compact ? 16 : 18),
+                              w - 2 * margin, compact ? 16 : 18,
+                              EPD_GFX_WHITE);
+        if (s_hint_reboot) {
+            char msg[40];
+            if (compact) snprintf(msg, sizeof(msg), "重启生效");
+            else snprintf(msg, sizeof(msg), "已选 %s · 重启生效",
+                          s_hint_name);
+            cjk_text_draw(margin, h - (compact ? 16 : 18), 0, msg,
+                          EPD_GFX_BLACK);
+        } else {
+            cjk_text_draw(margin, h - (compact ? 16 : 18), 0,
+                          "上/下 选择 · 中 切换 · SET 退出", EPD_GFX_BLACK);
+        }
+    }
 
     if (full)
         epd_gfx_flush();
-    else if (scroll)   /* 含状态栏（位置指示随选中行变化，题号局刷同策略） */
+    else if (scroll || s_hint_reboot)   /* 含状态栏（位置指示随选中行变化，
+        题号局刷同策略）；提示行重画时同扩全屏 */
         epd_gfx_flush_window(0, 0, w, h);
     else                                    /* 局刷内容区（菜单翻页同策略） */
         epd_gfx_flush_window(0, status_h, w, h - status_h);
@@ -293,12 +371,8 @@ void settings_ui_enter(void)
     s_active = true;
     s_sel = 0;
     s_win = 0;                              /* 滚动窗口复位（进入即顶行） */
+    s_hint_reboot = false;                  /* 上会话提示作废 */
     draw_page(true);
-}
-
-bool settings_ui_is_active(void)
-{
-    return s_active;
 }
 
 /* T1.4 页面协议：enter=settings_ui_enter（幂等+首帧自绘）；exit 无
@@ -309,8 +383,8 @@ static bool settings_page_on_button(nav_key_t id, button_event_t event)
     return true;   /* 覆盖层总消费（语义不变） */
 }
 
-const page_t g_settings_ui_page = { NULL, settings_page_on_button,
-                                     settings_ui_enter, NULL };
+const page_t g_settings_ui_page = { "settings", NULL, settings_page_on_button,
+                                   settings_ui_enter, NULL };
 
 /* main.cpp 导出（menu_ui 引用同款先例）；ui_force_font_refresh：
  * 字号档变更后的排版失效标记（UI_MEAN_LEVEL 派生几何变化须全刷重排；
@@ -344,31 +418,31 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
         }
         case 1:                             /* 发音开关 */
             s_audio = settings_audio_enabled() ? 0 : 1;
-            save_u8("set_audio", (uint8_t)s_audio);
+            save_u8(NVS_KEY_SET_AUDIO, (uint8_t)s_audio);
             break;
         case 2:                             /* 震动开关 */
             s_haptic = settings_haptic_enabled() ? 0 : 1;
-            save_u8("set_haptic", (uint8_t)s_haptic);
+            save_u8(NVS_KEY_SET_HAPTIC, (uint8_t)s_haptic);
             break;
         case 3:                             /* 字号档循环 标准→大字→特大（P1a） */
             s_font = (settings_font_mode() + 1) % 3;
-            save_u8("set_font", (uint8_t)s_font);
+            save_u8(NVS_KEY_SET_FONT, (uint8_t)s_font);
             break;
         case 4:                             /* 单词大小循环 大→中→小（P1b） */
             s_wordsize = (settings_word_size() + 1) % 3;
-            save_u8("set_word", (uint8_t)s_wordsize);
+            save_u8(NVS_KEY_SET_WORD, (uint8_t)s_wordsize);
             break;
         case 5:                             /* 粗细（2026-08-27 P2）：仅
             英文/ASCII 路径（FreeSans 表切换，单词/状态栏/菜单；CJK
             点阵不受影响）；即时 apply（音量 setter 同范式），退出
             设置的全刷链负责重绘 */
             s_bold = settings_bold_enabled() ? 0 : 1;
-            save_u8("set_bold", (uint8_t)s_bold);
+            save_u8(NVS_KEY_SET_BOLD, (uint8_t)s_bold);
             epd_gfx_set_bold(s_bold != 0);
             break;
         case 6:                             /* 测验快答（v1.5 T5.1） */
             s_quizgrid = settings_quiz_grid() ? 0 : 1;
-            save_u8("set_quizgrid", (uint8_t)s_quizgrid);
+            save_u8(NVS_KEY_SET_QUIZGRID, (uint8_t)s_quizgrid);
             break;
         case 7: {                           /* 考试倒计时（v1.5 T5.5）：
             关→1→…→99→关 循环；存目标日 ymd（自治钟重启不失真）；
@@ -383,7 +457,7 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
             重建画布/失效布局，见 main.cpp）；几何已变，本页须全刷
             重排而非局刷内容区，故不走下方统一 draw_page(false) */
             s_rotmode = (settings_rotation_mode() + 1) % 3;
-            save_u8("set_rot", (uint8_t)s_rotmode);
+            save_u8(NVS_KEY_SET_ROT, (uint8_t)s_rotmode);
             ui_apply_rotation();
             draw_page(true);
             LOG_I("settings: rotation -> %d", s_rotmode);
@@ -395,6 +469,39 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
             settings_volume_set(settings_volume() >= 100 ? 0
                                                          : settings_volume() + 10);
             break;
+        case 10: {                          /* 面板型号（P1 运行期选屏
+            2026-09-02）：默认→注册表顺序循环（末块后回「默认」=删键），
+            即存 NVS 即提示重启生效（画布/fb/布局档均派生自 desc，不做
+            运行期热切换）；错选屏不亮的恢复：按住 RST 侧键上电忽略
+            覆盖（epd_driver_init 注释），亮屏后回本行改回「默认」 */
+            char id[32];
+            int cur = -1;                   /* -1=跟随构建默认 */
+            if (load_panel_override(id, sizeof(id))) {
+                for (int k = 0; k < epd_panel_registry_count(); k++) {
+                    if (strcmp(epd_panel_at(k)->name, id) == 0) {
+                        cur = k;
+                        break;
+                    }
+                }
+            }
+            int next = (cur + 1 >= epd_panel_registry_count()) ? -1
+                                                               : cur + 1;
+            if (next < 0) {
+                clear_panel_override();
+                s_hint_reboot = true;
+                snprintf(s_hint_name, sizeof(s_hint_name), "默认");
+                LOG_I("settings: panel override cleared (follow default)");
+            } else {
+                const char *name = epd_panel_at(next)->name;
+                save_panel_override(name);
+                s_hint_reboot = true;
+                snprintf(s_hint_name, sizeof(s_hint_name), "%s", name);
+                char *cut = strchr(s_hint_name, '_');
+                if (cut) *cut = 0;          /* 简短名（值列同口径） */
+                LOG_I("settings: panel -> %s (reboot to apply)", name);
+            }
+            break;   /* 统一路径 draw_page(false)：值列+提示行一次局刷 */
+        }
         }
         draw_page(false);
         LOG_I("settings: row %d toggled", s_sel);

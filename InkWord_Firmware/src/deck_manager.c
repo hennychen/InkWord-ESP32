@@ -13,6 +13,7 @@
 
 #include "cJSON.h"
 #include "nvs.h"
+#include "settings_keys.h"   /* P2b：NVS 键权威表 */
 
 #include <stdio.h>
 #include <string.h>
@@ -35,10 +36,10 @@ static char s_active[DECK_ID_MAX + 1] = "";   /* NVS deck_active 镜像（scan �
 static void active_load(void)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
     char buf[sizeof(s_active)];
     size_t len = sizeof(buf);
-    if (nvs_get_str(h, "deck_active", buf, &len) == ESP_OK)
+    if (nvs_get_str(h, NVS_KEY_DECK_ACTIVE, buf, &len) == ESP_OK)
         snprintf(s_active, sizeof(s_active), "%s", buf);
     nvs_close(h);
 }
@@ -165,11 +166,11 @@ int deck_manager_switch(int idx)
     snprintf(s_active, sizeof(s_active), "%s", s_decks[idx].id);
 
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READWRITE, &h) != ESP_OK) return -1;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return -1;
     if (s_active[0])
-        nvs_set_str(h, "deck_active", s_active);
+        nvs_set_str(h, NVS_KEY_DECK_ACTIVE, s_active);
     else
-        nvs_erase_key(h, "deck_active");    /* 切回默认=删键（缺失即默认） */
+        nvs_erase_key(h, NVS_KEY_DECK_ACTIVE);    /* 切回默认=删键（缺失即默认） */
     nvs_commit(h);
     nvs_close(h);
     return 0;

@@ -62,14 +62,15 @@
 #include "word_parser.h"
 #include "study_mode_machine.h"  /* 阅读模式书页接管屏幕时待机页退位 */
 #include "wifi_manager.h"
-#include "wifi_config_ui.h"
+#include "page_router.h"     /* T2.2 守卫统一：display_busy（P2 注册制） */
 #include "lan_display_server.h"
-#include "menu_ui.h"      /* 快捷菜单接管屏幕期间待机页退位（长按中进入） */
+#include "menu_ui.h"      /* 长按中进菜单（standby_on_button） */
 #include "debug_log.h"
 
 #include "freertos/FreeRTOS.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "settings_keys.h"   /* P2b：NVS 键权威表 */
 #include "esp_timer.h"
 
 #include <time.h>
@@ -210,11 +211,11 @@ static void sb_time_adjust(int64_t epoch)
 static void sb_wx_save(const weather_info_t *w)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_blob(h, "wx_cache", w, sizeof(*w));
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, NVS_KEY_WX_CACHE, w, sizeof(*w));
     /* 拉取时刻作为缓存时间戳；时钟未同步时存 0（下次启动无法判龄则直接采用） */
     int64_t now = sb_epoch_now();
-    nvs_set_u32(h, "wx_ts", (now >= SB_VALID_UNIX) ? (uint32_t)now : 0);
+    nvs_set_u32(h, NVS_KEY_WX_TS, (now >= SB_VALID_UNIX) ? (uint32_t)now : 0);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -222,13 +223,13 @@ static void sb_wx_save(const weather_info_t *w)
 static void sb_wx_load(void)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
 
     weather_info_t w;
     size_t len = sizeof(w);
     uint32_t ts = 0;
-    if (nvs_get_blob(h, "wx_cache", &w, &len) == ESP_OK && len == sizeof(w) &&
-        nvs_get_u32(h, "wx_ts", &ts) == ESP_OK && w.icon < WX_ICON_COUNT) {
+    if (nvs_get_blob(h, NVS_KEY_WX_CACHE, &w, &len) == ESP_OK && len == sizeof(w) &&
+        nvs_get_u32(h, NVS_KEY_WX_TS, &ts) == ESP_OK && w.icon < WX_ICON_COUNT) {
         bool fresh = true;
         int64_t now = sb_epoch_now();
         if (now >= SB_VALID_UNIX && ts != 0 &&
@@ -371,8 +372,6 @@ static void sb_time_start(void)
  * 路径调用（main.cpp 按唤醒原因分流）。
  * 精度：内部 RC 慢钟小时级睡眠误差分钟级，联网后 HTTP Date 校准兜底
  * ============================================================ */
-#define SB_NVS_SLEEP_EPOCH  "slp_ep0"   /* 入睡时刻自治钟基准 Unix 秒 */
-#define SB_NVS_SLEEP_RTC    "slp_rtc0"  /* 入睡时刻系统 RTC 原始值（仅取差分） */
 
 void standby_time_checkpoint(void)
 {
@@ -380,10 +379,10 @@ void standby_time_checkpoint(void)
     if (s_time_epoch < SB_VALID_UNIX) return;
 
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
     int64_t rtc0 = (int64_t)time(NULL);
-    nvs_set_i64(h, SB_NVS_SLEEP_EPOCH, s_time_epoch);
-    nvs_set_i64(h, SB_NVS_SLEEP_RTC, rtc0);
+    nvs_set_i64(h, NVS_KEY_SLP_EPOCH, s_time_epoch);
+    nvs_set_i64(h, NVS_KEY_SLP_RTC, rtc0);
     nvs_commit(h);
     nvs_close(h);
     LOG_I("clock checkpoint: epoch=%lld rtc0=%lld",
@@ -393,11 +392,11 @@ void standby_time_checkpoint(void)
 void standby_time_restore(void)
 {
     nvs_handle_t h;
-    if (nvs_open("inkword", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
 
     int64_t ep0 = 0, rtc0 = 0;
-    bool ok = nvs_get_i64(h, SB_NVS_SLEEP_EPOCH, &ep0) == ESP_OK &&
-              nvs_get_i64(h, SB_NVS_SLEEP_RTC, &rtc0) == ESP_OK;
+    bool ok = nvs_get_i64(h, NVS_KEY_SLP_EPOCH, &ep0) == ESP_OK &&
+              nvs_get_i64(h, NVS_KEY_SLP_RTC, &rtc0) == ESP_OK;
     nvs_close(h);
     if (!ok || ep0 < SB_VALID_UNIX) return;
 
@@ -521,8 +520,8 @@ void standby_invalidate_layout(void)
 void standby_render_full(void)
 {
     if (!standby_is_active()) return;
-    if (wifi_config_ui_is_active() || lan_server_is_active() ||
-        menu_ui_is_active()) return;
+    if (page_router_display_busy())
+        return;   /* 顶层覆盖层/LAN 期间不绘制（T2.2 守卫统一） */
 
     int quote = sb_quote_now();
 
@@ -642,7 +641,7 @@ void standby_tick(void)
     }
     if (s_flag_ghost_clear) {
         s_flag_ghost_clear = false;
-        if (!wifi_config_ui_is_active() && !lan_server_is_active()) {
+        if (!page_router_display_busy()) {
             refresh_force_full();        /* 清屏全刷 + 局刷计数归零 */
             standby_render_full();       /* 整页重绘 + 全刷 */
         }
@@ -652,9 +651,8 @@ void standby_tick(void)
         s_quote_off++;                  /* 下标变化交由 tick 差异检测整页刷新 */
     }
 
-    /* 配网页 / LAN 接收页 / 快捷菜单接管屏幕期间不绘制 */
-    if (wifi_config_ui_is_active() || lan_server_is_active() ||
-        menu_ui_is_active()) return;
+    /* 显示通道被覆盖层/LAN 接管期间不绘制（T2.2 守卫统一，P2 注册制） */
+    if (page_router_display_busy()) return;
 
     /* ---- 消费后台投递的天气（页面已不绘制；仅 NVS 持久化 + 校时兜底） ---- */
     if (s_wx_dirty) {

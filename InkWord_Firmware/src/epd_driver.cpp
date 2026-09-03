@@ -4,8 +4,8 @@
  *
  * 硬件：ESP32-S3 + 转接板（板级轴 INKWORD_BOARD_*，默认 EVK011，
  *       可切 v1.4 通用板，见 gpio_config.h）+ 面板轴（构建矩阵
- *       INKWORD_PANEL_*，默认 DEPG0370 3.7" BW / 可选 E042A13
- *       4.2" 三色，见 epd_panel.h）
+ *       EPD_PANEL_DEFAULT_ID，默认 DEPG0370 3.7" BW / env 钉面板，
+ *       见 epd_panel.h）
  *
  * 架构（2026-08-18 残影叠加修复后确定；2026-08-22 Phase 1 面板序列迁入
  *       panels/，本层经 L2 desc.ops 调用；Phase 2 帧缓冲/画布/转置几何
@@ -61,6 +61,8 @@
 #include <esp_heap_caps.h> /* Phase 2：PSRAM 帧缓冲 heap_caps_malloc（禁 DMA cap） */
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h" /* T0.1：帧一致序列互斥锁 */
+#include "nvs.h"         /* P1 运行期选屏：set_panel 覆盖读 */
+#include "settings_keys.h"   /* P2b：NVS 键权威表 */
 
 /* L2 面板描述符（Phase 1）：epd_panel_get_by_id 查表所得，全局唯一；
  * 面板类实例与 demo 时序序列封装在 panels/panel_depg0370_uc8253.cpp，
@@ -240,12 +242,44 @@ int epd_driver_init(void)
         return 0;
     }
 
-    /* 0. L2 面板描述符查表（Phase 1 唯一面板；Phase 3 起构建矩阵注入） */
-    s_panel = epd_panel_get_by_id(EPD_PANEL_DEFAULT_ID);
+    /* 0. L2 面板描述符查表（Phase 1 唯一面板；Phase 3 起构建矩阵注入）。
+     *    P1 收官（2026-09-02）NVS 运行期选屏："inkword"/set_panel 存
+     *    面板注册名（字符串主键，注册表追加不漂移；键缺失=跟随构建
+     *    默认），一固件任意换屏（产线/售后同包烧录）。错选型号屏不亮
+     *    时的无屏恢复路径：按住 RST 侧键上电直读 GPIO（无源开关按下
+     *    接地，gpio_config.h 按键区；button_handler 尚未初始化，绕过
+     *    去抖/队列直接读电平），本次启动忽略 NVS 覆盖回落构建默认，
+     *    亮屏后回设置页「面板型号」改回「默认」 */
+    const char *panel_id = EPD_PANEL_DEFAULT_ID;
+    char nvs_id[32];
+    pinMode(NAV_RST_PIN, INPUT_PULLUP);
+    if (digitalRead(NAV_RST_PIN) == LOW) {
+        LOG_W("NAV_RST held at boot: skip NVS panel override");
+    } else {
+        nvs_handle_t h;
+        if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+            size_t len = sizeof(nvs_id);
+            if (nvs_get_str(h, NVS_KEY_SET_PANEL, nvs_id, &len) == ESP_OK)
+                panel_id = nvs_id;
+            nvs_close(h);
+        }
+    }
+    s_panel = epd_panel_get_by_id(panel_id);
+    if (!s_panel && strcmp(panel_id, EPD_PANEL_DEFAULT_ID) != 0) {
+        /* NVS 值未命中注册表（型号拼写漂移/裁剪残留）：回落构建默认，
+         * 不进下方拒绝路径——那是 DEFAULT_ID 也查不到的构建期错误专属 */
+        LOG_W("NVS set_panel '%s' not in registry, fallback '%s'",
+              panel_id, EPD_PANEL_DEFAULT_ID);
+        panel_id = EPD_PANEL_DEFAULT_ID;
+        s_panel = epd_panel_get_by_id(panel_id);
+    }
     if (!s_panel) {
-        LOG_E("panel desc '%s' not found in registry", EPD_PANEL_DEFAULT_ID);
+        LOG_E("panel desc '%s' not found in registry", panel_id);
         return -1;
     }
+    if (strcmp(panel_id, EPD_PANEL_DEFAULT_ID) != 0)
+        LOG_I("panel '%s' selected (NVS override, build default '%s')",
+              panel_id, EPD_PANEL_DEFAULT_ID);
 
     /* 0.5 帧一致序列互斥锁（T0.1）：先于首次刷新创建（epd_clear_screen
      * 在 init 返回后即被 main 调用）；此后所有 ops 刷新序列均持锁 */

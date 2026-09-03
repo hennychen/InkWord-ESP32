@@ -16,7 +16,12 @@
  * / 考试倒计时（v1.5 T5.5）+ 屏幕方向 [默认|竖屏|横屏]（2026-08-26
  * 增，即改即生效：ui_apply_rotation 重建画布后本页全刷重排）
  * + 音量（2026-08-27：中键 +10 循环 0→10→…→100→0；连续微调走
- * 菜单 [系统]「音量」页上/下键，两入口共用同一状态即时生效）。
+ * 菜单 [系统]「音量」页上/下键，两入口共用同一状态即时生效）
+ * + 面板型号（P1 收官 2026-09-02 运行期选屏：默认→注册表顺序
+ * 循环；存面板注册名字符串，切换重启生效——画布/fb/布局档均
+ * 派生自 desc 不热切；错选屏不亮的恢复=按住 RST 侧键上电忽略
+ * 覆盖，见 epd_driver_init；紧凑档值列降级「自定」二态，完整
+ * 型号串口 LOG / device-info 可查）。
  *
  * 取值 API 与 UI 分层：settings_audio/haptic_enabled 供 haptic.c /
  * ui_sfx.c / study_mode_machine.c 门控（纯 NVS 惰性缓存，无 UI 依赖，
@@ -34,6 +39,9 @@
  *   同一键跨面板重编译语义不漂移；映射见 main ui_apply_rotation）
  *   / set_vol u8（0~100 步进10，默认 75=0dB 历史听感；es8311 驱动
  *   内同步保存，dac_start 起播回写，重启后由 main audio_init 后同步）
+ *   / set_panel str（P1 运行期选屏：面板注册名，epd_driver_init
+ *   读键覆盖 EPD_PANEL_DEFAULT_ID；缺失=跟随构建默认，「默认」选项
+ *   删键——deck_active 同哲学）
  *   ——均默认开/标准/跟随（键缺失=默认，不写默认值）。
  */
 #ifndef INKWORD_SETTINGS_UI_H
@@ -49,9 +57,6 @@ extern "C" {
 
 /** 进入设置页（菜单「设置」项入口）。同步绘制并全刷；已激活幂等忽略。 */
 void settings_ui_enter(void);
-
-/** 设置页当前是否激活（接管按键；exit 即清）。 */
-bool settings_ui_is_active(void);
 
 /** 按键转发接口（激活期间由 main 按键回调调用，同步处理）。 */
 void settings_ui_on_button(nav_key_t id, button_event_t event);

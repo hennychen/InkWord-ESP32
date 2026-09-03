@@ -12,6 +12,7 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "settings_keys.h"   /* P2b：NVS 键权威表 */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -84,11 +85,11 @@ static void event_handler(void *arg, esp_event_base_t base,
 static esp_err_t load_credentials(wifi_config_t *cfg)
 {
     nvs_handle_t h;
-    if (nvs_open("wifi", NVS_READONLY, &h) != ESP_OK) return ESP_ERR_NOT_FOUND;
+    if (nvs_open(NVS_NS_WIFI, NVS_READONLY, &h) != ESP_OK) return ESP_ERR_NOT_FOUND;
     size_t ssid_len = sizeof(cfg->sta.ssid);
     size_t pass_len = sizeof(cfg->sta.password);
-    esp_err_t r1 = nvs_get_str(h, "ssid", (char *)cfg->sta.ssid, &ssid_len);
-    esp_err_t r2 = nvs_get_str(h, "pass", (char *)cfg->sta.password, &pass_len);
+    esp_err_t r1 = nvs_get_str(h, NVS_KEY_WIFI_SSID, (char *)cfg->sta.ssid, &ssid_len);
+    esp_err_t r2 = nvs_get_str(h, NVS_KEY_WIFI_PASS, (char *)cfg->sta.password, &pass_len);
     nvs_close(h);
     return (r1 == ESP_OK && r2 == ESP_OK) ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
@@ -152,9 +153,9 @@ int wifi_connect(const char *ssid, const char *password)
 
     /* 保存到 NVS */
     nvs_handle_t h;
-    if (nvs_open("wifi", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_str(h, "ssid", ssid);
-        nvs_set_str(h, "pass", password);
+    if (nvs_open(NVS_NS_WIFI, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, NVS_KEY_WIFI_SSID, ssid);
+        nvs_set_str(h, NVS_KEY_WIFI_PASS, password);
         nvs_commit(h);
         nvs_close(h);
     }
