@@ -123,7 +123,7 @@ static void vs_draw_result(void)
 {
     int y = VS_LIST_TOP + 2;
     if (s_transcript[0]) {
-        char tr[80];
+        char tr[104];   /* 「」(6B) + s_transcript 95B + NUL */
         snprintf(tr, sizeof(tr), "「%s」", s_transcript);
         cjk_text_draw(VS_MARGIN_X, y, 0, tr, EPD_GFX_BLACK);
         y += 22;
