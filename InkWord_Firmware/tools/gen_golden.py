@@ -9,6 +9,11 @@ PASS/FAIL 判定模式）。
     pio device monitor | tee /tmp/golden_dump.txt   # 跑一次自检
     python3 tools/gen_golden.py /tmp/golden_dump.txt -o src/selftest_golden.h
 
+多屏累积（T3.1 面板前缀已消除页面 id 跨面板冲突，同 id 后者覆盖）：
+    cat dump_depg0370.txt dump_e042a13.txt | \
+        python3 tools/gen_golden.py /dev/stdin -o src/selftest_golden.h
+（逐屏 dump 后单表生成；勿逐屏 -o 覆盖丢前屏基线）
+
 解析契约（selftest_frame.c 输出，勿单方改格式）：
     [GOLDEN] BEGIN <page> <w> <h>
     [GOLDEN] B64 <64 字符/行>

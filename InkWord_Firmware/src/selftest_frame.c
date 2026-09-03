@@ -2,14 +2,20 @@
  * @file selftest_frame.c
  * @brief T2.2 黄金帧回归自检实现（INKWORD_GOLDEN_FRAME 门控）
  *
- * 页面集（样板页选取原则 = 渲染结果确定性可复现）：
+ * 页面集（样板页选取原则 = 渲染结果确定性可复现；T3.1 页面 id 组合
+ * 面板前缀 "<panel>/<page>" 消除跨面板同名冲突，gen_golden.py
+ * IDENT_RE 转非标识字符为 _，多页单表天然共存零改动）：
  *   - word_card：ui_render_word(MODE_FLASH, 0)——demo env 假词库
  *     index 0 恒定；须在任何 overlay 激活前渲染（守卫互斥）
  *   - settings：settings_ui_enter() 幂等自绘，零动态项（无时钟/
  *     电量/IP，grep 验证）；NVS 设置状态参与帧（换设备/擦 flash
  *     须重 dump 基线，见 selftest_golden.h 风险联动）
- *   - standby（自治钟/天气缓存）与 menu（学习统计 badge）含动态
- *     元素，整帧基准不可复现——二期区域 mask 后纳入
+ *   - menu：menu_ui_enter() 幂等自绘，徽标列（收藏数/模式名/Wi-Fi
+ *     状态/音频同步数/音量）动态 → T3.2 mask 置白后入集
+ *     （menu_ui_golden_mask 几何与渲染同源）
+ *   - standby：demo env 内嵌词库非空 → standby_is_active 恒 false
+ *     → standby_render_full 顶部守卫拦截不可渲染；留待二期无词库
+ *     env 补入（届时时钟/电量/天气框同样走 mask）
  *
  * 输出契约（tools/gen_golden.py 解析锚点，勿改格式）：
  *   [GOLDEN] BEGIN <page> <w> <h>
@@ -26,6 +32,7 @@
 #include "epd_driver.h"
 #include "study_mode_machine.h"
 #include "settings_ui.h"
+#include "menu_ui.h"            /* T3.2：menu 页 + golden_mask */
 #include "debug_log.h"
 #include "selftest_diff.h"
 #include "selftest_golden.h"
@@ -127,21 +134,34 @@ static void check_page(const char *page, const uint8_t *buf, size_t len,
 #endif
 }
 
-/* 渲染一页 → 回读画布 → dump + 判定 */
+/* 渲染一页 → 回读画布 →（可选 mask 置白）→ dump + 判定；mask 在
+ * dump 前就地施加→基线生成天然含 mask，复烧 diff 双侧一致 */
 static void run_page(const char *page, int w, int h,
-                     uint8_t *buf, size_t len, void (*render)(void))
+                     uint8_t *buf, size_t len, void (*render)(void),
+                     const int (*mask)[4], int mask_n)
 {
-    LOG_I("page: %s (rendering...)", page);
+    char pid[40];
+    snprintf(pid, sizeof(pid), "%s/%s", epd_panel_desc()->name, page);
+    LOG_I("page: %s (rendering...)", pid);
     render();
     epd_gfx_read_window(0, 0, w, h, buf);
-    dump_frame(page, w, h, buf, len);
-    check_page(page, buf, len, (w + 7) / 8);
+    if (mask_n > 0)
+        selftest_diff_mask_white(buf, w, h, mask, mask_n);
+    dump_frame(pid, w, h, buf, len);
+    check_page(pid, buf, len, (w + 7) / 8);
 }
 
 /* word_card 渲染闭包参数（MODE_FLASH, index 0）固定写死 */
 static void render_word_card(void)
 {
     ui_render_word(MODE_FLASH, 0);
+}
+
+/* menu 页闭包：menu_ui_enter 幂等自绘（不 push 页栈，自检后挂起
+ * 不进 loop，激活态无副作用） */
+static void render_menu(void)
+{
+    menu_ui_enter();
 }
 
 void selftest_frame_run(void)
@@ -161,10 +181,19 @@ void selftest_frame_run(void)
         return;
     }
 
-    /* 序列：word_card 须先于 settings（ui_render_word 守卫查
-     * settings 激活态，反序会静默跳过渲染） */
-    run_page("word_card", w, h, buf, len, render_word_card);
-    run_page("settings", w, h, buf, len, settings_ui_enter);
+    /* 序列约束：word_card 须先于 settings/menu（ui_render_word 守卫
+     * 查覆盖层激活态，反序会静默跳过渲染）；menu 徽标列 mask 差异
+     * 不计数（T3.2）；standby 见头注释（demo env 不可渲染，二期）。
+     * 页面 id 同源（P2 路由补完）：settings/menu 取 g_*_page.name，
+     * 页名变更自检自动跟随；word_card 为 base 分流态无独立实例，
+     * 保留字面量 */
+    int menu_mask[2][4];
+    int menu_mask_n = menu_ui_golden_mask(menu_mask, 2);
+    run_page("word_card", w, h, buf, len, render_word_card, NULL, 0);
+    run_page(g_settings_ui_page.name, w, h, buf, len,
+             settings_ui_enter, NULL, 0);
+    run_page(g_menu_ui_page.name, w, h, buf, len,
+             render_menu, menu_mask, menu_mask_n);
 
     free(buf);
     LOG_I("=== selftest done: %d PASS / %d FAIL / %d NO-BASELINE "

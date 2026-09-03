@@ -23,4 +23,16 @@
 int selftest_diff_bytes(const uint8_t *a, const uint8_t *b, size_t len,
                         long *first_diff_off);
 
+/**
+ * @brief 动态区域 mask：帧 buf 内 rects[n] 矩形就位置白（T3.2）
+ * @param buf 帧缓冲（行主序 MSB-first，bit=1=黑，同 read_window）
+ * @param w/h 帧像素宽高（stride=(w+7)/8 派生）
+ * @param rects 矩形表 {x, y, w, h}（越界自动钳位，负尺寸跳过）
+ * @param n 矩形数
+ *
+ * dump 前双侧同构施加→基线生成天然含 mask，diff 双侧一致，
+ * 无需改比较逻辑（menu 徽标列等动态区域差异不计数）。 */
+void selftest_diff_mask_white(uint8_t *buf, int w, int h,
+                               const int (*rects)[4], int n);
+
 #endif /* INKWORD_SELFTEST_DIFF_H */
