@@ -1,7 +1,8 @@
-// gen_cjk_font.swift —— 中文点阵字库生成器（三级 16/20/24px，P3 阅读模式）
+// gen_cjk_font.swift —— 中文点阵字库生成器（四级 16/20/24/32px，P3 阅读模式；
+// 32px 级 2026-09-03 增：LARGE 档（7.5"+ 大屏）正文/引文用，楷体大字链）
 //
 // 输入：tools/chuanxilu_quotes.txt（待机页引文，字符集一并收录）
-// 输出：src/cjk_font_data.bin（二进制字库：头 + 码点表 + 三级位图）
+// 输出：src/cjk_font_data.bin（二进制字库：头 + 码点表 + 四级位图）
 //       src/cjk_font.c / src/cjk_font.h（lookup 实现 + 引文表，小文件）
 //
 // 字符集（P3，2026-08-20）：引文 ∪ 出处 ∪ GB2312 一级 3755 字 ∪ 常用全角
@@ -13,11 +14,12 @@
 //       灰度抗锯齿阈值 128，行主序 MSB-first，bit=1 着色，
 //       与 epd_gfx_draw_bitmap 位图格式一致。
 //
-// bin 布局（小端，EMBED_FILES 编入固件，避免 ~5MB 的 C 数组源码）：
+// bin 布局（小端，EMBED_FILES 编入固件，避免 ~5MB 的 C 数组源码；
+// 头自描述：cp 表起点 = 12 + levels*4，消费端动态计算勿写死）：
 //   [0..3]  "CKF1"          [4..5]  u16 version=1
-//   [6..7]  u16 levels=3    [8..11] u32 n（字形数）
-//   [12..17] u16 cell[3]    [18..23] u16 stride[3]
-//   [24..]   u16 cp[n] 升序（4 对齐后） level0 位图 n*32B → level1 n*60B → level2 n*72B
+//   [6..7]  u16 levels=4    [8..11] u32 n（字形数）
+//   [12..19] u16 cell[4]    [20..27] u16 stride[4]
+//   [28..]   u16 cp[n] 升序（4 对齐后） level0 位图 n*32B → level1 n*60B → level2 n*72B → level3 n*128B
 //
 // 用法：cd InkWord_Firmware && swift tools/gen_cjk_font.swift
 //       （改引文/字表后重新运行即可，勿手改生成文件）
@@ -47,9 +49,9 @@ if args.contains("--subset") {
     subsetDeckId = args[3]
 }
 
-let LEVELS = [16, 20, 24]   // 像素格边长（level 0/1/2；阅读器三级字号）
-let FONT_SIZE_HINT: [Int: CGFloat] = [16: 15, 20: 19, 24: 22]
-                      // 24 级 23pt 时墨迹盒+Bold 外扩贴底（真机实测），缩 1pt 留裕量；
+let LEVELS = [16, 20, 24, 32]   // 像素格边长（level 0/1/2/3；32px 级 LARGE 档大屏）
+let FONT_SIZE_HINT: [Int: CGFloat] = [16: 15, 20: 19, 24: 22, 32: 30]
+                      // 24 级 23pt 时墨迹盒+Bold 外扩贴底（真机实测），缩 1pt  留裕量；
                       // 其余级按比例给初值，两遍法会自动再缩
 let MAX_COLS = 8       // 引文区每行最多字符数
 let MAX_LINES = 5      // 引文区每条最多行数
@@ -118,10 +120,14 @@ if subsetMode {
         Int(mainBin[o + 2]) << 16 | Int(mainBin[o + 3]) << 24
     }
     let n = rd32(8)
+    /* cp 表起点动态：头自描述（12 + levels*4；主集升级四级后旧写死 24 失效，
+     * 2026-09-03 32px 级引入） */
+    let mainLevels = Int(mainBin[6]) | Int(mainBin[7]) << 8
+    let mainCpOff = 12 + mainLevels * 4
     var mainCps = Set<UInt32>()
     for i in 0..<n {
-        mainCps.insert(UInt32(mainBin[24 + 2 * i]) |
-                       UInt32(mainBin[25 + 2 * i]) << 8)
+        mainCps.insert(UInt32(mainBin[mainCpOff + 2 * i]) |
+                       UInt32(mainBin[mainCpOff + 2 * i + 1]) << 8)
     }
     charset = Set(charset.filter {
         !mainCps.contains($0.unicodeScalars.first!.value)
@@ -250,7 +256,9 @@ let INK_THRESHOLD = 100
 func fontForCell(_ cell: Int) -> (name: String, bold: Bool) {
     let (name, bold) = cell < 24 ? smallFont : largeFont
     return (name, bold)
-}   /* 二十四轮（2026-08-31）膨胀重构：dilate 语义从字体选择移出（原
+}   /* 32px 级走 largeFont（楷体链，2026-09-03）：大字级书卷气优先，
+    * 黑体浓度优势在 1bit 小字下才成立（见上方字体链分级注释）。
+    * 二十四轮（2026-08-31）膨胀重构：dilate 语义从字体选择移出（原
     BOLD && !bold 只在无真 Bold 时膨胀，PingFang/Kaiti 有真字重故全库
     从未膨胀）；改为主循环在闭环外按级统一膨胀（见 dilateBits） */
 
@@ -281,7 +289,7 @@ func fontLabel(_ cell: Int) -> String {
     let (name, bold) = fontForCell(cell)
     return name + (bold ? " Bold" : "")
 }
-let fontsDesc = "16/20px \(fontLabel(16)) + 24px \(fontLabel(24))"
+let fontsDesc = "16/20px \(fontLabel(16)) + 24/32px \(fontLabel(24))"
 
 func makeFont(_ size: CGFloat, _ cell: Int) -> CTFont {
     let (name, bold) = fontForCell(cell)
@@ -574,7 +582,7 @@ var c = """
  * @brief 中文点阵字库 lookup + 《传习录》引文表（生成文件，勿手改）
  *
  * 字形数据在 cjk_font_data.bin（CMake EMBED_FILES 编入固件）：
- *   \(fontsDesc)，三级 \(levelCells)px，
+ *   \(fontsDesc)，四级 \(levelCells)px，
  *   \(cps.count) 字形 x \(levelDesc)
  *   = \(totalGlyphBytes) 字节。
  * 码点升序二分查找；位图行主序 MSB-first，bit=1 着色（epd_gfx_draw_bitmap 格式）。
@@ -589,8 +597,9 @@ var c = """
 extern const uint8_t _binary_src_cjk_font_data_bin_start[];
 #define BIN_BASE (_binary_src_cjk_font_data_bin_start)
 
-/* bin 头（小端）：0..3 magic, 4..5 ver, 6..7 levels, 8..11 n,
- * 12..17 cell[3], 18..23 stride[3], 24.. cp 表 u16[n]，4 对齐后三级位图 */
+/* bin 头（小端，自描述）：0..3 magic, 4..5 ver, 6..7 levels, 8..11 n,
+ * cell[levels] @12、stride[levels] 紧随，cp 表起点 = 12+levels*4，
+ * 4 对齐后按级位图（2026-09-03 四级化，消费端动态计算勿写死偏移） */
 static uint32_t rd_le32(const uint8_t *p)
 {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -598,12 +607,13 @@ static uint32_t rd_le32(const uint8_t *p)
 }
 
 static uint32_t glyph_n(void)      { return rd_le32(BIN_BASE + 8); }
+static uint16_t bin_levels(void)   { const uint8_t *p = BIN_BASE + 6; return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint16_t glyph_cell(int lvl)  { const uint8_t *p = BIN_BASE + 12 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
-static uint16_t glyph_stride(int lvl){ const uint8_t *p = BIN_BASE + 18 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint16_t glyph_stride(int lvl){ const uint8_t *p = BIN_BASE + 12 + bin_levels() * 2 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
 
 static const uint16_t *cp_table(void)
 {
-    return (const uint16_t *)(BIN_BASE + 24);
+    return (const uint16_t *)(BIN_BASE + 12 + bin_levels() * 4);
 }
 
 static const uint8_t *level_base(int lvl)
@@ -633,7 +643,7 @@ const uint8_t *cjk_glyph_lookup_level(uint32_t cp, int level)
 
 const uint8_t *cjk_glyph_lookup(uint32_t cp)
 {
-    return cjk_glyph_lookup_level(cp, CJK_FONT_LEVELS - 1);  /* 24px 兼容（待机页） */
+    return cjk_glyph_lookup_level(cp, CJK_FONT_LEVELS - 1);  /* 最大级兼容（零外部消费方） */
 }
 
 int cjk_glyph_cell_size(int level)   { return glyph_cell(level); }
@@ -650,12 +660,12 @@ try! c.write(to: URL(fileURLWithPath: "src/cjk_font.c"), atomically: true, encod
 let h = """
 /**
  * @file cjk_font.h
- * @brief 中文点阵字库接口（三级 16/20/24px + 引文表；生成文件勿手改）
+ * @brief 中文点阵字库接口（四级 16/20/24/32px + 引文表；生成文件勿手改）
  *
  * 字形数据 cjk_font_data.bin（EMBED_FILES 编入固件），码点升序二分查找。
  * 位图行主序 MSB-first，bit=1 着色，可直接 blit 到 epd_gfx_draw_bitmap。
- * level 档位：0=16px / 1=20px / 2=24px；阅读器按级取形并做墨迹盒变宽
- * 渲染（reader_engine），待机页沿用 24px 兼容 API。
+ * level 档位：0=16px / 1=20px / 2=24px / 3=32px（32px 级 LARGE 档大屏，
+ * 2026-09-03）；阅读器按级取形并做墨迹盒变宽渲染（reader_engine）。
  * 由 tools/gen_cjk_font.swift 生成。
  */
 #ifndef INKWORD_CJK_FONT_H
@@ -663,22 +673,22 @@ let h = """
 
 #include <stdint.h>
 
-#define CJK_FONT_LEVELS    3                 /**< 字号级数 */
-#define CJK_GLYPH_W       24                 /**< 兼容宏：默认级(24px) 字形宽 */
-#define CJK_GLYPH_H       24                 /**< 兼容宏：默认级(24px) 字形高 */
-#define CJK_GLYPH_STRIDE  3                  /**< 兼容宏：默认级每行字节数 */
-#define CJK_GLYPH_N       \(cps.count)                 /**< 字形总数（三级共用码点表） */
+#define CJK_FONT_LEVELS    \(LEVELS.count)                 /**< 字号级数 */
+#define CJK_GLYPH_W       \(LEVELS.last!)                 /**< 兼容宏：最大级字形宽（零消费方，随级数自适） */
+#define CJK_GLYPH_H       \(LEVELS.last!)                 /**< 兼容宏：最大级字形高 */
+#define CJK_GLYPH_STRIDE  \((LEVELS.last! + 7) / 8)       /**< 兼容宏：最大级每行字节数 */
+#define CJK_GLYPH_N       \(cps.count)                 /**< 字形总数（各级共用码点表） */
 
 /** UTF-32 码点 -> 指定级字形位图；未收录返回 NULL（调用方画占位框） */
 const uint8_t *cjk_glyph_lookup_level(uint32_t cp, int level);
 
-/** 兼容 API（待机页）：UTF-32 码点 -> 24px 级字形位图；未收录返回 NULL */
+/** 兼容 API：UTF-32 码点 -> 最大级字形位图（零外部消费方）；未收录返回 NULL */
 const uint8_t *cjk_glyph_lookup(uint32_t cp);
 
-/** 指定级字形边长（px）：16/20/24；level 越界返回 0 */
+/** 指定级字形边长（px）：16/20/24/32；level 越界返回 0 */
 int cjk_glyph_cell_size(int level);
 
-/** 指定级每行字节数：2/3/3；level 越界返回 0 */
+/** 指定级每行字节数：2/3/3/4；level 越界返回 0 */
 int cjk_glyph_stride_size(int level);
 
 #define CHUANXILU_QUOTE_N \(quotes.count)                /**< 引文条数（=小时数） */
@@ -707,8 +717,8 @@ let previewSet: [Character: Int] = {
 let previews: [Character] = ["知", "行", "A", "，", "ə", "ˈ"]
 for preview in previews {
     guard let idx = previewSet[preview] else { continue }
-    let l = levelOuts[LEVELS.count - 1]   // 24px 级预览
-    say("// preview '\(preview)' (24px):")
+    let l = levelOuts[LEVELS.count - 1]   // 最大级预览
+    say("// preview '\(preview)' (\(l.cell)px):")
     for gy in 0..<l.cell {
         var row = ""
         for gx in 0..<l.cell {

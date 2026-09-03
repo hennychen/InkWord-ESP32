@@ -9,12 +9,15 @@
  *   → ./deck_<id>.bin 拷入 SD /sdcard/fonts/deck_<id>.bin
  * 固件装载后 cjk_text 主集 miss → 子集级联命中（cjk_text.c adv_one）。
  *
- * bin 格式与主集 CKF1 同构（小端）：
- *   [0..3]"CKF1" [4..5]ver [6..7]levels=3 [8..11]u32 n
- *   [12..17]cell[3]={16,20,24} [18..23]stride[3]={2,3,3}
- *   [24..]u16 cp[n] 升序（4 对齐后）三级位图 n*(32/60/72)B
+ * bin 格式与主集 CKF1 同构（小端，头自描述）：
+ *   [0..3]"CKF1" [4..5]ver [6..7]levels [8..11]u32 n
+ *   [12..]cell[levels] 紧接 stride[levels]（cp 表起点 = 12+levels*4）
+ *   cp 表 u16[n] 升序（4 对齐后）按级位图 n*(32/60/72/128)B
  * 几何与主集三方同源（gen_cjk_font.swift LEVELS / cjk_font.c 消费），
  * 装载时校验，不符拒载——级联命中的位图直接按主集几何 blit。
+ * 级数兼容（2026-09-03 四级化）：levels ∈ {3,4} 均收——主集已升
+ * 16/20/24/32px 四级，SD 旧三级子集（升级前生成）继续可用，
+ * 新子集由升级后 swift --subset 生成（四级，含 32px 位图）。
  */
 #ifndef INKWORD_CJK_FONT_SD_H
 #define INKWORD_CJK_FONT_SD_H

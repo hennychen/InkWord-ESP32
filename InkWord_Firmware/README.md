@@ -313,7 +313,7 @@ VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `i
 | **SRS 引擎** | [`srs_engine`](src/srs_engine.h) | FSRS-4.5 间隔重复算法（M4 路径 A 2026-08-22；纯算法，与后端 FsrsService 对拍，`pio test -e native-test`） |
 | **学习状态** | [`learning_state`](src/learning_state.h) | 每词 FSRS stability/difficulty/连错/收藏；LR03 sparse NVS + 脏标记延迟落盘（旧 LR02 升级自动作废）；到期词视图（due_count/due_at，会话 done bitmap 去重）；今日统计（新学/复习次数/连续天数，NVS lr_stats UTC+8 跨日结算，2026-08-24） |
 | **模式状态机** | [`study_mode_machine`](src/study_mode_machine.h) | 闪卡 / 听写 / 复习 / 阅读四模式切换（复习序列=FSRS 到期词，自评即出队）+ 听-跟一体流（云端词播完自动进跟读评测，P1）+ AI 对话临时视图 MODE_CHAT 进出（P2B） |
-| **CJK 字库/文本** | [`cjk_font`](src/cjk_font.h) + [`cjk_text`](src/cjk_text.h) | 三级点阵字库 bin（16/20/24px，3892 字，646KB 嵌入）+ UTF-8 混排绘制层（词卡释义/tag、阅读器、待机页共用；CJK 按字断行 / ASCII 按词断，墨迹盒变宽渲染；断行量测/分页绘制 API 与绘制同源，词卡释义分页基建） |
+| **CJK 字库/文本** | [`cjk_font`](src/cjk_font.h) + [`cjk_text`](src/cjk_text.h) | 四级点阵字库 bin（16/20/24/32px，3935 字，1.13MB 嵌入；32px 级供 7.5"+ LARGE 档大屏）+ UTF-8 混排绘制层（词卡释义/tag、阅读器、待机页共用；CJK 按字断行 / ASCII 按词断，墨迹盒变宽渲染；断行量测/分页绘制 API 与绘制同源，词卡释义分页基建） |
 | **Wi-Fi 联网** | [`wifi_manager`](src/wifi_manager.h) | 网络栈/STA 连接、NVS 凭据持久化、SoftAP、AP 扫描、快速+慢速断线重连、异步连接 |
 | **HTTP 同步** | [`sync_client`](src/sync_client.h) + [`sync_session`](src/sync_session.h) | sync_client=纯 HTTP 客户端（增量词库拉取/回传/心跳/天气拉取附带校时）；sync_session=云端编排层（凭据装载/MAC 幂等注册/401 换钥自愈/静默心跳会话/后台任务，自 main 拆出） |
 | **OTA** | [`ota_manager`](src/ota_manager.h) | 双分区升级: 下载 / 校验 / 切换 / 回滚 |
@@ -354,7 +354,7 @@ setup() (Arduino)
 | **闪卡** (FLASH) | 看词猜义，C 键发音 |
 | **听写** (DICTATION) | 听音拼写 |
 | **复习** (REVIEW) | FSRS 到期词紧凑词表（左词右义，会话去重）→中键词卡详情→左右自评即出队（2026-08-24 两态化） |
-| **阅读** (READER) | SD 卡 books 目录 TXT 阅读（16/20/24px 三级字号，进度记忆） |
+| **阅读** (READER) | SD 卡 books 目录 TXT 阅读（16/20/24/32px 四级字号，进度记忆） |
 
 > 中键发音（P0C）：`w->audio` 人工命名词库优先，否则 `{cloud_id}.mp3`
 > 云端约定（`audio_sync` 菜单同步）；缺文件短震、不回退测试音；云端词
@@ -531,13 +531,14 @@ updateDemoPartial(passes)      0x04 上电 → 0x12(+0x00 哑字节)×passes
               ——王阳明《传习录》  ← 出处 [192,216)：右下角右对齐（静态）
 ```
 
-**《传习录》引文（点阵字库渲染；字库 P3 已升级三级 3892 字，见上文）**：
+**《传习录》引文（点阵字库渲染；字库已升级四级 3935 字 + 32px 级，见上文）**：
 
 - 24 条经典选句每 5 分钟轮换一条（知行合一、四句教、岩中花树等），一轮 2 小时
 - 引文与字形由 [`tools/gen_cjk_font.swift`](tools/gen_cjk_font.swift) 生成
   （P3 重写：macOS CoreText 渲染，字体 Kaiti SC 优先（Bold 变体，
-  不覆盖时回退 Songti SC/Heiti 等首个全字符集家族），三级 16/20/24px，字符集=
-  GB2312 一级 ∪ 全角标点 ∪ ASCII ∪ 引文 = 3892 字，点阵 bin 646KB 经
+  不覆盖时回退 Songti SC/Heiti 等首个全字符集家族），四级 16/20/24/32px
+  （16/20px 走 PingFang Bold 黑体链、24/32px 走楷体链），字符集=
+  GB2312 一级 ∪ 全角标点 ∪ ASCII ∪ 引文 = 3935 字，点阵 bin 1.13MB 经
   board_build.embed_files 嵌入；两遍法实测墨迹盒自适应：Pass1 测极值
   Pass2 居中，验收硬指标：全部字形完整 + 四边 edge-touch=0），
   重生成：`cd InkWord_Firmware && swift tools/gen_cjk_font.swift`

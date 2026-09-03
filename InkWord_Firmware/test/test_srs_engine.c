@@ -156,6 +156,7 @@ extern void test_word_parser_poem_dictation_fields(void);
 extern void test_cjk_font_sd_load_and_lookup(void);
 extern void test_cjk_font_sd_rejects_bad_bin(void);
 extern void test_cjk_font_sd_missing_file_semantics(void);
+extern void test_cjk_font_sd_legacy_3levels_compat(void);
 extern void test_cjk_font_sd_swift_artifact(void);
 
 /* catalog_index 教材目录索引（2026-08-28 教材目录浏览设计）：同 runner 挂载
@@ -209,6 +210,7 @@ int main(void)
     RUN_TEST(test_cjk_font_sd_load_and_lookup);
     RUN_TEST(test_cjk_font_sd_rejects_bad_bin);
     RUN_TEST(test_cjk_font_sd_missing_file_semantics);
+    RUN_TEST(test_cjk_font_sd_legacy_3levels_compat);
     RUN_TEST(test_cjk_font_sd_swift_artifact);
     RUN_TEST(test_dp_goal_default_when_no_key);
     RUN_TEST(test_dp_goal_deck_key_dispatch);
