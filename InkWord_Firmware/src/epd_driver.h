@@ -4,8 +4,8 @@
  *
  * 硬件：ESP32-S3 + 转接板（板级轴 INKWORD_BOARD_*，默认 EVK011，
  *       可切 v1.4 通用板，见 gpio_config.h）+ 面板轴（构建矩阵
- *       INKWORD_PANEL_*，默认 DEPG0370 3.7" BW / 可选 E042A13
- *       4.2" BWR 三色，见 epd_panel.h）
+ *       EPD_PANEL_DEFAULT_ID，默认 DEPG0370 3.7" BW / env 钉面板，
+ *       见 epd_panel.h）
  * 接口：4 线 SPI（BS1=LOW）；驱动核心为 GxEPD2，面板序列封装于
  *       panels/（L0）经 L2 epd_panel.h desc.ops 分发
  * 升压：两板均自主驱动（EVK011 由 COG 经 GDR 驱动板上分立 boost /
