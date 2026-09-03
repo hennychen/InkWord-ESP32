@@ -271,7 +271,7 @@ static bool browse_page_on_button(nav_key_t id, button_event_t event)
 
 const page_t g_browse_page = { "browse", browse_mode_render,
                                browse_page_on_button,
-                               browse_mode_reset, NULL };
+                               browse_mode_reset, NULL, true };
 
 /* 选词跳转：seek 已切 FLASH 并渲染词卡（本视图自然终结，无需 exit） */
 static void confirm_word(void)

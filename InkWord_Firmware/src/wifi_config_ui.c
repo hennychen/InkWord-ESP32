@@ -793,4 +793,4 @@ static bool wifi_page_on_button(nav_key_t id, button_event_t event)
 }
 
 const page_t g_wifi_ui_page = { "wifi_config", NULL, wifi_page_on_button,
-                               NULL, NULL };
+                               NULL, NULL, true };

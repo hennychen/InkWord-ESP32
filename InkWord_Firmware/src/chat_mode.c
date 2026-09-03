@@ -942,4 +942,4 @@ static bool chat_page_on_button(nav_key_t id, button_event_t event)
 }
 
 const page_t g_chat_page = { "chat", NULL, chat_page_on_button,
-                             chat_page_enter, NULL };
+                             chat_page_enter, NULL, false };

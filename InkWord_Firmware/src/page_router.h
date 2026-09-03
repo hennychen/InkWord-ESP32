@@ -34,6 +34,9 @@ typedef struct page {
     bool (*on_button)(nav_key_t id, button_event_t event); /**< 栈顶按键独占；false=请求退出编排 */
     void (*enter)(void);     /**< 入栈回调：自绘首帧（可 NULL 跳过） */
     void (*exit)(void);      /**< 出栈回调：清态（可 NULL 跳过；渲染恢复由退出方自理） */
+    bool owns_display;       /**< true=自绘整帧独占（menu/settings/wifi/   browse：栈顶期间渲染族必须让位）；false=复用渲染族
+                               *   自绘内容区（quiz/chat/pron：栈顶期间渲染族
+                               *   守卫应放行，否则自阻塞——缺陷修复实测教训） */
 } page_t;
 
 /** 注册 base 页（main setup 早期调用；render=学习/阅读/待机分流） */
@@ -60,10 +63,16 @@ void page_router_display_claim(void);
 /** 显示通道外部独占解除（与 claim 配对） */
 void page_router_display_release(void);
 
-/** 显示通道忙 = 覆盖层栈非空 || 外部独占：学习/待机/chat 局刷等
- *  渲染守卫统一口径（原 overlay_active || lan_server_is_active 双
- *  真相源收敛，P2 注册制；栈状态直查需求由本函数覆盖） */
+/** 显示通道忙 = 覆盖层栈非空 || 外部独占：任何栈页都算占用（standby
+ *  待机页轮换/刷新停发守卫用此产一义——待机页只与真覆盖层共存，
+ *  quiz/chat 入栈期间也不能轮换）；栈状态直查需求由本函数覆盖 */
 bool page_router_display_busy(void);
+
+/** 显示被自绘页/LAN 独占 = 外部 claim || 栈顶页 owns_display：渲染族
+ *  守卫（ui_render_word/pron/chat）专用——quiz/chat 栈顶时放行自绘，
+ *  menu/settings/wifi/browse 栈顶时让位（与旧 overlay 语义对齐；
+ *  与 display_busy 分工：any 页占用 vs 自绘独占，勿混用） */
+bool page_router_top_owns_display(void);
 
 /** 按键分发：栈非空转发栈顶 on_button（false=请求退出→统一 pop+render_top）；
  * 栈空且 base 注册了 on_button 则转发 base（返回其结果），否则 false */

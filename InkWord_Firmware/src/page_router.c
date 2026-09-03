@@ -77,6 +77,12 @@ bool page_router_display_busy(void)
     return s_top > 0 || s_display_claimed;
 }
 
+bool page_router_top_owns_display(void)
+{
+    if (s_display_claimed) return true;
+    return s_top > 0 && s_stack[s_top - 1]->owns_display;
+}
+
 bool page_router_dispatch_button(nav_key_t id, button_event_t event)
 {
     if (s_top == 0) {

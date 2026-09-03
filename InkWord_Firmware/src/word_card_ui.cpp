@@ -650,10 +650,8 @@ void ui_apply_rotation(void)
 /* 单词卡片渲染入口：状态机每次画面变化时调用 */
 void ui_render_word(study_mode_t mode, int index)
 {
-    if (page_router_display_busy()) return; /* 覆盖层栈顶/LAN 接收页期间
-                                              * 不绘制学习页（menu/settings/
-                                              * browse/quiz/chat/wifi/LAN
-                                              * 统一，P2 注册制） */
+    if (page_router_top_owns_display()) return; /* 自绘页/LAN 独占期间
+                                                * 不绘制（quiz/chat 栈顶放行，缺陷修复） */
     if (study_mode_pron_active() ||
         study_mode_pron_ui_visible()) return; /* P1 跟读三态屏独占内容区 */
 
@@ -786,8 +784,8 @@ void ui_render_word(study_mode_t mode, int index)
  * FAIL 态 total 复用透传错误码：-3=未听到话音，其余=网络/录音失败 */
 void ui_render_pron(pron_state_t st, int total, const char *engine)
 {
-    if (page_router_display_busy())
-        return;                              /* 顶层覆盖层/LAN 期间不绘制 */
+    if (page_router_top_owns_display())
+        return;                              /* 自绘页/LAN 独占期间不绘制 */
 
     epd_gfx_fill_rect(0, UI_STATUS_H, epd_gfx_width(),
                       epd_gfx_height() - UI_STATUS_H, EPD_GFX_WHITE);

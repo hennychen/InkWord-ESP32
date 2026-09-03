@@ -100,7 +100,7 @@ static void ui_chat_caption(int y, const char *s, int level)
 void ui_render_chat(chat_state_t st, const char *text)
 {
     if (!epd_gfx_partial_supported()) return;   /* 三色降级：纯语音+震动 */
-    if (page_router_display_busy())
+    if (page_router_top_owns_display())
         return;                              /* 顶层覆盖层/LAN 期间不绘制 */
 
     epd_gfx_fill_rect(0, UI_STATUS_H, epd_gfx_width(),
@@ -256,7 +256,7 @@ void ui_chat_anim_tick(void)
     static int64_t last_us = -1;
     static int phase = 0;
     if (!epd_gfx_partial_supported() || !CHAT_ORB_OK) return;
-    if (page_router_display_busy())
+    if (page_router_top_owns_display())
         return;
     if (chat_mode_state() != CHAT_STATE_THINKING) return;
     int64_t now = esp_timer_get_time();

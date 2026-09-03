@@ -384,7 +384,7 @@ static bool settings_page_on_button(nav_key_t id, button_event_t event)
 }
 
 const page_t g_settings_ui_page = { "settings", NULL, settings_page_on_button,
-                                   settings_ui_enter, NULL };
+                                   settings_ui_enter, NULL, true };
 
 /* main.cpp 导出（menu_ui 引用同款先例）；ui_force_font_refresh：
  * 字号档变更后的排版失效标记（UI_MEAN_LEVEL 派生几何变化须全刷重排；

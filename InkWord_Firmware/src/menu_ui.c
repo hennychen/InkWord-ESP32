@@ -1412,7 +1412,7 @@ static bool menu_page_on_button(nav_key_t id, button_event_t event)
 }
 
 const page_t g_menu_ui_page = { "menu", NULL, menu_page_on_button,
-                               menu_ui_enter, NULL };
+                               menu_ui_enter, NULL, true };
 
 /* 黄金帧动态区域 mask（T3.2）：主列表徽标列（badge 右对齐绘制，
  * 几何与 draw_item/draw_badge 同源；宽取徽标最大值：中文 3 字

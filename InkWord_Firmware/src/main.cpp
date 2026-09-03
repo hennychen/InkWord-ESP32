@@ -376,7 +376,7 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
 /* T1.4 base 页注册（P2 路由补完：on_button 经 dispatch 栈空转发）；
  * enter/exit 无（常驻） */
 static const page_t g_base_page = { "base", base_render, base_page_on_button,
-                                    NULL, NULL };
+                                    NULL, NULL, false };
 
 /* 五向导航按键事件回调（主循环消费）：通用前置（计时刷新/幻影吞除/
  * 确认音）后统一交页面路由——栈顶独占，栈空转发 base_page_on_button */

@@ -276,7 +276,7 @@ static void quiz_page_leave(void)
 }
 
 const page_t g_quiz_page = { "quiz", quiz_page_render, quiz_page_on_button,
-                             quiz_ui_start, NULL };
+                             quiz_ui_start, NULL, false };
 
 /* 进入测验会话（push 的 enter 回调，自绘首帧）：
  * 题池 → 核心 start → 首帧（模式切换自然全刷） */
