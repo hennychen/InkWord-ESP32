@@ -31,16 +31,23 @@ static uint32_t glyph_n(void)      { return rd_le32(BIN_BASE + 8); }
 static uint16_t bin_levels(void)   { const uint8_t *p = BIN_BASE + 6; return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint16_t glyph_cell(int lvl)  { const uint8_t *p = BIN_BASE + 12 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint16_t glyph_stride(int lvl){ const uint8_t *p = BIN_BASE + 12 + bin_levels() * 2 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
+/* cp 表起点 = 12 + levels*4（bin 头自描述，cp_table/level_base 唯一同源。
+ * 2026-09-03 四级化漏改事故存档：level_base 曾硬编码旧三级头 24，
+ * 四级 bin 下位图基址左移 4B —— 16/32px 级 stride 整除4B 恰整行仅
+ * 字形平移（视觉无感），20/24px 级 stride=3 行错乱，真机释义区
+ * 每字右侧破碎（2026-09-03 3.7" 真机定位，勿再写死偏移） */
+static uint32_t cp_table_off(void) { return 12 + (uint32_t)bin_levels() * 4; }
+
 
 static const uint16_t *cp_table(void)
 {
-    return (const uint16_t *)(BIN_BASE + 12 + bin_levels() * 4);
+    return (const uint16_t *)(BIN_BASE + cp_table_off());
 }
 
 static const uint8_t *level_base(int lvl)
 {
     uint32_t n = glyph_n();
-    uint32_t off = 24 + 2 * n;
+    uint32_t off = cp_table_off() + 2 * n;   /* cp 表终点 = 位图区起点 */
     off = (off + 3) & ~3u;
     for (int i = 0; i < lvl; i++)
         off += n * (uint32_t)glyph_stride(i) * (uint32_t)glyph_cell(i);

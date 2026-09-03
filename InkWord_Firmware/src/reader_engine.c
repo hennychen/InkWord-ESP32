@@ -93,7 +93,10 @@ static void ink_span(const uint8_t *bits, int cell, int stride, int *l, int *w)
 static void blit_trimmed(int x, int y, const uint8_t *bits,
                          int cell, int stride, int l, int w, uint16_t color)
 {
-    uint8_t tmp[24 * 3];                /* 最大 24px 级 3 字节/行 */
+    uint8_t tmp[32 * 4];                /* 最大 32px 级 4 字节/行（四级化
+                                         * 后 32px 级 stride=4，原 24*3 仅
+                                         * 72B 会 memset 溢出栈；与
+                                         * cjk_text.c 同源同步） */
     int ts = (w + 7) / 8;
     memset(tmp, 0, (size_t)ts * cell);
     for (int gy = 0; gy < cell; gy++) {
