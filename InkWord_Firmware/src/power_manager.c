@@ -106,8 +106,10 @@ static void arm_button_wakeup(void)
     rtc_gpio_pulldown_dis((gpio_num_t)NAV_CENTER_PIN);
     rtc_gpio_pullup_en((gpio_num_t)NAV_CENTER_PIN);
 
+    /* S3 仅支持 ANY_LOW；唤醒源唯中键（单 bit 掩码），任一=全部，
+     * 语义零变化（原 ALL_LOW 为 ESP32 定档，S3 下弃用告警） */
     esp_sleep_enable_ext1_wakeup(1ULL << NAV_CENTER_PIN,
-                                 ESP_EXT1_WAKEUP_ALL_LOW);
+                                 ESP_EXT1_WAKEUP_ANY_LOW);
 }
 
 void power_enter_sleep(uint32_t timer_s)

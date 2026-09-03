@@ -172,11 +172,11 @@ static void draw_body(void)
             snprintf(line, sizeof(line), "%s", w->text);
             if (w->meaning[0]) {
                 char first[96];
-                snprintf(first, sizeof(first), "%s", w->meaning);
+                snprintf(first, sizeof(first), "%.95s", w->meaning); /* 精度=有意截断（-Wformat-truncation） */
                 char *nl = strchr(first, '\n');
                 if (nl) *nl = '\0';
                 size_t used = strlen(line);
-                snprintf(line + used, sizeof(line) - used, "  %s", first);
+                snprintf(line + used, sizeof(line) - used, "  %.60s", first);
             }
             cjk_text_draw_wrap(BR_MARGIN_X + 4,
                                y + (BR_ITEM_H - BR_FONT_H) / 2,
@@ -269,7 +269,8 @@ static bool browse_page_on_button(nav_key_t id, button_event_t event)
     return true;   /* 栈顶总消费；退出编排模块内自管 */
 }
 
-const page_t g_browse_page = { browse_mode_render, browse_page_on_button,
+const page_t g_browse_page = { "browse", browse_mode_render,
+                               browse_page_on_button,
                                browse_mode_reset, NULL };
 
 /* 选词跳转：seek 已切 FLASH 并渲染词卡（本视图自然终结，无需 exit） */
@@ -293,8 +294,7 @@ void browse_mode_on_button(nav_key_t id, button_event_t event)
     /* RST 长按：任意层级直接退出回闪卡（游标恢复进视图前位置） */
     if (id == NAV_RST && event == BUTTON_EVENT_LONG_PRESS) {
         study_mode_exit_browse();
-        page_router_pop_if(&g_browse_page);   /* T1.4：出栈归位 */
-        page_router_render_top();
+        page_router_exit(&g_browse_page);   /* P2：pop+render 两连收敛 */
         return;
     }
     if (event != BUTTON_EVENT_SHORT_PRESS) return;   /* 其余长按忽略 */
@@ -303,8 +303,7 @@ void browse_mode_on_button(nav_key_t id, button_event_t event)
     if (total <= 0) {   /* 空目录：任意短按退出（防御） */
         if (id == NAV_RST || id == NAV_SET || id == NAV_CENTER) {
             study_mode_exit_browse();
-            page_router_pop_if(&g_browse_page);   /* T1.4：出栈归位 */
-            page_router_render_top();
+            page_router_exit(&g_browse_page);
         }
         return;
     }
@@ -330,8 +329,7 @@ void browse_mode_on_button(nav_key_t id, button_event_t event)
             break;
         case NAV_RST:         /* 顶层退出视图 */
             study_mode_exit_browse();
-            page_router_pop_if(&g_browse_page);   /* T1.4：出栈归位 */
-            page_router_render_top();
+            page_router_exit(&g_browse_page);
             break;
         default:
             break;

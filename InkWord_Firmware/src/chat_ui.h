@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-/** 状态页绘制（chat_mode set_state 回调 + ui_render_current 首帧分流）：
+/** 状态页绘制（chat_mode set_state 回调 + chat_page_enter 首帧）：
  *  内容区局刷，环路内禁全刷红线 */
 void ui_render_chat(chat_state_t st, const char *text);
 

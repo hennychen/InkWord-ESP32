@@ -11,8 +11,9 @@
  * 零渲染纯语音+震动。
  *
  * 按键：中=开始/发送/打断重说，SET=收藏本轮生词（A3：idle 态触发，
- * 任务上下文逐条推 /sync/collect），长按中或 RST=请求退出（由 main 编
- * 排层执行 study_mode_exit_chat）；haptic：录音起一短震、回复到两短震、
+ * 任务上下文逐条推 /sync/collect），长按中或 RST=请求退出（T2.2 栈化
+ * 后退出编排内聚在 g_chat_page.on_button：haptic + study_mode_exit_chat
+ * + pop_if + render_top）；haptic：录音起一短震、回复到两短震、
  * 网络失败一长震（回 idle 不退模式）。电源零改动：每次按键
  * power_note_activity 自然续期。
  */
@@ -22,6 +23,7 @@
 #include <stdbool.h>
 
 #include "button_handler.h"   /* nav_key_t / button_event_t */
+#include "page_router.h"      /* T2.2 栈化：page_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -89,7 +91,13 @@ bool chat_mode_on_button(nav_key_t id, button_event_t event);
 /** 模式是否激活（任务生命周期域）。 */
 bool chat_mode_is_active(void);
 
-/** 当前状态（ui_render_current 进入首帧取用）。 */
+/** 页面路由实例（T2.2 栈化）：render=NULL 自管局刷（环路内
+ *  ui_render_chat 局刷，协议先例）；enter=首帧全刷（状态栏+内容区）；
+ *  on_button=false 请求退出时内部完成退出编排（haptic+exit_chat+
+ *  pop+render_top） */
+extern const page_t g_chat_page;
+
+/** 当前状态（g_chat_page.enter 首帧取用）。 */
 chat_state_t chat_mode_state(void);
 
 /** 末句回复文本（空串=尚无回合；屏显驻留用）。 */

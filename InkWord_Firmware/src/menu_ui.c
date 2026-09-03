@@ -291,7 +291,9 @@ static void act_chat(void)
 /* 对话确认进入（A1）：按二级页选择组 chat_request_t（mode/scenario/
  * title；free 留空串=URL 不携 query，与老固件请求逐字节一致）；
  * 「先 enter 后 exit」：预检失败留在二级页提示原因（2026-09-01
- * 真机实测：key 未注册时静默回学习页，用户无从得知原因） */
+ * 真机实测：key 未注册时静默回学习页，用户无从得知原因）；成功则
+ * 经 g_chat_page 栈化进入（T2.2：enter=首帧全刷，退出编排内聚
+ * chat_mode.c） */
 static void chat_enter(int chatsel, int scenario_sel)
 {
     chat_request_t req;
@@ -321,7 +323,7 @@ static void chat_enter(int chatsel, int scenario_sel)
     }
     menu_ui_exit();
     haptic_event(HAPTIC_MODE);            /* 进入新模式 50ms（先例） */
-    page_router_render_top();
+    page_router_push(&g_chat_page);       /* T2.2 栈化：enter=首帧全刷 */
 }
 
 /* A3 前向声明（绘制函数在绘制区，文件序同 chat_enter 使用点先行） */
@@ -405,9 +407,9 @@ static void act_audio_sync(void)
 }
 
 /* 快速测验（v1.2 T2.3，MENU_DESIGN 二期位）：前置词库 ≥8 在
- * study_mode_enter_quiz 内，不满足长震回学习页；满足则题池构造、
- * quiz_session_start 与首帧渲染由 quiz_ui_start 编排
- * （QUIZ_DESIGN §7 数据流：入口与数据流分层） */
+ * study_mode_enter_quiz 内，不满足长震回学习页；满足则经
+ * g_quiz_page 栈化进入（T2.2：enter=quiz_ui_start 自绘首帧+自动播，
+ * 与 act_browse 同款双轨） */
 static void act_quiz(void)
 {
     menu_ui_exit();
@@ -417,7 +419,7 @@ static void act_quiz(void)
         return;
     }
     haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
-    quiz_ui_start();
+    page_router_push(&g_quiz_page);   /* T2.2 栈化：enter 自绘首帧 */
 }
 
 /* 教材目录（2026-08-28 设计 §B3）：前置词库 ≥1 在
@@ -1409,9 +1411,26 @@ static bool menu_page_on_button(nav_key_t id, button_event_t event)
     return true;   /* 顶层覆盖层总消费（语义不变） */
 }
 
-const page_t g_menu_ui_page = { NULL, menu_page_on_button, menu_ui_enter, NULL };
+const page_t g_menu_ui_page = { "menu", NULL, menu_page_on_button,
+                               menu_ui_enter, NULL };
 
-bool menu_ui_is_active(void)
+/* 黄金帧动态区域 mask（T3.2）：主列表徽标列（badge 右对齐绘制，
+ * 几何与 draw_item/draw_badge 同源；宽取徽标最大值：中文 3 字
+ * 点阵+余量，TINY 档仅 ASCII 徽标取 40）——收藏数/模式名/Wi-Fi
+ * 状态/音频同步数/音量为运行期动态，差异不参与基线比对 */
+int menu_ui_golden_mask(int (*out)[4], int max)
 {
-    return s_active;
+    int n = 0;
+    if (n < max) {
+        int w = MU_ITEM_W - MU_SB_W - 4;            /* 列表主体宽 */
+        int bw = MU_TINY ? 40 : (MU_FONT_H * 3 + 8);
+        int x = MU_MARGIN_X + w - 6 - bw;           /* badge 左缘（right_x 同源） */
+        if (x < 0) x = 0;
+        out[n][0] = x;
+        out[n][1] = MU_LIST_TOP;
+        out[n][2] = bw;
+        out[n][3] = MU_VISIBLE * MU_ITEM_H;        /* 列表可见区 */
+        n++;
+    }
+    return n;
 }

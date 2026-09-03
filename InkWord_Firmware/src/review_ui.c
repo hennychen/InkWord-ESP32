@@ -18,6 +18,9 @@
 #include "study_mode_machine.h"   /* study_mode_seq_total / seq_pos */
 #include "learning_state.h"       /* learning_state_due_at */
 #include "word_parser.h"          /* word_parser_get */
+#include "haptic.h"               /* T2.2 路由迁入：haptic_event */
+#include "ui_sfx.h"               /* T2.2 路由迁入：ui_sfx_play */
+#include "page_router.h"          /* T2.2 渲染收敛：render_top */
 
 /* ---- 布局宏（T1.5 参数表收敛完成：布局值查 layout_profile 字段，
  * 字号/行距派生式局部保留；语义同 main.cpp 学习页布局宏区）---- */
@@ -47,6 +50,66 @@ static int  s_rv_off = 0;              /* 词表滚动窗口偏移 */
 bool review_ui_is_detail(void) { return s_review_detail; }
 void review_ui_set_detail(bool on) { s_review_detail = on; }
 void review_ui_reset_detail(void) { s_review_detail = false; }
+
+/* 复习模式按键路由（T2.2 自 main.cpp on_button 迁入；调用上下文：
+ * MODE_REVIEW 短按、无覆盖层栈）。列表态=到期词紧凑词表：上/下
+ * 移动选择、中进词卡详情、左/右自评出队（游标钳位，对应底部提示
+ * 行「中 详情 · 左/右 自评出队」）、RST 回首行、SET 无遮蔽语义
+ * 忽略；空序列全忽略（空态页无交互对象，评分目标词索引无效）。
+ * 详情态仅左/右自评出队并回列表（after_due_review；序列清空由
+ * 列表态空态页承载，避免空序列词卡取词），其余返回 false 放行
+ * 通用词卡路由（上/下翻释义页/跨词翻卡、中发音、SET 遮蔽、
+ * RST 设置直达） */
+bool review_ui_on_button(nav_key_t id, button_event_t event)
+{
+    (void)event;   /* 调用上下文已限定短按 */
+
+    if (!s_review_detail) {
+        switch (id) {
+        case NAV_UP:
+            study_mode_handle_action(0);   /* 选择上一词（回绕，内部重绘） */
+            return true;
+        case NAV_DOWN:
+            study_mode_handle_action(1);   /* 选择下一词 */
+            return true;
+        case NAV_CENTER:
+            if (study_mode_seq_total() == 0) return true;
+            review_ui_set_detail(true);       /* 进词卡详情 */
+            page_router_render_top();         /* base 分流：详情词卡 */
+            return true;
+        case NAV_LEFT:
+        case NAV_RIGHT: {
+            if (study_mode_seq_total() == 0) return true;
+            int q = (id == NAV_RIGHT) ? 5 : 1;
+            learning_state_apply_quality(
+                study_mode_current_word_index(), q);
+            haptic_event(HAPTIC_REVIEW);   /* 自评提交 30ms（PRD 5.4） */
+            ui_sfx_play(UI_SFX_RATE);      /* T1.6 自评提交音「滴答」 */
+            study_mode_after_due_review(); /* REVIEW 恒 true：出队钳位 */
+            page_router_render_top();
+            return true;
+        }
+        case NAV_RST:
+            study_mode_reset_cursor();     /* 回首行 */
+            return true;
+        default:                           /* NAV_SET：列表态无遮蔽语义 */
+            return true;
+        }
+    }
+
+    /* 详情态自评：出队 + 回列表（下词钳位高亮；清空→空态页） */
+    if (id == NAV_LEFT || id == NAV_RIGHT) {
+        int q = (id == NAV_RIGHT) ? 5 : 1;
+        learning_state_apply_quality(study_mode_current_word_index(), q);
+        haptic_event(HAPTIC_REVIEW);
+        ui_sfx_play(UI_SFX_RATE);      /* T1.6 自评提交音「滴答」 */
+        review_ui_set_detail(false);
+        study_mode_after_due_review();
+        page_router_render_top();   /* 出队回列表（清空→空态页） */
+        return true;
+    }
+    return false;   /* 其余键放行通用词卡路由 */
+}
 
 /* 复习到期词表（列表态）：两列紧凑行（左词 FreeSans / 右释义首行
  * 截断点阵）+ 反选高亮 + 滚动条 + 底部提示（menu_ui 列表范式）；

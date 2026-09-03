@@ -34,11 +34,6 @@ extern "C" {
 void menu_ui_enter(void);
 
 /**
- * @brief 菜单当前是否激活（接管按键；exit 即清）。
- */
-bool menu_ui_is_active(void);
-
-/**
  * @brief 按键转发接口。菜单激活时由 main 按键回调调用（同步处理）。
  */
 void menu_ui_on_button(nav_key_t id, button_event_t event);
@@ -48,6 +43,16 @@ void menu_ui_on_button(nav_key_t id, button_event_t event);
  *        入栈，长按中键入口由 main.cpp 调用）。
  */
 extern const page_t g_menu_ui_page;
+
+/**
+ * @brief 黄金帧动态区域 mask（T3.2）：主列表徽标列矩形
+ *        （{x,y,w,h}，渲染几何同源 MU_* 派生；徽标含收藏数/模式名/
+ *        Wi-Fi 状态/音频同步数/音量等运行期动态值）。
+ * @param out 矩形出参（调用方栈缓冲，建议 ≥2）
+ * @param max 出参容量
+ * @return 写入矩形数（0=无 mask）
+ */
+int menu_ui_golden_mask(int (*out)[4], int max);
 
 #ifdef __cplusplus
 }

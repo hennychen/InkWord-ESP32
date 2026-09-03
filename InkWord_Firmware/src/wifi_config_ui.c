@@ -20,6 +20,7 @@
 #include "wifi_config_ui.h"
 #include "wifi_manager.h"
 #include "button_handler.h"
+#include "page_router.h"       /* T2.2 栈化：push/pop_if */
 #include "epd_driver.h"
 #include "debug_log.h"
 #include "study_mode_machine.h"
@@ -766,6 +767,8 @@ void wifi_config_ui_enter(void)
 {
     if (!s_inited) wifi_config_ui_init();
     s_active = true;
+    page_router_push(&g_wifi_ui_page);   /* T2.2 栈化：登记栈顶占位
+                                          * （首帧由任务异步自绘） */
     ui_event_t evt = { .id = NAV_KEY_COUNT, .event = BUTTON_EVENT_NONE };
     xQueueSend(s_queue, &evt, 0);
     LOG_I("wifi config UI enter requested");
@@ -777,3 +780,17 @@ void wifi_config_ui_on_button(nav_key_t id, button_event_t event)
     ui_event_t evt = { .id = id, .event = event };
     xQueueSend(s_queue, &evt, 0);
 }
+
+/* ---- T2.2 页面路由接入（跨任务妥协）：页面实例仅承担栈顶按键
+ * 占位（非阻塞入队转发）；render/enter=NULL——首帧与后续帧由
+ * wifi_ui_task 异步自绘（自管局刷先例）。退出在任务上下文置位
+ * （exit_config：清屏+回学习），页栈 pop 由主 loop 回收，不违反
+ * 页栈单写者纪律 ---- */
+static bool wifi_page_on_button(nav_key_t id, button_event_t event)
+{
+    wifi_config_ui_on_button(id, event);
+    return true;
+}
+
+const page_t g_wifi_ui_page = { "wifi_config", NULL, wifi_page_on_button,
+                               NULL, NULL };

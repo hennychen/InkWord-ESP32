@@ -7,16 +7,17 @@
  * 验证）。核心域词条索引 [0,n) 经 s_quiz_pool 重映射到真词索引——
  * 泛化约束：核心不碰 learning_state / word_parser。
  *
- * 生命周期对齐临时视图先例（browse_mode 同款）：quiz_ui_start 由
- * 菜单 act_quiz 在 study_mode_enter_quiz 成功后调用；渲染经
- * ui_render_word 的 MODE_QUIZ 分流调用 quiz_ui_render（刷新编排/
- * 局刷窗口策略留 main.cpp）；按键经 main.cpp on_button 转发
- * quiz_ui_on_button（长短按区分）。
+ * 生命周期对齐 page_router（T2.2 栈化，browse_mode 同款双轨）：
+ * act_quiz 在 study_mode_enter_quiz 成功后 push(g_quiz_page)，
+ * enter=quiz_ui_start（题池+首帧+首题自动播）；render/on_button
+ * 经栈顶分发（刷新编排/局刷窗口策略留 ui_render_word 分流内）；
+ * 退出统一走模块内 quiz_page_leave（pop_if + render_top 回 base）。
  */
 #ifndef INKWORD_QUIZ_UI_H
 #define INKWORD_QUIZ_UI_H
 
 #include "button_handler.h"
+#include "page_router.h"
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -34,9 +35,14 @@ void quiz_ui_set_font_fit(int (*fit_font)(const char *text, int start_size,
                                           int max_w),
                           int (*word_start_size)(void));
 
-/** 进入测验会话（study_mode_enter_quiz 成功后由菜单 act_quiz 调用）：
+/** 进入测验会话（enter 回调，push 时机=进入时机）：
  *  题池构造 → 核心 start → 首帧渲染 + T3 首题自动播 */
 void quiz_ui_start(void);
+
+/** 页面路由实例（T2.2）：enter=quiz_ui_start；render/on_button 为
+ *  模块内 static 转发；exit 无（模式态归 study_mode_machine，
+ *  s_quiz_* 会话内变量由下次 start 重置） */
+extern const page_t g_quiz_page;
 
 /** 测验视图绘制（ui_render_word 的 MODE_QUIZ 分流入口；刷新编排
  *  留调用方） */

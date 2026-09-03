@@ -29,6 +29,9 @@
 #include "haptic.h"
 #include "wifi_manager.h"
 #include "chat_ui.h"           /* T1.3：屏显回调（ui_render_chat/anim_tick，原 main.cpp extern） */
+#include "epd_driver.h"        /* T2.2 栈化：chat_page_enter 首帧 flush */
+#include "study_mode_machine.h" /* T2.2 栈化：study_mode_exit_chat/MODE_CHAT */
+#include "page_router.h"       /* T2.2 栈化：g_chat_page/pop_if/render_top */
 
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
@@ -43,6 +46,10 @@
 #include <errno.h>
 
 static const char *TAG = "CHAT";
+
+/* main.cpp 导出的状态栏绘制（ui_render_word 同款 extern 先例；
+ * chat_page_enter 首帧取用） */
+extern void ui_draw_status(study_mode_t mode);
 
 #define CHAT_TASK_STACK     (6 * 1024)
 #define CHAT_TASK_PRIO      (4)     /* pron/audio_sync 同级，低于 btn_scan(5) */
@@ -909,3 +916,30 @@ const char *chat_mode_reply(void)       { return s_reply; }
 const char *chat_mode_warmup(void)      { return s_warmup; }
 const char *chat_mode_title(void)      { return s_req.title[0] ? s_req.title : "AI Chat"; }
 int chat_mode_wordhit_count(void)      { return s_hits_n; }
+
+/* ---- T2.2 页面路由接入：render=NULL 自管局刷先例 ---- */
+/* 首帧（push 的 enter 回调）：状态栏+内容区整屏全刷一次；环路内仅
+ * 内容区局刷（ui_render_chat 由 set_state 回调驱动），进/出各一次
+ * 全刷红线（原 main.cpp base_render 的 MODE_CHAT 分支迁此） */
+static void chat_page_enter(void)
+{
+    ui_draw_status(MODE_CHAT);
+    ui_render_chat(chat_mode_state(), chat_mode_reply());
+    epd_gfx_flush();
+}
+
+/* 栈顶按键：全转发 chat_mode_on_button；false=请求退出，退出编排
+ * 内聚于此（原 main.cpp on_button 的 MODE_CHAT 分支迁此） */
+static bool chat_page_on_button(nav_key_t id, button_event_t event)
+{
+    if (chat_mode_on_button(id, event))
+        return true;
+    haptic_event(HAPTIC_MODE);       /* 退出模式 50ms（进/出同档） */
+    study_mode_exit_chat();          /* 内部 request_exit：任务静默收尾 */
+    page_router_exit(&g_chat_page);  /* P2：pop+render_top 两连收敛；
+                                       * 模式变化自然全刷回闪卡 */
+    return true;
+}
+
+const page_t g_chat_page = { "chat", NULL, chat_page_on_button,
+                             chat_page_enter, NULL };

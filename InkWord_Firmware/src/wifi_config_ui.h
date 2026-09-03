@@ -11,11 +11,16 @@
  *
  * 线程模型：独立 FreeRTOS 任务处理所有 UI 逻辑；
  *           按键事件通过队列非阻塞转发，不影响按键扫描任务。
+ *
+ * T2.2 页面路由接入（跨任务妥协）：g_wifi_ui_page 仅承担栈顶按键
+ * 占位（on_button 非阻塞入队），render/enter=NULL（首帧由任务异步
+ * 自绘）；退出在任务上下文置位，页栈归位由主 loop 回收 pop_if。
  */
 #ifndef INKWORD_WIFI_CONFIG_UI_H
 #define INKWORD_WIFI_CONFIG_UI_H
 
 #include "button_handler.h"
+#include "page_router.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,10 +44,14 @@ bool wifi_config_ui_is_active(void);
 void wifi_config_ui_enter(void);
 
 /**
- * @brief 按键转发接口。配置页激活时，由 main 按键回调调用。
+ * @brief 按键转发接口。配置页激活时，由栈顶路由分发调用。
  *        非阻塞（仅入队），绝不卡住按键扫描任务。
  */
 void wifi_config_ui_on_button(nav_key_t id, button_event_t event);
+
+/** 页面路由实例（T2.2）：render/enter=NULL 自管（任务异步自绘），
+ *  on_button 入队转发；栈归位由 main loop 回收 */
+extern const page_t g_wifi_ui_page;
 
 #ifdef __cplusplus
 }

@@ -9,7 +9,8 @@
  *      （main.cpp static 工具，避免反向依赖）；
  *   2. s_last_mode=MODE_COUNT 改调 main.cpp 导出的
  *      ui_force_full_refresh_next()（同一实现）；
- *   3. ui_render_word/ui_render_current 沿 menu_ui 先例 extern 调用。
+ *   3. ui_render_word 沿 menu_ui 先例 extern 调用（ui_render_current
+ *      兼容别名随 T2.2 栈化退役，退出路径改 quiz_page_leave）。
  *
  * 布局宏自 main.cpp 同步复制（值与派生式逐字节一致，视觉零变化；
  * T1.5 参数表落地时与 main.cpp 一并收敛进 layout_profile）。
@@ -32,6 +33,7 @@
 #include "learning_state.h"       /* learning_state_* */
 #include "settings_ui.h"          /* settings_audio_enabled/settings_quiz_grid */
 #include "study_mode_machine.h"   /* study_mode_exit_quiz/MODE_QUIZ */
+#include "page_router.h"          /* T2.2 栈化：pop_if/render_top */
 
 #include <esp_random.h>           /* esp_fill_random（esp32 直调） */
 #include <freertos/FreeRTOS.h>
@@ -41,7 +43,6 @@ static const char *TAG = "QUIZ_UI";   /* debug_log.h LOG 宏依赖 */
 
 /* main.cpp 导出的渲染入口（menu_ui.c 同款 extern 先例） */
 extern void ui_render_word(study_mode_t mode, int index);
-extern void ui_render_current(void);
 extern void ui_force_full_refresh_next(void);
 
 /* ---- 布局宏（档位参数经 layout_profile 字段引用，T1.5 收敛完成；
@@ -252,7 +253,32 @@ static int quiz_fit_font(const char *text, int max_w)
     return s_fit_font(text, s_word_start_size(), max_w);
 }
 
-/* 进入测验会话（study_mode_enter_quiz 成功后由菜单 act_quiz 执行）：
+/* ---- T2.2 页面路由接入（browse_mode 栈化同款先例） ---- */
+/* 栈顶 render：与 ui_render_word 的 MODE_QUIZ 分流同路径（首帧与
+ * 后续重绘共用刷新编排，模式切换自然全刷） */
+static void quiz_page_render(void)
+{
+    ui_render_word(MODE_QUIZ, 0);
+}
+
+/* 栈顶按键：全转发（作答/跳过/退出编排见 quiz_ui_on_button） */
+static bool quiz_page_on_button(nav_key_t id, button_event_t event)
+{
+    quiz_ui_on_button(id, event);
+    return true;
+}
+
+/* 出栈编排：pop_if 归位后 render_top 回 base 分流；本文件 6 处
+ * 退出点（防御/小结/RST/默认分支）统一改走此入口 */
+static void quiz_page_leave(void)
+{
+    page_router_exit(&g_quiz_page);   /* P2 路由补完：退出两连收敛 */
+}
+
+const page_t g_quiz_page = { "quiz", quiz_page_render, quiz_page_on_button,
+                             quiz_ui_start, NULL };
+
+/* 进入测验会话（push 的 enter 回调，自绘首帧）：
  * 题池 → 核心 start → 首帧（模式切换自然全刷） */
 void quiz_ui_start(void)
 {
@@ -274,7 +300,7 @@ void quiz_ui_start(void)
     s_quiz_total = quiz_session_start_ex(s_quiz_pool_n, QUIZ_ROUND_N, &cfg);
     if (s_quiz_total <= 0) {   /* 池 <8 防御（enter_quiz 前置应已挡） */
         study_mode_exit_quiz();
-        ui_render_current();
+        quiz_page_leave();
         return;
     }
     ui_render_word(MODE_QUIZ, 0);
@@ -553,14 +579,14 @@ void quiz_ui_on_button(nav_key_t id, button_event_t event)
 {
     if (s_quiz_summary) {              /* 小结页：任意键退出 */
         study_mode_exit_quiz();
-        ui_render_current();
+        quiz_page_leave();
         return;
     }
 
     if (event == BUTTON_EVENT_LONG_PRESS) {
         if (id == NAV_RST) {           /* RST 长/短按均退出（临时视图语义） */
             study_mode_exit_quiz();
-            ui_render_current();
+            quiz_page_leave();
             return;
         }
         /* TINY 档 T3 纵列重播（2026-08-25）：TINY 恒纵列后中键短按=作答，
@@ -603,7 +629,7 @@ void quiz_ui_on_button(nav_key_t id, button_event_t event)
             case NAV_RST:
             default:
                 study_mode_exit_quiz();
-                ui_render_current();
+                quiz_page_leave();
                 return;
             }
         }
@@ -636,7 +662,7 @@ void quiz_ui_on_button(nav_key_t id, button_event_t event)
         case NAV_RST:
         default:
             study_mode_exit_quiz();    /* 中途退出：已答题评分保留 */
-            ui_render_current();
+            quiz_page_leave();
             return;
         }
     }
@@ -658,7 +684,7 @@ void quiz_ui_on_button(nav_key_t id, button_event_t event)
         return;
     case NAV_RST:
         study_mode_exit_quiz();        /* 中途退出：已答题评分保留 */
-        ui_render_current();
+        quiz_page_leave();
         return;
     default:
         return;

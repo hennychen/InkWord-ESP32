@@ -161,7 +161,7 @@ void learning_state_save(void);
  */
 void learning_state_maybe_save(void);
 
-/* ---- 上报事件队列（P2 云端闭环，main.cpp background_task 消费） ---- */
+/* ---- 上报事件队列（P2 云端闭环，sync_session background_task 消费） ---- */
 
 /**
  * @brief 队列内待上报事件数（评分/收藏动作自动入队，满 24 覆盖最旧）。

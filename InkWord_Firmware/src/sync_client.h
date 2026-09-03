@@ -23,7 +23,7 @@ extern "C" {
 /* v2.0 绑定换发（ADR-001 §五）：App 绑定设备 → 后端换发 ApiKey → 旧钥
  * 即刻失效 401。sync_pull_words/push_progress/push_collect/heartbeat
  * 逢 401 返回 SYNC_ERR_AUTH，调用方应清钥重注册（MAC 幂等取回新钥，
- * main.cpp sync_recover_auth 自愈链路）；与通用失败 -1 区分。 */
+ * sync_session.cpp sync_recover_auth 自愈链路）；与通用失败 -1 区分。 */
 #define SYNC_ERR_AUTH  (-2)
 
 /** 学习记录条目（回传给后端） */
