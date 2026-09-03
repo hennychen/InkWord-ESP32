@@ -251,14 +251,24 @@ void study_mode_handle_action(int action)
     int total = seq_total();
 
     switch (action) {
-    case 0: /* prev */
+    case 0: /* prev：边界钳制不回绕（2026-09-03：词 0 上翻回绕到词库
+     * 尾部——2407 条混排词库下误入高考古诗文区段，学习序列断裂；
+     * 首条上翻=长震拒绝，游标原地，speak 缺音频同款单震反馈） */
         if (total <= 0) return;         /* 空序列（READER 无书）不动作 */
-        if (--s_cursor < 0) s_cursor = total - 1;
+        if (s_cursor <= 0) {
+            haptic_event(HAPTIC_ERROR);
+            return;
+        }
+        s_cursor--;
         s_reveal = true;
         break;
-    case 1: /* next */
+    case 1: /* next：末条下翻同钳制（对称；READER 末页=书读尽拒翻） */
         if (total <= 0) return;
-        if (++s_cursor >= total) s_cursor = 0;
+        if (s_cursor >= total - 1) {
+            haptic_event(HAPTIC_ERROR);
+            return;
+        }
+        s_cursor++;
         s_reveal = true;
         break;
     case 2: /* confirm：闪卡模式翻转释义，听写模式提交拼写 */

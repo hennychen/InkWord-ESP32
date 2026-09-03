@@ -558,6 +558,25 @@ static void ui_draw_content(const WordEntry *w)
 
     if (ui_dict_blind()) {
         ui_draw_spelling_slots(w->text);   /* 听写遮蔽：藏词画空格线 */
+    } else if (cjk_text_has_wide(w->text)) {
+        /* 2026-09-03 中文词条头（default_words.json 尾部高考古诗文：
+         * text=诗题如「扬州慢（淮左名都）」）：FreeSans 仅 ASCII
+         * 整行跳过→标题空白（用户实测）；含全角字符走点阵（音标行
+         * 2026-08-23 同款路径分派，字库已收作者名/全角标点）。字级从
+         * 诗行档（UI_POEM_LEVEL）超宽逐级降级，仍超宽单行截断（词头槽
+         * 一行预算，TINY 106px 窄屏长诗题）；y=基线-cell 高，与 ASCII
+         * 词底基线对齐近似 */
+        int lvl = UI_POEM_LEVEL;
+        while (lvl > 0 && cjk_text_width(lvl, w->text) > UI_BODY_MAX_W)
+            lvl--;
+        cjk_text_draw_wrap(UI_MARGIN_X, UI_WORD_BASE - (16 + lvl * 4),
+                           UI_BODY_MAX_W, lvl, 16 + lvl * 4, 1,
+                           w->text, EPD_GFX_BLACK);
+
+        if (w->phonetic[0])
+            /* 中文词条：作者名直显（署名非音标，不包斜杠） */
+            cjk_text_draw(UI_MARGIN_X, UI_PHON_TOP, UI_AUX_LEVEL,
+                          w->phonetic, EPD_GFX_BLACK);
     } else {
         epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, w->text, EPD_GFX_BLACK,
                           ui_fit_font(w->text, ui_word_start_size(),
