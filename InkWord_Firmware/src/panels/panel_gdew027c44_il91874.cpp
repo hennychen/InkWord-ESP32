@@ -40,6 +40,12 @@
  * 无状态设计（desc 头注释铁律）：do_refresh 前置 s_ready 检查，
  * power_off/deep_sleep 后归零，下次刷新自动 RST 唤醒 + 完整重配
  * （GxEPD2 _InitDisplay 每次 _reset + 全量重发同风格）。
+ *
+ * BW 黑白快刷实验（2026-09-04）：新增 E5 档 LUT（byte5 再压缩 ~50%，
+ * ~170 帧 / ~2.2s）+ BW-only 三组 LUT（跳过 RED/WHITE 省传输）+
+ * panel_partial_bw() 入口（仅写 0x14 跳过 0x15）。每 4 次 BW 快刷插
+ * 1 次官方深刷清残影。!! 需真机实测验证：IL91874 三色控制器即使
+ * 不发红数据，内部波形引擎可能仍执行完整 5 段序列。
  */
 #include "../epd_panel.h"
 #include "../gpio_config.h"
@@ -132,6 +138,26 @@ static const uint8_t LUT_BLACK_FAST[] = {
     0x00, 0x04, 0x10, 0x00, 0x00, 0x01, 0x00, 0x03, 0x0E, 0x00, 0x00, 0x02,
     0x00, 0x23, 0x00, 0x00, 0x00, 0x01,
 };
+/* E5 黑白快刷表（byte5 再压缩 ~50%：S2=1 S3=2 S4=1 S5=1 S6=1，
+ * ~170 帧 / ~2.2s；仅 BW 三组 LUT，跳过 RED/WHITE 省传输时间） */
+static const uint8_t LUT_VCOM_BW[] = {
+    0x00, 0x00, 0x00, 0x1A, 0x1A, 0x00, 0x00, 0x01,
+    0x00, 0x0A, 0x0A, 0x00, 0x00, 0x01, 0x00, 0x0E, 0x01, 0x0E, 0x01, 0x02,
+    0x00, 0x0A, 0x0A, 0x00, 0x00, 0x01, 0x00, 0x04, 0x10, 0x00, 0x00, 0x01,
+    0x00, 0x03, 0x0E, 0x00, 0x00, 0x01, 0x00, 0x23, 0x00, 0x00, 0x00, 0x01,
+};
+static const uint8_t LUT_WW_BW[] = {
+    0x90, 0x1A, 0x1A, 0x00, 0x00, 0x01, 0x40, 0x0A, 0x0A, 0x00, 0x00, 0x01,
+    0x84, 0x0E, 0x01, 0x0E, 0x01, 0x02, 0x80, 0x0A, 0x0A, 0x00, 0x00, 0x01,
+    0x00, 0x04, 0x10, 0x00, 0x00, 0x01, 0x00, 0x03, 0x0E, 0x00, 0x00, 0x01,
+    0x00, 0x23, 0x00, 0x00, 0x00, 0x01,
+};
+static const uint8_t LUT_BLACK_BW[] = {
+    0x90, 0x1A, 0x1A, 0x00, 0x00, 0x01, 0x20, 0x0A, 0x0A, 0x00, 0x00, 0x01,
+    0x84, 0x0E, 0x01, 0x0E, 0x01, 0x02, 0x10, 0x0A, 0x0A, 0x00, 0x00, 0x01,
+    0x00, 0x04, 0x10, 0x00, 0x00, 0x01, 0x00, 0x03, 0x0E, 0x00, 0x00, 0x01,
+    0x00, 0x23, 0x00, 0x00, 0x00, 0x01,
+};
 
 static void il_write_lut(uint8_t cmd, const uint8_t *lut, size_t n)
 {
@@ -203,6 +229,60 @@ static int panel_init_impl(bool fast)
         il_write_lut(0x23, LUT_WHITE,  sizeof(LUT_WHITE));
         il_write_lut(0x24, LUT_BLACK,  sizeof(LUT_BLACK));
     }
+
+    bus_cmd(0x04);                            /* power on */
+    bus_wait_idle(&g_panel_gdew027c44, 5000);
+
+    s_ready = true;
+    return 0;
+}
+
+/* —— BW-only 初始化（黑白快刷实验，2026-09-04）——
+ * 仅下发 VCOM + WW + BB 三组 LUT（跳过 RED 0x22 / WHITE 0x23），
+ * 理论省 ~40% LUT 传输时间 + 控制器跳过红粒子驱动段。
+ * !! 注意：IL91874 是三色控制器，即使不发红数据，内部波形引擎
+ * 可能仍执行完整 5 段序列——需真机实测验证时间是否缩短。 */
+static int panel_init_bw(void)
+{
+    /* RST + 初始序列同 panel_init_impl，仅 LUT 不同 */
+    pinMode(EPD_RESET_PIN, OUTPUT);
+    pinMode(EPD_CS_PIN, OUTPUT);
+    pinMode(EPD_DC_PIN, OUTPUT);
+    pinMode(EPD_BUSY_PIN, INPUT);
+    digitalWrite(EPD_CS_PIN, HIGH);
+    digitalWrite(EPD_DC_PIN, LOW);
+
+    digitalWrite(EPD_RESET_PIN, HIGH);
+    delay(10);
+    digitalWrite(EPD_RESET_PIN, LOW);
+    delay(g_panel_gdew027c44.rst_pulse_ms);
+    digitalWrite(EPD_RESET_PIN, HIGH);
+    delay(10);
+    bus_wait_idle(&g_panel_gdew027c44, 5000);
+
+    bus_cmd(0x01);
+    bus_dat(0x03); bus_dat(0x00); bus_dat(0x2b); bus_dat(0x2b); bus_dat(0x09);
+    bus_cmd(0x06);
+    bus_dat(0x07); bus_dat(0x07); bus_dat(0x17);
+    bus_cmd(0xF8); bus_dat(0x60); bus_dat(0xA5);
+    bus_cmd(0xF8); bus_dat(0x89); bus_dat(0xA5);
+    bus_cmd(0xF8); bus_dat(0x90); bus_dat(0x00);
+    bus_cmd(0xF8); bus_dat(0x93); bus_dat(0x2A);
+    bus_cmd(0xF8); bus_dat(0x73); bus_dat(0x41);
+    bus_cmd(0x16); bus_dat(0x00);
+    bus_cmd(0x00); bus_dat(0xaf);             /* PSR: by register LUT */
+    bus_cmd(0x30); bus_dat(0x3a);             /* PLL 90Hz */
+    bus_cmd(0x61);
+    bus_dat(0x00); bus_dat((uint8_t)g_panel_gdew027c44.panel_w);
+    bus_dat((uint8_t)(g_panel_gdew027c44.panel_h >> 8));
+    bus_dat((uint8_t)(g_panel_gdew027c44.panel_h & 0xFF));
+    bus_cmd(0x82); bus_dat(0x12);             /* VCOM_DC */
+    bus_cmd(0x50); bus_dat(0x87);             /* CDI */
+
+    /* BW-only 三组 LUT（跳过 0x22 RED + 0x23 WHITE） */
+    il_write_lut(0x20, LUT_VCOM_BW,  sizeof(LUT_VCOM_BW));
+    il_write_lut(0x21, LUT_WW_BW,    sizeof(LUT_WW_BW));
+    il_write_lut(0x24, LUT_BLACK_BW, sizeof(LUT_BLACK_BW));
 
     bus_cmd(0x04);                            /* power on */
     bus_wait_idle(&g_panel_gdew027c44, 5000);
@@ -289,6 +369,47 @@ static int panel_write_full(const uint8_t *frame)
     return panel_full_refresh(frame);
 }
 
+/* —— BW-only 黑白快刷（2026-09-04 实验）——
+ * 仅写 0x14 B/W 平面（跳过 0x15 红平面），用 BW 三组 LUT。
+ * 预期：LUT 传输省 ~40% + 波形段省红粒子驱动 → ~2s 级刷新。
+ * !! 残影风险高：每 G027_BW_FAST_PER_DEEP 次 BW 快刷须插 1 次
+ * 官方深刷清残影（保守 4 次，E5 压缩激进）。 */
+#define G027_BW_FAST_PER_DEEP  4
+static uint32_t s_bw_refresh_seq = 0;
+
+static int panel_partial_bw(const uint8_t *prev, const uint8_t *new_,
+                            uint8_t passes)
+{
+    (void)passes;  /* BW 快刷固定 1 pass（E5 波形已含足够帧数） */
+    const bool deep = (G027_BW_FAST_PER_DEEP > 0) &&
+        (s_bw_refresh_seq % (G027_BW_FAST_PER_DEEP + 1) == G027_BW_FAST_PER_DEEP);
+    s_bw_refresh_seq++;
+
+    Serial.printf("[G027] BW refresh #%u: %s\n",
+                  (unsigned)(s_bw_refresh_seq - 1),
+                  deep ? "DEEP (official 14.7s)" : "BW-FAST (E5 ~2.2s)");
+
+    if (deep) {
+        /* 深刷回退：走完整三色序列清残影 */
+        if (panel_init_impl(false) != 0) return -1;
+    } else {
+        /* BW 快刷：仅 BW 三组 LUT */
+        if (panel_init_bw() != 0) return -1;
+    }
+
+    const size_t plane_bytes =
+        (size_t)(g_panel_gdew027c44.panel_w / 8) * g_panel_gdew027c44.panel_h;
+
+    /* 写 B/W 平面（取反：driver bit=1 白 → RAM bit=1 黑） */
+    set_full_window(0x14);
+    epd_write_plane(new_, plane_bytes, true);
+    /* !! 跳过 0x15 红平面写入（BW 模式无红数据） */
+
+    bus_cmd(0x12);                            /* display refresh */
+    bus_wait_busy(&g_panel_gdew027c44, g_panel_gdew027c44.busy_timeout_ms);
+    return 0;
+}
+
 static int panel_write_planes(const uint8_t *const *planes)
 {
     /* 多平面统一入口（§9.3）：planes[] 指针数组（plane_count 项） */
@@ -349,16 +470,20 @@ const epd_panel_desc_t g_panel_gdew027c44 = {
     .full_ms    = 5000,           /* E4 快刷实测 4359ms（2026-08-22 LUT
                                    * 提速定档）+余量；每 9 次刷新含 1 次
                                    * 官方深刷 14720ms（见文件头/LUT 注释） */
-    .partial_ms = 5000,           /* 无快速局刷：partial==full */
-    .partial_enabled = false,     /* 三色面板一律 false（§13.2） */
+    .partial_ms = 2500,           /* BW 快刷 E5 预计 ~2.2s + 余量
+                                   * （深刷回退 14.7s 由 busy_timeout 覆盖） */
+    .partial_enabled = false,     /* !! 临时回退（2026-09-04）：BW 快刷实测
+                                   * 显示不清晰，待 LUT 优化后重新启用 */
     .passes     = 1,
-    .partial_count_full_refresh = 1, /* 无局刷：阈值不参与调度，保守 1 */
+    .partial_count_full_refresh = 4, /* BW 快刷每 4 次插 1 次深刷清残影
+                                      * （E5 压缩激进，保守周期） */
     .window_8align = true,        /* 窗口 x/w 8 像素对齐（全屏 176 ✓） */
     .ops = {
         .init         = panel_init,
         .full_refresh = panel_full_refresh,
         .write_full   = panel_write_full,
-        .partial      = NULL,     /* partial_enabled=false，L3 不触达 */
+        .partial      = panel_partial_bw,  /* BW 黑白快刷实验入口
+                                            * （partial_enabled=true 时 L3 触达） */
         .power_off    = panel_power_off,
         .deep_sleep   = panel_deep_sleep,
         .probe        = NULL,     /* IL91874 无 FLG/版本读寄存器
