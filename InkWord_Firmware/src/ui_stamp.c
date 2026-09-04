@@ -2,11 +2,10 @@
  * @file ui_stamp.c
  * @brief 墨封圆形盖章动画 + 词卡「熟」角标实现（设计见 ui_stamp.h）
  *
- * 圆形盖章动画（3 帧节拍式，同步阻塞 ~450ms）：
+ * 圆形盖章动画（3 帧节拍式，同步阻塞 ~300ms）：
  *   ①小圆点（12px）→ ②中圆（36px）→ ③大圆印「熟」（80px）。
- * 尺寸递增 = 从小到大盖章，圆形 = 印章意象。末帧保留圆印，
- * 调用方 render_top 渲染新词直接覆盖（新词内容覆盖整个正文区，
- * 圆印像素被新词背景替代，无白屏过渡）。
+ * 每帧直接画圆不清屏——大圆自然覆盖小圆，章盖在词卡上面。
+ * 动画结束后调用方 after_master + render_top 翻页（新词覆盖圆印）。
  * 「熟」字渲染上限 24px（cjk 字库 level 2），终印 TINY 56px / 常规 80px。
  */
 #include "ui_stamp.h"
@@ -22,7 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define STAMP_BEAT_MS  150   /* 帧间停顿（3 帧 ~450ms 快速盖章） */
+#define STAMP_BEAT_MS  100   /* 帧间停顿（3 帧 ~300ms 极速盖章） */
 
 /* 实心圆（中点圆算法逐行填充）：epd_gfx 无 fill_circle，
  * 用 draw_hline 逐行画——每行宽度由圆方程 sqrt(r²-dy²) 决定 */
@@ -51,22 +50,20 @@ void ui_stamp_play(void)
     int cx = w / 2;
     int final_r = layout_profile_get()->kind == LAYOUT_TINY ? 28 : 40;
 
-    /* 帧①小圆点（12px）——「印胚初现」 */
+    /* 帧①小圆点（12px）——「印胚初现」，直接画在词卡上 */
     fill_circle(cx, cy, 6, EPD_GFX_BLACK);
     haptic_pulse(30);
     epd_gfx_flush_window(0, top, w, h - top);
     vTaskDelay(pdMS_TO_TICKS(STAMP_BEAT_MS));
 
-    /* 帧②中圆（36px）——「盖下」 */
-    epd_gfx_fill_rect(0, top, w, h - top, EPD_GFX_WHITE);
+    /* 帧②中圆（36px）——「盖下」，大圆覆盖小圆，不清屏 */
     fill_circle(cx, cy, 18, EPD_GFX_BLACK);
     epd_gfx_flush_window(0, top, w, h - top);
     vTaskDelay(pdMS_TO_TICKS(STAMP_BEAT_MS));
 
     /* 帧③大圆印「熟」（final_r）——「盖章落地」
-     * 末帧保留圆印：调用方 render_top 渲染新词直接覆盖整个正文区，
-     * 圆印黑色像素被新词背景替代，无白屏过渡 */
-    epd_gfx_fill_rect(0, top, w, h - top, EPD_GFX_WHITE);
+     * 大圆覆盖中圆，不清屏；词卡内容被圆印覆盖，圆印外词卡仍可见。
+     * 末帧保留圆印：调用方 after_master + render_top 翻页时新词覆盖 */
     draw_circle_seal(cx, cy, final_r);
     haptic_pulse(80);                           /* 重震一记（盖章手感） */
     ui_sfx_play(UI_SFX_STAMP);                  /* 「咚」（缺样本静默降级） */
