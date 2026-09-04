@@ -48,7 +48,8 @@ idf_component_register(
         "mp3/trigtabs.c"
         "button_handler.c"
         "haptic.c"
-        "ui_sfx.c"         # v1.1 T1.6：UI 提示音（key/rate/mode/err 异步短样本）
+        "ui_sfx.c"         # v1.1 T1.6：UI 提示音（key/rate/mode/err/stamp 异步短样本）
+        "ui_stamp.c"        # 2026-09-04：墨封落印动画 + 词卡「熟」角标
         "storage_manager.c"
         "refresh_scheduler.c"
         "word_parser.c"

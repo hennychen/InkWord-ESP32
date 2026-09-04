@@ -21,6 +21,9 @@ public record ProgressItem(Guid WordId, int Quality, long Timestamp);
 /// <summary>收藏上报（设备端 SET 长按切换后同步）</summary>
 public record CollectReq(Guid WordId, bool Collected);
 
+/// <summary>墨封上报（设备端 toggle_master 切换后同步，2026-09-04）</summary>
+public record MasterReq(Guid WordId, bool Mastered);
+
 public record HeartbeatReq(int Battery, string Version);
 
 public record OtaCheckReq(string CurrentVer);
@@ -60,7 +63,7 @@ public record DailyActiveItem(DateTime Date, int Count);
 // ====== 错词本（学习分析） ======
 
 public record WrongTopItem(string WordText, string Meaning, int WrongCount, int Learners);
-public record WrongTopResp(List<WrongTopItem> Items, int CollectedRecords);
+public record WrongTopResp(List<WrongTopItem> Items, int CollectedRecords, int MasteredRecords);
 
 // ====== 今日学习统计（v1.3 T3.2，2026-08-24） ======
 

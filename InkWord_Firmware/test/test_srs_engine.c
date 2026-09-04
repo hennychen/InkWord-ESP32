@@ -179,6 +179,7 @@ extern void test_dp_goal_invalid_value_falls_back(void);
 extern void test_dp_set_goal_clamps_and_steps(void);
 extern void test_dp_set_goal_writes_active_deck_key(void);
 extern void test_dp_done_uses_deck_numerator(void);
+extern void test_dp_done_mastered_exhausts_new(void);
 extern void test_exam_unset_returns_zero(void);
 extern void test_exam_set_and_countdown(void);
 extern void test_exam_urgent_boundary(void);
@@ -218,6 +219,7 @@ int main(void)
     RUN_TEST(test_dp_set_goal_clamps_and_steps);
     RUN_TEST(test_dp_set_goal_writes_active_deck_key);
     RUN_TEST(test_dp_done_uses_deck_numerator);
+    RUN_TEST(test_dp_done_mastered_exhausts_new);
     RUN_TEST(test_exam_unset_returns_zero);
     RUN_TEST(test_exam_set_and_countdown);
     RUN_TEST(test_exam_urgent_boundary);

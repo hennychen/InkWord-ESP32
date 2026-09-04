@@ -14,11 +14,14 @@
  *        （手机连 InkWord-Setup 热点直传，绕开路由器隔离；任意键退出）；
  *   右 短按=自评「简单」Q5（SM-2 质量分 5：连错清零，错词本中移出）/ 长按=进入 LAN 接收页（同网浏览器直传，任意键退出）；
  *   SET 短按=遮蔽/揭晓释义（闪卡自测；待机页=轮换下一条引文）/ 长按=收藏/取消当前词（左栏 * 标记；收藏视图内=移出序列）；
- *   RST 短按=回到当前模式第一条 / 长按=临时视图进出（错词本或收藏浏览，
- *        按当前所在视图退出，否则进错词本）。
+ *   RST 短按=回到当前模式第一条 / 长按=临时视图进出（错词本/收藏/墨封录
+ *        浏览，按当前所在视图退出，否则进错词本）；墨封=已熟练标记
+ *        （菜单「墨封当前词」/快捷键 SK_ACT_MASTER，置位播落印动画，
+ *        闪卡/听写序列过滤；墨封录内 SET 长按=启封移出）。
  * 上述长按动作出厂映射可由用户改绑（2026-09-03 shortcut_map：设置页
  *  「快捷键」子模式，上/下/左/右/SET/RST 六槽位；守卫——中键菜单锚点、
- *  错词本/收藏视图内 RST 退出与 SET 移出收藏不可覆盖，见 shortcut_try_long）。
+ *  错词本/收藏/墨封录视图内 RST 退出与 SET 移出收藏/启封不可覆盖，见
+ *  shortcut_try_long）。
  *
  * 阅读模式（P3，长按下循环切换进入）：上/下=翻页，左/右=字号缩放
  * （16/20/24px 三级循环，按当前页首字符就近保持阅读位置），RST=回
@@ -84,6 +87,7 @@
 #include "ble_provision.h"
 #include "power_manager.h"   /* P5 深睡/唤醒分流与入睡检查 */
 #include "shortcut_map.h" /* 2026-09-03 用户自定义长按快捷键（六槽位） */
+#include "ui_stamp.h"    /* 2026-09-04：墨封落印动画 */
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -285,6 +289,21 @@ static void shortcut_exec(sk_action_t act)
         }
         page_router_render_top();
         break;
+    case SK_ACT_MASTER:   /* =菜单 act_master（墨封/启封切换） */
+        if (study_mode_current() == MODE_READER) return;   /* 无当前词 */
+    {
+        int wi = study_mode_current_word_index();
+        if (wi < 0) {
+            haptic_event(HAPTIC_ERROR);   /* 空词库/空序列防御 */
+            return;
+        }
+        bool mastered = learning_state_toggle_master(wi);
+        haptic_event(HAPTIC_REVIEW);
+        if (mastered) ui_stamp_play();    /* 落印仅置位方向（不对称设计） */
+        study_mode_after_master();        /* 序列收缩钳位/清空退闪卡 */
+        page_router_render_top();
+        break;
+    }
     case SK_ACT_SETTINGS:
         page_router_push(&g_settings_ui_page);
         break;
@@ -297,15 +316,17 @@ static void shortcut_exec(sk_action_t act)
 }
 
 /* 长按拦截入口（base 页长按 switch 前调用）：true=用户映射命中已执行，
- * false=走出厂长按。守卫——中键菜单锚点恒出厂；错词本/收藏视图内
- * RST=退出（逃生语义）、SET=移出收藏（序列收缩语义）不可覆盖 */
+ * false=走出厂长按。守卫——中键菜单锚点恒出厂；错词本/收藏/墨封录
+ * 视图内 RST=退出（逃生语义）、SET=移出收藏/启封（序列收缩语义）
+ * 不可覆盖 */
 static bool shortcut_try_long(nav_key_t id)
 {
     if (id == NAV_CENTER) return false;
     study_mode_t m = study_mode_current();
-    if (id == NAV_RST && (m == MODE_WRONGBOOK || m == MODE_COLLECTION))
+    if (id == NAV_RST && (m == MODE_WRONGBOOK || m == MODE_COLLECTION ||
+                          m == MODE_MASTERED))
         return false;
-    if (id == NAV_SET && m == MODE_COLLECTION)
+    if (id == NAV_SET && (m == MODE_COLLECTION || m == MODE_MASTERED))
         return false;
     sk_action_t act = shortcut_get(id);
     if (act == SK_ACT_DEFAULT) return false;   /* 键缺失/默认=出厂 */
@@ -399,9 +420,17 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
             /* 收藏/取消当前词（P1）：局部重绘内容区刷新 * 标记；
              * 阅读模式无“当前词”概念，不响应；
              * 收藏视图（MODE_COLLECTION）内=移出序列（after_uncollect
-             * 收缩钳位，清空自动退回闪卡），2026-08-23 */
+             * 收缩钳位，清空自动退回闪卡），2026-08-23；
+             * 墨封录（MODE_MASTERED）内=启封当前词移出序列
+             * （after_master 同构，启封无动画，2026-09-04） */
             if (study_mode_current() == MODE_READER) return true;
             haptic_event(HAPTIC_REVIEW); /* 确认型操作归自评档 30ms（PRD 5.4 未单列） */
+            if (study_mode_current() == MODE_MASTERED) {
+                learning_state_toggle_master(study_mode_current_word_index());
+                study_mode_after_master();
+                page_router_render_top();   /* 清空退回闪卡或游标收缩 */
+                return true;
+            }
             learning_state_toggle_collect(study_mode_current_word_index());
             if (study_mode_current() == MODE_COLLECTION &&
                 study_mode_after_uncollect()) {
@@ -411,12 +440,14 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
             page_router_render_top();  /* T2.2：星标局部重绘经 base 分流 */
             return true;
         case NAV_RST:
-            /* 临时视图进出三级判：错词本/收藏浏览内=退出，否则进错词本
-             * （无错词 100ms 长震边界反馈，PRD 5.4） */
+            /* 临时视图进出四级判：错词本/收藏/墨封录浏览内=退出，否则进
+             * 错词本（无错词 100ms 长震边界反馈，PRD 5.4） */
             if (study_mode_current() == MODE_WRONGBOOK) {
                 study_mode_exit_wrongbook();
             } else if (study_mode_current() == MODE_COLLECTION) {
                 study_mode_exit_collection();
+            } else if (study_mode_current() == MODE_MASTERED) {
+                study_mode_exit_mastered();
             } else if (!study_mode_enter_wrongbook()) {
                 haptic_event(HAPTIC_ERROR);
                 ui_sfx_play(UI_SFX_ERR); /* T1.6 边界拒绝音「嘟-」 */

@@ -5,11 +5,13 @@
     <p>加载中...</p>
   </div>
 } @else {
-  <!-- 口径说明 + 收藏统计 -->
+  <!-- 口径说明 + 收藏/墨封统计 -->
   <div class="head-meta">
     <span>聚合口径：连续答错次数（答对即归零）</span>
     <span class="dot">·</span>
     <span>收藏记录 {{ resp()?.collectedRecords ?? 0 }} 条</span>
+    <span class="dot">·</span>
+    <span>墨封记录 {{ resp()?.masteredRecords ?? 0 }} 条</span>
   </div>
 
   <!-- 图表区 -->

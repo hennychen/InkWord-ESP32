@@ -13,8 +13,9 @@ namespace InkWord.Tests;
 public class DeviceAccountTests
 {
     private static MyDeviceController.LwsRow Row(Guid word, Guid device,
-        DateTime studied, double stability = 1.0, bool collected = false) =>
-        new(word, device, stability, 2.5, null, collected, studied);
+        DateTime studied, double stability = 1.0, bool collected = false,
+        bool mastered = false) =>
+        new(word, device, stability, 2.5, null, collected, mastered, studied);
 
     // ---- LWS 归并 ----
 

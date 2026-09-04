@@ -113,10 +113,13 @@ void daily_plan_set_goal(int n)
 bool daily_plan_done(void)
 {
     /* T5.5 按组口径：分子读 SD01 表（全局 lr_stats.today_new 跨组累计
-     * 是 T4.2 特性，配额判据混用会虚达标）；due 仍为当前词池口径 */
-    return learning_state_deck_today_new(deck_manager_active_id()) >=
-               daily_plan_goal() &&
-           learning_state_due_count() == 0;
+     * 是 T4.2 特性，配额判据混用会虚达标）；due 仍为当前词池口径。
+     * 墨封边界（2026-09-04）：剩余可学新词全墨封后 goal 永不可达，
+     * 可学新词耗尽（active_new==0）=达标兜底 */
+    return learning_state_due_count() == 0 &&
+           (learning_state_deck_today_new(deck_manager_active_id()) >=
+                daily_plan_goal() ||
+            learning_state_active_new_count() == 0);
 }
 
 /* ---- 考试倒计时（T5.5）：u32 set_exam = 目标日 yyyymmdd（0=未设） ---- */

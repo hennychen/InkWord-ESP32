@@ -12,8 +12,8 @@
  * 的映射存取，无 UI 无业务依赖，纯 C 可 native-test）。
  *
  * 守卫约定（main.cpp shortcut_try_long 内聚，改语义须同步此处注释）：
- *   - 错词本/收藏视图内 RST 长按 = 退出视图、SET 长按 = 移出收藏，
- *     临时视图逃生语义优先于用户映射，不可覆盖；
+ *   - 错词本/收藏/墨封录视图内 RST 长按 = 退出视图、SET 长按 = 移出
+ *     收藏/启封，临时视图逃生语义优先于用户映射，不可覆盖；
  *   - SK_ACT_DEFAULT（键缺失）= 跟随出厂动作（不写默认值的 NVS 哲学，
  *     deck_active/set_panel 同款）。
  *
@@ -48,6 +48,7 @@ typedef enum {
     SK_ACT_COLLECT,      /**< 星标当前词（收藏切换） */
     SK_ACT_SETTINGS,     /**< 设置页 */
     SK_ACT_SPEAK,        /**< 当前词发音 */
+    SK_ACT_MASTER,       /**< 墨封当前词（已熟练标记切换，2026-09-04） */
     SK_ACT_COUNT
 } sk_action_t;
 

@@ -24,6 +24,7 @@
 #include "reader_engine.h"       /* MODE_READER 渲染 */
 #include "standby_page.h"        /* 词库空待机页 / invalidate_layout */
 #include "quiz_ui.h"             /* MODE_QUIZ 绘制 */
+#include "ui_stamp.h"            /* 墨封「熟」角标（2026-09-04） */
 #include "page_router.h"         /* display_busy 守卫 / render_top */
 #include "refresh_scheduler.h"   /* refresh_gfx_before_partial */
 #include "debug_log.h"
@@ -420,11 +421,18 @@ static void ui_draw_content_qa(const WordEntry *w)
     cjk_text_draw_wrap(UI_MARGIN_X, UI_BODY_TOP, UI_BODY_MAX_W, UI_MEAN_LEVEL,
                        UI_BODY_LH, ui_qa_stem_lines(w), w->text, EPD_GFX_BLACK);
 
-    /* 收藏星标：无头部行，画在正文区右上角（词卡音标行右缘同语义） */
-    if (learning_state_is_collected(study_mode_current_word_index())) {
-        int sw = cjk_text_width(0, "*");
-        cjk_text_draw(epd_gfx_width() - UI_MARGIN_X - sw, UI_STATUS_H + 6,
-                      0, "*", EPD_GFX_BLACK);
+    /* 收藏星标 + 墨封角标：无头部行，画在正文区右上角（词卡音标行
+     * 右缘同语义；墨封方印在 * 左侧，右缘锚点依次左移拼排） */
+    {
+        int wi = study_mode_current_word_index();
+        int rx = epd_gfx_width() - UI_MARGIN_X;
+        if (learning_state_is_collected(wi)) {
+            int sw = cjk_text_width(0, "*");
+            rx -= sw;
+            cjk_text_draw(rx, UI_STATUS_H + 6, 0, "*", EPD_GFX_BLACK);
+        }
+        if (learning_state_is_mastered(wi))
+            ui_draw_seal_mark(rx - 4, UI_STATUS_H + 6);
     }
 
     if (study_mode_is_revealed()) {
@@ -520,11 +528,18 @@ static void ui_draw_poem_dictation(const WordEntry *w)
  * 在 SMALL 档会与拼音行重叠，见几何注）；默写态见 ui_draw_poem_dictation */
 static void ui_draw_content_poem(const WordEntry *w)
 {
-    /* 收藏星标：拼音行右缘（遮蔽/默写态照画，word 版听写先例） */
-    if (learning_state_is_collected(study_mode_current_word_index())) {
-        int sw = cjk_text_width(0, "*");
-        cjk_text_draw(epd_gfx_width() - UI_MARGIN_X - sw, UI_POEM_PIN_TOP,
-                      0, "*", EPD_GFX_BLACK);
+    /* 收藏星标 + 墨封角标：拼音行右缘（遮蔽/默写态照画，word 版
+     * 听写先例；墨封方印在 * 左侧，右缘锚点依次左移拼排） */
+    {
+        int wi = study_mode_current_word_index();
+        int rx = epd_gfx_width() - UI_MARGIN_X;
+        if (learning_state_is_collected(wi)) {
+            int sw = cjk_text_width(0, "*");
+            rx -= sw;
+            cjk_text_draw(rx, UI_POEM_PIN_TOP, 0, "*", EPD_GFX_BLACK);
+        }
+        if (learning_state_is_mastered(wi))
+            ui_draw_seal_mark(rx - 4, UI_POEM_PIN_TOP);
     }
 
     if (ui_dict_blind()) {
@@ -598,11 +613,18 @@ static void ui_draw_content(const WordEntry *w)
 
     /* 收藏标记（P1）：已收藏词在音标行右缘显示 *（SET 长按切换；
      * 点阵 ASCII 与音标行同 16px 级，2026-08-23 随音标行点阵化统一）；
-     * 听写遮蔽态照画（无拼写信息量） */
-    if (learning_state_is_collected(study_mode_current_word_index())) {
-        int sw = cjk_text_width(UI_AUX_LEVEL, "*");
-        cjk_text_draw(epd_gfx_width() - UI_MARGIN_X - sw, UI_PHON_TOP,
-                      UI_AUX_LEVEL, "*", EPD_GFX_BLACK);
+     * 听写遮蔽态照画（无拼写信息量）。墨封角标（2026-09-04）：
+     * 空心方印「熟」在 * 左侧，右缘锚点依次左移拼排 */
+    {
+        int wi = study_mode_current_word_index();
+        int rx = epd_gfx_width() - UI_MARGIN_X;
+        if (learning_state_is_collected(wi)) {
+            int sw = cjk_text_width(UI_AUX_LEVEL, "*");
+            rx -= sw;
+            cjk_text_draw(rx, UI_PHON_TOP, UI_AUX_LEVEL, "*", EPD_GFX_BLACK);
+        }
+        if (learning_state_is_mastered(wi))
+            ui_draw_seal_mark(rx - 4, UI_PHON_TOP);
     }
 
     /* 正文：cjk 点阵混排（中文按字断/ASCII 按词断，超宽自动换行），
@@ -758,6 +780,28 @@ void ui_render_word(study_mode_t mode, int index)
         else
             epd_gfx_flush_window(0, 0,
                                  epd_gfx_width(), epd_gfx_height());
+        s_last_mode = mode;
+        return;
+    }
+
+    /* 墨封全过滤空态（2026-09-04）：闪卡/听写 active 视图清空但词库
+     * 非空 → 专用空态页（低频整屏全刷，review 空态同款先例——空态
+     * 下无按键触发重绘）；词库空不达此（base_render 分流待机页） */
+    if ((mode == MODE_FLASH || mode == MODE_DICTATION) &&
+        word_parser_get_count() > 0 && study_mode_seq_total() == 0) {
+        epd_gfx_fill_screen(EPD_GFX_WHITE);
+        ui_draw_status(mode);          /* 序号 0/0 */
+        const char *t = "全部词已墨封";
+        int wpx = cjk_text_width(UI_MEAN_LEVEL, t);
+        cjk_text_draw((epd_gfx_width() - wpx) / 2,
+                      (epd_gfx_height() - UI_STATUS_H) / 2 + UI_STATUS_H - 20,
+                      UI_MEAN_LEVEL, t, EPD_GFX_BLACK);
+        const char *h = "菜单·墨封录·可启封";   /* 间隔号在字库全角标点集内 */
+        wpx = cjk_text_width(0, h);
+        cjk_text_draw((epd_gfx_width() - wpx) / 2,
+                      (epd_gfx_height() - UI_STATUS_H) / 2 + UI_STATUS_H + 8,
+                      0, h, EPD_GFX_BLACK);
+        epd_gfx_flush();
         s_last_mode = mode;
         return;
     }

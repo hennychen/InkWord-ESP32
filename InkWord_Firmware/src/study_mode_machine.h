@@ -3,14 +3,17 @@
  * @brief 学习模式状态机 (Task F-16；P1 增错词本)
  *
  * 模式：闪卡(FLASH) / 听写(DICTATION) / 复习(REVIEW) / 阅读(READER) /
- * 错词本(WRONGBOOK) / 收藏浏览(COLLECTION)。语义动作由五向导航键映射：
+ * 错词本(WRONGBOOK) / 收藏浏览(COLLECTION) / 墨封录(MASTERED)。
+ * 语义动作由五向导航键映射：
  * 上下=翻词/翻页，中=发音，SET=揭晓/确认，RST=回第一条；长按下=循环
- * 切换模式（错词本与收藏浏览为临时视图不入循环，分别由 RST 长按 /
- * 快捷菜单进出，见 V2.1 交互总表）。
+ * 切换模式（错词本/收藏浏览/墨封录为临时视图不入循环，分别由 RST
+ * 长按 / 快捷菜单进出，见 V2.1 交互总表）。
  * 阅读模式（P3）下游标=页码，序列长度=总页数（reader_engine）；
  * 进入时自动恢复上次阅读页，左/右短按切字号（保持阅读位置）。
- * 序列抽象：默认全词库；错词本模式下序列换为 ConsecutiveWrong>0
- * 过滤视图（learning_state 提供），游标与取词均经 seq 接口。
+ * 序列抽象：闪卡/听写换未墨封过滤视图（2026-09-04 墨封：默认全库
+ * 直映射退役——已墨封词从学习主链路移除，learning_state active 视图
+ * O(N) 虚游走，wrong/collected/due 同构）；错词本/收藏/墨封录/复习
+ * 各自换对应过滤视图，游标与取词均经 seq 接口。
  */
 #ifndef INKWORD_STUDY_MODE_MACHINE_H
 #define INKWORD_STUDY_MODE_MACHINE_H
@@ -47,6 +50,11 @@ typedef enum {
     MODE_VOICE,          /**< 语音查词：录音→ASR→候选跳词临时视图（同设计；
                               枚举值固定 9，同第五先例；状态机 voice_search.c
                               按键驱动无任务，main.cpp 分发） */
+    MODE_MASTERED,       /**< 墨封录：已墨封词临时视图（2026-09-04 墨封功能，
+                              第六临时视图先例：不入循环/不 NVS 恢复/不走
+                              apply_mode，完整镜像 MODE_COLLECTION；枚举值
+                              固定 10；SET 长按=启封移出序列（main.cpp
+                              守卫），menu_ui「墨封录」进出） */
     MODE_COUNT
 } study_mode_t;
 
@@ -118,6 +126,19 @@ bool study_mode_enter_collection(void);
  * @brief 退出收藏浏览回闪卡模式（收藏视图内 RST 长按）。
  */
 void study_mode_exit_collection(void);
+
+/* ---- 墨封录临时视图（2026-09-04 墨封功能，收藏浏览同构） ---- */
+
+/**
+ * @brief 进入墨封录（快捷菜单「墨封录」项；临时视图，不持久化）。
+ * @return true 成功；false 空墨封（调用方提示边界反馈）。
+ */
+bool study_mode_enter_mastered(void);
+
+/**
+ * @brief 退出墨封录回闪卡模式（墨封录内 RST 长按；清空启封自动退同）。
+ */
+void study_mode_exit_mastered(void);
 
 /* ---- AI 对话临时视图（P2B，chat_mode 五态状态机） ---- */
 
@@ -229,6 +250,16 @@ int study_mode_seq_total(void);
  *        并按当前页首字符就近重定位游标后重绘。非阅读模式/无书时无操作。
  */
 void study_mode_reader_font_step(int dir);
+
+/**
+ * @brief 墨封/启封后的序列收缩钳位（learning_state_toggle_master 之后
+ *        调用）：当前词移出所在序列（闪卡/听写=active 视图、错词本=
+ *        连错清零、复习=到期过滤、墨封录=启封移出），后词前移、游标
+ *        钳 n-1（after_uncollect 同策略）；错词本/墨封录清空自动退回
+ *        闪卡；闪卡序列清空钳 0（渲染层显「全部词已墨封」空态页）。
+ * @return true 表示游标/模式变化，需重绘当前页。
+ */
+bool study_mode_after_master(void);
 
 /**
  * @brief 评分应用后的错词本序列维护（learning_state_apply_quality 之后调用）。

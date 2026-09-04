@@ -221,8 +221,12 @@ static void quiz_pool_build(void)
         if (wi < 0) break;
         s_quiz_pool[n++] = wi;
     }
-    for (int i = 0; i < total && n < QUIZ_POOL_MAX; i++)   /* 2) 新词补足 */
-        if (learning_state_is_new(i)) s_quiz_pool[n++] = i;
+    for (int i = 0; i < total && n < QUIZ_POOL_MAX; i++) {  /* 2) 新词补足 */
+        /* 墨封词排除（2026-09-04 过滤矩阵：已声明熟练不再考；
+         * 干扰项与随机兜底不过滤） */
+        if (learning_state_is_new(i) && !learning_state_is_mastered(i))
+            s_quiz_pool[n++] = i;
+    }
     for (int tries = 0; n < QUIZ_POOL_MAX && tries < QUIZ_POOL_MAX * 8;
          tries++) {                                    /* 3) 随机兜底去重 */
         int wi = (int)quiz_rnd((uint32_t)total);

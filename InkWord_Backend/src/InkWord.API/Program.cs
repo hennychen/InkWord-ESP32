@@ -217,6 +217,8 @@ if (app.Environment.IsDevelopment())
         "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"Front\" text NOT NULL DEFAULT ''",
         "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"Back\" text NOT NULL DEFAULT ''",
         "ALTER TABLE \"Words\" ADD COLUMN IF NOT EXISTS \"PayloadJson\" text",
+        // 墨封（2026-09-04）：LearningRecords 已熟练标记（/sync/master 上报）
+        "ALTER TABLE \"LearningRecords\" ADD COLUMN IF NOT EXISTS \"IsMastered\" boolean NOT NULL DEFAULT false",
     };
     foreach (var sql in addCols)
         db.Database.ExecuteSqlRaw(sql);

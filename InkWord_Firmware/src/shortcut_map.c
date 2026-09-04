@@ -33,7 +33,7 @@ static const char *key_of_slot(nav_key_t key)
 static const char *s_names[SK_ACT_COUNT] = {
     "默认", "无", "菜单", "换模式", "收藏夹", "错词本", "语音查词",
     "AI对话", "测验", "目录", "阅读", "清残影", "AP门户", "LAN页",
-    "星标", "设置", "发音",
+    "星标", "设置", "发音", "墨封",
 };
 
 /* ---- 惰性缓存 ---- */

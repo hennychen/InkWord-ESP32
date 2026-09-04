@@ -281,6 +281,52 @@ int sync_push_collect(const char *word_id, bool collected)
     return -1;
 }
 
+/* 墨封上报：POST /api/device/sync/master { wordId, mastered }
+ * （sync_push_collect 同构镜像，2026-09-04 墨封功能） */
+int sync_push_master(const char *word_id, bool mastered)
+{
+    if (!word_id || !word_id[0]) return -1;
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "wordId", word_id);
+    cJSON_AddBoolToObject(o, "mastered", mastered);
+    char *body = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (!body) return -1;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device/sync/master", s_base_url);
+
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 15000);
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    set_common_headers(client);
+    esp_http_client_set_post_field(client, body, strlen(body));
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    free(body);
+
+    if (err == ESP_OK && status == 200) {
+        LOG_I("master '%s' -> %d", word_id, mastered);
+        return 0;
+    }
+    if (err == ESP_OK && status == 401) {
+        LOG_W("push master: key rejected (401)");
+        return SYNC_ERR_AUTH;
+    }
+    if (err == ESP_OK && status == 404) {
+        /* 后端未部署本端点（固件先行窗口期）：永久失败，丢弃事件防
+         * flush 队头阻塞（NVS 已存终态，部署后由后续幂等 set 对账） */
+        LOG_W("push master: endpoint missing (404), drop");
+        return SYNC_ERR_DROP;
+    }
+    LOG_E("push master failed: %s status=%d", esp_err_to_name(err), status);
+    return -1;
+}
+
 /* 心跳：POST /api/device/heartbeat */
 int sync_heartbeat(int battery, const char *fw_ver)
 {

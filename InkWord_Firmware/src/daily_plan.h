@@ -43,8 +43,11 @@ int daily_plan_goal(void);
 void daily_plan_set_goal(int n);
 
 /**
- * @brief 今日任务完成判据（T5.5 按组口径）：当前组新学达标且无到期词。
- * @return deck_today_new(活跃组) >= goal() 且 due_count == 0。
+ * @brief 今日任务完成判据（T5.5 按组口径 + 2026-09-04 墨封边界）：
+ *        当前组新学达标且无到期词。
+ * @return due_count == 0 且（deck_today_new(活跃组) >= goal()，或
+ *         active_new_count == 0——剩余可学新词全墨封，goal 永不可达，
+ *         可学新词耗尽即达标兜底）。
  */
 bool daily_plan_done(void);
 

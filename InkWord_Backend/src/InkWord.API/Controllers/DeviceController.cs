@@ -172,6 +172,30 @@ public class DeviceController : ControllerBase
         return Ok(ApiResponse.Ok());
     }
 
+    /// <summary>B-10c 墨封上报（设备端 toggle_master 切换后同步，2026-09-04）。
+    /// 置位时同步清 ConsecutiveWrong（声明式通过，与固件 learning_state
+    /// toggle_master 同规则——双端连错清零不漂移）；FSRS 调度状态原样保留
+    /// （Anki suspend 哲学：启封无损回队）。</summary>
+    [HttpPost("sync/master")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public async Task<IActionResult> SyncMaster([FromBody] MasterReq req, CancellationToken ct)
+    {
+        var device = (Device)HttpContext.Items["Device"]!;
+        var rec = await _recordRepo.GetAsync(device.Id, req.WordId, ct);
+        if (rec == null)
+        {
+            // 未学过的词直接墨封：落一条初始记录（收藏上报同款先例）
+            rec = new LearningRecord { DeviceId = device.Id, WordId = req.WordId };
+            _srs.InitRecord(rec, DateTime.UtcNow);
+            await _recordRepo.AddAsync(rec, ct);
+        }
+        rec.IsMastered = req.Mastered;
+        if (req.Mastered) rec.ConsecutiveWrong = 0;
+        await _recordRepo.SaveChangesAsync(ct);
+
+        return Ok(ApiResponse.Ok());
+    }
+
     /// <summary>B-11 心跳</summary>
     [HttpPost("heartbeat")]
     [ServiceFilter(typeof(DeviceAuthFilter))]

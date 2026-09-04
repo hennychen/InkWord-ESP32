@@ -1,24 +1,31 @@
 /**
  * @file learning_state.h
- * @brief 本地学习状态层 (P1 错词本 + 收藏；P2 加上报事件队列)
+ * @brief 本地学习状态层 (P1 错词本 + 收藏；P2 加上报事件队列；
+ *        2026-09-04 加墨封 mastered 第四态)
  *
- * 每词 FSRS 状态 + 连错计数 + 收藏标志。持久化 sparse 格式（LR04
- * 卡组隔离）：NVS blob 只存非默认态词（学过/连错>0/已收藏），键按
- * 卡组分派（默认组 "lr_state"、其余 "lr_st_<id>"），切卡组=旧组保存
- * + 新组恢复（进度互不丢）；nvs 已扩容 192KB（T1.5，上限 4000）；
- * 词库规模变化仍整体作废（保守策略）。保存时机：评分/收藏仅置脏标记，
- * 主循环
+ * 每词 FSRS 状态 + 连错计数 + 收藏标志 + 墨封标志。持久化 sparse
+ * 格式（LR04 卡组隔离，LR05 加墨封）：NVS blob 只存非默认态词
+ * （学过/连错>0/已收藏/已墨封），键按卡组分派（默认组 "lr_state"、
+ * 其余 "lr_st_<id>"），切卡组=旧组保存 + 新组恢复（进度互不丢）；
+ * nvs 已扩容 192KB（T1.5，上限 4000）；词库规模变化仍整体作废
+ * （保守策略）。保存时机：评分/收藏/墨封仅置脏标记，主循环
  * learning_state_maybe_save() 静默 5s 后落盘（按键路径零 NVS 阻塞，
  * 掉电窗口 ≤5s，与事件队列不持久化策略一致）。
  *
  * 连错维护规则与后端 SrsService.ApplyReview 严格同步：
- *   quality < 3 连错递增（>0 即入错词本），quality >= 3 清零移出。
+ *   quality < 3 连错递增（>0 即入错词本），quality >= 3 清零移出；
+ *   墨封置位同步清零（用户声明「我认识」等价声明式通过，与后端
+ *   DeviceController.SyncMaster 双端镜像）。
  *
- * 上报队列（P2）：评分/收藏动作同时入内存环形队列，由 main.cpp
+ * 墨封语义（Anki suspend 哲学，2026-09-04）：调度层过滤标志——
+ * 闪卡/听写序列换未墨封视图、到期/测验题池排除；FSRS 节点与收藏
+ * 原样保留（启封即按原到期回队，无损可逆）。
+ *
+ * 上报队列（P2）：评分/收藏/墨封动作同时入内存环形队列，由 main.cpp
  * background_task 联网时逐条 flush 到 sync_client（词须有 cloudId，
  * 即后端 /admin/words/export 导出的 Guid；本地导入词自动跳过）。
  * 队列不持久化：重启丢失未上报事件，但 NVS 已存最终态，云端仅
- * 少中间事件（连错/收藏为幂等 set，最终一致）。
+ * 少中间事件（连错/收藏/墨封为幂等 set，最终一致）。
  */
 #ifndef INKWORD_LEARNING_STATE_H
 #define INKWORD_LEARNING_STATE_H
@@ -37,8 +44,10 @@ extern "C" {
 /** 上报队列事件（peek 输出用） */
 typedef struct {
     int  word_idx;              /**< 词库索引 */
-    int  quality;               /**< 0~5；<0 = 收藏事件 */
-    bool collected;             /**< 仅收藏事件有效（幂等 set） */
+    int  quality;               /**< 0~5；-1 = 收藏事件；-2 = 墨封事件 */
+    bool collected;             /**< 收藏事件=收藏布尔；墨封事件复用承载
+                                     mastered 布尔（内存结构，无持久化
+                                     兼容负担，sync_session flush 分派） */
 } lr_event_t;
 
 /**
@@ -74,6 +83,46 @@ bool learning_state_toggle_collect(int word_idx);
  * @brief 当前词是否已收藏。
  */
 bool learning_state_is_collected(int word_idx);
+
+/* ---- 墨封（mastered，2026-09-04 Anki suspend 哲学：调度层过滤，
+ * FSRS/收藏原样保留，启封无损回队；master 时连错清零移出错词本） ---- */
+
+/**
+ * @brief 墨封/启封切换，返回切换后的状态；置位方向同步清连错
+ *        （声明式通过）+ 入上报事件队列（quality=-2）+ 置脏延迟落盘。
+ */
+bool learning_state_toggle_master(int word_idx);
+
+/**
+ * @brief 当前词是否已墨封。
+ */
+bool learning_state_is_mastered(int word_idx);
+
+/**
+ * @brief 墨封数量（墨封录视图 total）。
+ */
+int learning_state_mastered_count(void);
+
+/**
+ * @brief 墨封录视图取词：第 pos 个已墨封词的词库索引，越界 -1。
+ */
+int learning_state_mastered_at(int pos);
+
+/**
+ * @brief 未墨封词数量（闪卡/听写序列 total——学习主链路过滤）。
+ */
+int learning_state_active_count(void);
+
+/**
+ * @brief 未墨封视图取词：第 pos 个未墨封词的词库索引（按索引序），
+ *        越界 -1（wrong/collected/due 同构 O(N) 虚游走）。
+ */
+int learning_state_active_at(int pos);
+
+/**
+ * @brief 未学且未墨封的词数（daily_plan_done 可学新词耗尽判据分子）。
+ */
+int learning_state_active_new_count(void);
 
 /**
  * @brief 错词数量（consecutive_wrong > 0 的词条数）。
@@ -113,7 +162,8 @@ int learning_state_due_at(int pos);
 
 /**
  * @brief 词是否未学（无 FSRS 状态 stability==0；quiz 题池新词补足用，
- *        QUIZ_DESIGN §3）。
+ *        QUIZ_DESIGN §3。注意不含墨封判定——补足侧需叠加
+ *        !is_mastered 排除（quiz_ui.c 题池构造）。
  */
 bool learning_state_is_new(int word_idx);
 

@@ -32,11 +32,13 @@ public class MyDeviceController : ControllerBase
     public record DeviceDto(Guid Id, string Name, string Mac, string FirmwareVersion,
         int BatteryLevel, bool Online, DateTime LastHeartbeat, int RecordCount);
     public record AggregateDto(Guid WordId, Guid DeviceId, double Stability,
-        double Difficulty, DateTime? NextReview, bool IsCollected, DateTime LastStudiedAt);
+        double Difficulty, DateTime? NextReview, bool IsCollected, bool IsMastered,
+        DateTime LastStudiedAt);
 
     /// <summary>LWS 归并行（查询投影形态；sealed record 供归并直测）</summary>
     public sealed record LwsRow(Guid WordId, Guid DeviceId, double Stability,
-        double Difficulty, DateTime? NextReview, bool IsCollected, DateTime LastStudiedAt);
+        double Difficulty, DateTime? NextReview, bool IsCollected, bool IsMastered,
+        DateTime LastStudiedAt);
 
     /// <summary>我的设备清单（电量/在线/学习记录数）</summary>
     [HttpGet("devices")]
@@ -127,13 +129,14 @@ public class MyDeviceController : ControllerBase
             .Where(lr => deviceIds.Contains(lr.DeviceId))
             .OrderByDescending(lr => lr.LastStudiedAt)
             .Select(lr => new LwsRow(lr.WordId, lr.DeviceId, lr.FsrsStability,
-                lr.FsrsDifficulty, lr.FsrsNextReview, lr.IsCollected, lr.LastStudiedAt))
+                lr.FsrsDifficulty, lr.FsrsNextReview, lr.IsCollected, lr.IsMastered,
+                lr.LastStudiedAt))
             .Take(take * deviceIds.Count)
             .ToListAsync(ct);
 
         var dto = LwsMerge(rows, take)
             .Select(r => new AggregateDto(r.WordId, r.DeviceId, r.Stability,
-                r.Difficulty, r.NextReview, r.IsCollected, r.LastStudiedAt))
+                r.Difficulty, r.NextReview, r.IsCollected, r.IsMastered, r.LastStudiedAt))
             .ToList();
         return Ok(ApiResponse<List<AggregateDto>>.Ok(dto));
     }

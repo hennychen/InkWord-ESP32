@@ -20,9 +20,12 @@
  * FreeSans size 2|1；提示栏维持 16px 辅助小字。
  *
  * 刷新策略（抄 wifi_config_ui 惯例）：进入/换页全刷；光标移动清列表区
- * 重绘 + 单遍局刷（~350ms）；局刷计数达 MENU_UI_PARTIAL_MAX(10) 经
- * refresh_scheduler 升级全刷保养；三色屏 partial_enabled=false 由
- * epd_gfx_flush_window_passes 内部自动降级全刷，无需特判。
+ * 重绘 + 单遍局刷（~350ms）；局刷计数达阈值（mu_partial_threshold，
+ * desc 基准×菜单系数 400：OPM/WFT 16、DEPG 32、E042BW 64）经
+ * refresh_scheduler 升级全刷保养；进入/换页全刷后计数归零
+ * （refresh_notify_full_done，LAN 直刷先例），避免带旧账提前触发
+ * 保养闪烁；三色屏 partial_enabled=false 由 epd_gfx_flush_window
+ * _passes 内部自动降级全刷，无需特判。
  */
 #include "menu_ui.h"
 #include "page_router.h" /* T1.4：g_menu_ui_page/覆盖层栈（渲染恢复经 render_top） */
@@ -52,6 +55,8 @@ extern bool deck_flow_switch(int idx);
 #include "chat_mode.h"    /* A1：chat_request_t（对话二级页确认组包） */
 #include "sync_client.h"  /* A3：对话周报拉取（chat-review 端点） */
 #include "shortcut_map.h" /* 2026-09-03：按键说明页学习页长按列动态化 */
+#include "ui_stamp.h"     /* 2026-09-04：墨封当前词落印动画 */
+#include "word_card_ui.h" /* 2026-09-04：菜单退出强制全刷（ui_force_full_refresh_next） */
 
 #include "freertos/FreeRTOS.h"   /* A3：周报拉取一次性任务 */
 #include "freertos/task.h"
@@ -86,8 +91,20 @@ extern const char *fw_version(void);
 #define MU_INFO_LH  (layout_profile_get()->info_lh)  /* INFO/按键说明行高（T1.5） */
 #define MU_INFO_ROWS 5                     /* INFO 每页行数（v1.2 T2.6 设备页加电量行 4→5；TINY 超宽值自然截断，bring-up 再调） */
 
-/* 刷新策略 */
-#define MENU_UI_PARTIAL_MAX  10  /* 局刷阈值（对齐 WIFI_UI_PARTIAL_MAX） */
+/* ---- 刷新策略 ---- */
+/* T1.7 同款公式化（wifi_partial_threshold 惯例）：阈值 =
+ * desc.partial_count_full_refresh × 菜单系数（profile.partial_menu）。
+ * 2026-09-04：原硬编码 10 与 desc 脱钩，上下选择 10 次即保养全刷
+ * 闪烁打断（用户反馈）；公式化后各屏 16/32/64，配合 draw_flush
+ * 全刷计数归零，菜单内保养全刷大幅降频。三色屏 partial_enabled
+ * =false 由 flush_window_passes 自动降级，阈值不参与 */
+static int mu_partial_threshold(void)
+{
+    const epd_panel_desc_t *pd = epd_panel_desc();
+    int base = (pd && pd->partial_count_full_refresh > 0)
+             ? pd->partial_count_full_refresh : 8;
+    return base * layout_profile_get()->partial_menu / 100;
+}
 
 /* ---- 模块状态（静态零初始化，无 init 无堆分配；~10B） ---- */
 typedef enum { MU_PAGE_MAIN = 0, MU_PAGE_MODE, MU_PAGE_DECK, MU_PAGE_INFO,
@@ -177,6 +194,13 @@ static void badge_collected(char *buf, size_t n)
     snprintf(buf, n, c == 0 ? "空" : "%d", c);
 }
 
+/* 墨封录徽标（2026-09-04）：镜像收藏计数 */
+static void badge_mastered(char *buf, size_t n)
+{
+    int c = learning_state_mastered_count();
+    snprintf(buf, n, c == 0 ? "空" : "%d", c);
+}
+
 static void badge_mode(char *buf, size_t n)
 {
     snprintf(buf, n, "%s", mu_mode_label(study_mode_current()));
@@ -228,6 +252,48 @@ static void act_collection(void)
     }
     menu_ui_exit();
     study_mode_enter_collection();   /* 计数已预检非零，必成功 */
+    page_router_render_top();
+}
+
+/* 墨封当前词（2026-09-04）：菜单自退后对词卡上下文当前词 toggle
+ * （菜单进入不改学习态，current_word_index 仍有效）；置位方向播
+ * 落印动画（ui_stamp，启封即时返回——不对称设计）；after_master
+ * 序列收缩钳位/清空退闪卡；墨封录内 toggle = 启封移出同路径 */
+static void act_master(void)
+{
+    if (study_mode_current() == MODE_READER) {
+        /* 阅读模式无当前词（SK_ACT_MASTER 同守卫）：页码当索引会墨封
+         * 无关词，长震拒绝不进（菜单保持打开，act_collection 空判同构） */
+        haptic_event(HAPTIC_ERROR);
+        return;
+    }
+    menu_ui_exit();
+    /* 菜单画面残留：首个不切模式的 act_*——同模式回词卡走局刷不重绘
+     * 状态栏，菜单顶栏会残留到下次全刷；强制全刷（wifi 退出同款先例），
+     * 落印终结帧也带正确顶栏 */
+    ui_force_full_refresh_next();
+    int wi = study_mode_current_word_index();
+    if (wi < 0) {
+        haptic_event(HAPTIC_ERROR);   /* 空词库/空序列防御 */
+        page_router_render_top();
+        return;
+    }
+    bool mastered = learning_state_toggle_master(wi);
+    haptic_event(HAPTIC_REVIEW);
+    if (mastered) ui_stamp_play();
+    study_mode_after_master();
+    page_router_render_top();
+}
+
+/* 墨封录（临时视图，act_collection 同构）：空判长震不进入 */
+static void act_mastered_list(void)
+{
+    if (learning_state_mastered_count() == 0) {
+        haptic_event(HAPTIC_ERROR);   /* 空墨封录：长震边界反馈不进入 */
+        return;
+    }
+    menu_ui_exit();
+    study_mode_enter_mastered();     /* 计数已预检非零，必成功 */
     page_router_render_top();
 }
 
@@ -495,6 +561,8 @@ static void act_keys(void)
 static const mu_item_t s_items[] = {
     { "[ 学习 ]",  true,  NULL,               NULL,             NULL },
     { "收藏列表",   false, menu_icon_collected, badge_collected,  act_collection },
+    { "墨封当前词", false, NULL,               NULL,             act_master },
+    { "墨封录",     false, menu_icon_collected, badge_mastered,   act_mastered_list },
     { "教材目录",   false, menu_icon_decks,    NULL,             act_browse },
     { "语音查词",   false, menu_icon_chat,     NULL,             act_voice_search },
     { "模式选择",   false, menu_icon_modesel,  badge_mode,       act_modesel },
@@ -627,6 +695,9 @@ static void draw_flush(void)
     epd_power_on();
     epd_gfx_flush();
     epd_power_off();
+    /* 进入/换页真全刷等价清残影，计数归零（LAN 直刷先例）——否则
+     * 带着学习页等残留计数，菜单内局刷提前触发保养全刷闪烁 */
+    refresh_notify_full_done();
 }
 
 /* 局刷路径：清标题栏以下重绘列表体 + 单遍局刷（阈值预检在调用方） */
@@ -738,7 +809,7 @@ static void draw_info_body(void)
 
 static void draw_info(bool partial)
 {
-    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+    if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
         partial_refresh(draw_info_body);
         return;
     }
@@ -818,7 +889,7 @@ static void draw_review_body(void)
 
 static void draw_review(bool partial)
 {
-    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+    if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
         partial_refresh(draw_review_body);
         return;
     }
@@ -846,42 +917,44 @@ typedef struct {
 } mu_keyrow_t;
 
 static const mu_keyrow_t s_keys[] = {
-    { NULL,     "[ 学习页 ]" },
+    /* 静态行补全 0/NULL 初始化（-Wmissing-field-initializers；
+     * 绘制只认 text==NULL 的动态行，nav/short_txt 不被读） */
+    { NULL,     "[ 学习页 ]", 0, NULL },
     { "上",     NULL, NAV_UP,    "上一词" },
     { "下",     NULL, NAV_DOWN,  "下一词" },
     { "左",     NULL, NAV_LEFT,  "自评忘记" },
     { "右",     NULL, NAV_RIGHT, "自评简单" },
-    { "中",     "发音 / 功能菜单" },   /* 锚点不可定制，恒出厂 */
+    { "中",     "发音 / 功能菜单", 0, NULL },   /* 锚点不可定制，恒出厂 */
     { "SET",    NULL, NAV_SET,   "遮蔽" },
     { "RST",    NULL, NAV_RST,   "进设置" },
-    { "*",      "词卡已收藏标记" },
-    { NULL,     "[ 复习词表 ]" },
-    { "上/下",  "选择 · 详情翻义" },
-    { "中",     "进详情 · 发音" },
-    { "左/右",  "自评出队（详情态回列表）" },
-    { "RST",    "进设置" },
-    { NULL,     "[ 收藏/错词视图 ]" },
-    { "上/下",  "序列内翻词" },
-    { "中",     "发音" },
-    { "SET",    "遮蔽 / 取消收藏" },
-    { "RST",    "进设置 / 退出视图" },
-    { NULL,     "[ AI 对话 ]" },
-    { "上/下",  "选模式 · 选场景" },
-    { "中",     "说话·发送·重说" },
-    { "RST",    "退出回闪卡" },
-    { NULL,     "[ 快速测验 ]" },
-    { "上/下",  "移动选项" },
-    { "中",     "作答" },
-    { "SET",    "跳过（不评分）" },
-    { "RST",    "退出回闪卡" },
-    { NULL,     "[ 待机页 ]" },
-    { "中",     "拉天气 / 功能菜单" },
-    { "SET",    "轮换引文" },
-    { NULL,     "[ 菜单内 ]" },
-    { "上/下",  "移动选择" },
-    { "中",     "确认 / 进入" },
-    { "SET",    "返回 / 主层退出" },
-    { "RST",    "退出回原页面" },
+    { "*/熟",   "收藏/墨封标记", 0, NULL },   /* 星标=收藏，方印=已墨封（2026-09-04） */
+    { NULL,     "[ 复习词表 ]", 0, NULL },
+    { "上/下",  "选择 · 详情翻义", 0, NULL },
+    { "中",     "进详情 · 发音", 0, NULL },
+    { "左/右",  "自评出队（详情态回列表）", 0, NULL },
+    { "RST",    "进设置", 0, NULL },
+    { NULL,     "[ 收藏/错词视图 ]", 0, NULL },
+    { "上/下",  "序列内翻词", 0, NULL },
+    { "中",     "发音", 0, NULL },
+    { "SET",    "遮蔽 / 移出视图", 0, NULL },   /* 收藏=移出，墨封录=启封（同构，2026-09-04） */
+    { "RST",    "进设置 / 退出视图", 0, NULL },
+    { NULL,     "[ AI 对话 ]", 0, NULL },
+    { "上/下",  "选模式 · 选场景", 0, NULL },
+    { "中",     "说话·发送·重说", 0, NULL },
+    { "RST",    "退出回闪卡", 0, NULL },
+    { NULL,     "[ 快速测验 ]", 0, NULL },
+    { "上/下",  "移动选项", 0, NULL },
+    { "中",     "作答", 0, NULL },
+    { "SET",    "跳过（不评分）", 0, NULL },
+    { "RST",    "退出回闪卡", 0, NULL },
+    { NULL,     "[ 待机页 ]", 0, NULL },
+    { "中",     "拉天气 / 功能菜单", 0, NULL },
+    { "SET",    "轮换引文", 0, NULL },
+    { NULL,     "[ 菜单内 ]", 0, NULL },
+    { "上/下",  "移动选择", 0, NULL },
+    { "中",     "确认 / 进入", 0, NULL },
+    { "SET",    "返回 / 主层退出", 0, NULL },
+    { "RST",    "退出回原页面", 0, NULL },
 };
 #define MU_KEYS_COUNT ((int)(sizeof(s_keys) / sizeof(s_keys[0])))
 #define MU_KEYS_ROWS  (MU_LIST_H / MU_INFO_LH)   /* MID 6 / TINY 11 */
@@ -922,7 +995,7 @@ static void draw_keys_body(void)
 
 static void draw_keys(bool partial)
 {
-    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+    if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
         partial_refresh(draw_keys_body);
         return;
     }
@@ -964,7 +1037,7 @@ static void draw_vol_body(void)
 
 static void draw_vol(bool partial)
 {
-    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+    if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
         partial_refresh(draw_vol_body);
         return;
     }
@@ -983,7 +1056,7 @@ static void draw_vol(bool partial)
 
 static void draw_main(bool partial)
 {
-    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+    if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
         partial_refresh(draw_main_body);
         return;
     }
@@ -996,7 +1069,7 @@ static void draw_main(bool partial)
 
 static void draw_mode(bool partial)
 {
-    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+    if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
         partial_refresh(draw_mode_body);
         return;
     }
@@ -1044,7 +1117,7 @@ static void draw_deck_body(void)
 
 static void draw_deck(bool partial)
 {
-    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+    if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
         partial_refresh(draw_deck_body);
         return;
     }
@@ -1074,7 +1147,7 @@ static void draw_chatsel_body(void)
 
 static void draw_chatsel(bool partial)
 {
-    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+    if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
         partial_refresh(draw_chatsel_body);
         return;
     }
@@ -1108,7 +1181,7 @@ static void draw_scenario_body(void)
 
 static void draw_scenario(bool partial)
 {
-    if (partial && !refresh_gfx_before_partial_n(MENU_UI_PARTIAL_MAX)) {
+    if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
         partial_refresh(draw_scenario_body);
         return;
     }

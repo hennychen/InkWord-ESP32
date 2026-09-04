@@ -110,7 +110,8 @@ static void sync_recover_auth(void)
 
 /* 上报队列 flush：逐条发送（人手按键频次下 HTTP 开销可忽略；攒批优化
  * 待设备规模上来后）。无 cloudId 的词（本地导入）直接丢弃；任一条
- * 失败即停，队列保留待下周期重试（timestamp=0 由服务器落地时间代替） */
+ * 失败即停，队列保留待下周期重试（SYNC_ERR_DROP 永久失败例外：丢弃
+ * 继续，见 sync_client.h 404 窗口期说明；timestamp=0 由服务器落地） */
 static void sync_flush_pending(void)
 {
     int guard = learning_state_event_count();
@@ -131,6 +132,18 @@ static void sync_flush_pending(void)
             strncpy(it.word_id, w->cloud_id, sizeof(it.word_id) - 1);
             int rc = sync_push_progress(&it, 1);
             if (rc == SYNC_ERR_AUTH) { sync_recover_auth(); return; }
+            if (rc != 0) return;
+        } else if (ev.quality == -2) {
+            /* 墨封事件（2026-09-04）：lr_event_t.collected 字段复用承载
+            * mastered 布尔（事件队列内存态无协议兼容负担，learning_state.h
+            * 同注释）；401 恢复与失败保留语义同收藏 */
+            int rc = sync_push_master(w->cloud_id, ev.collected);
+            if (rc == SYNC_ERR_AUTH) { sync_recover_auth(); return; }
+            if (rc == SYNC_ERR_DROP) {
+                /* 后端未部署窗口期：丢弃防队头阻塞，继续后续事件 */
+                learning_state_event_drop(1);
+                continue;
+            }
             if (rc != 0) return;
         } else {
             int rc = sync_push_collect(w->cloud_id, ev.collected);

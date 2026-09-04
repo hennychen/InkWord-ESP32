@@ -112,8 +112,10 @@ public class AdminDashboardController : ControllerBase
 
         var collected = await _db.LearningRecords.AsNoTracking()
             .CountAsync(r => r.IsCollected, ct);
+        var mastered = await _db.LearningRecords.AsNoTracking()
+            .CountAsync(r => r.IsMastered, ct);   // 墨封（2026-09-04）
 
-        return Ok(ApiResponse<WrongTopResp>.Ok(new WrongTopResp(items, collected)));
+        return Ok(ApiResponse<WrongTopResp>.Ok(new WrongTopResp(items, collected, mastered)));
     }
 
     public record SrsLevelDto(string Level, int Count);

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """InkWord UI 提示音生成器 (v1.1 T1.6，2026-08-24)
 
-生成 4 个提示音样本（48kHz / mono / PCM16 / <0.3s）：
-  key.wav  按键按下确认 -- 短「滴」（1.8kHz 正弦指数衰减，70ms）
-  rate.wav 自评提交   -- 「滴答」双音下行（1.0k + 0.8k，170ms）
-  mode.wav 模式切换   -- 「滴--」短低 + 长高（0.6k + 1.2k，235ms）
-  err.wav  边界拒绝   -- 低频「嘟-」（280Hz 软方波，230ms）
+生成 5 个提示音样本（48kHz / mono / PCM16 / <0.3s）：
+  key.wav   按键按下确认 -- 短「滴」（1.8kHz 正弦指数衰减，70ms）
+  rate.wav  自评提交     -- 「滴答」双音下行（1.0k + 0.8k，170ms）
+  mode.wav  模式切换     -- 「滴--」短低 + 长高（0.6k + 1.2k，235ms）
+  err.wav   边界拒绝     -- 低频「嘟-」（280Hz 软方波，230ms）
+  stamp.wav 墨封落印     -- 低频「咚」（175Hz 正弦快衰减闷响，160ms，2026-09-04）
 
 用法：
   python3 tools/gen_ui_sounds.py [--out DIR]     # 默认 tools/ui_sounds/
-  # 然后把 4 个 wav 拷贝到 SD 卡 /sdcard/audio/ui/
+  # 然后把 5 个 wav 拷贝到 SD 卡 /sdcard/audio/ui/
 
 仅用标准库（wave/math/struct），无第三方依赖。
 所有样本首尾 3ms 线性淡入淡出防爆音；幅度 0.55 满刻度。
@@ -81,6 +82,7 @@ def main():
     write_wav(out / "mode.wav",
               tone(620, 45, decay=4) + silence(25) + tone(1240, 165, decay=2))
     write_wav(out / "err.wav", tone(280, 230, decay=1.5, duty=0.5))
+    write_wav(out / "stamp.wav", tone(175, 160, decay=9))   # 印章落纸闷响
 
     print("copy to SD: /sdcard/audio/ui/")
 

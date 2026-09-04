@@ -41,6 +41,11 @@ public class LearningRecord : BaseEntity
     /// <summary>是否收藏（设备端 SET 长按切换，/sync/collect 上报）</summary>
     public bool IsCollected { get; set; }
 
+    /// <summary>是否墨封/已熟练（设备端 toggle_master 切换，/sync/master 上报；
+    /// Anki suspend 哲学：FSRS/收藏原样保留，仅调度层过滤；置位时同步清
+    /// ConsecutiveWrong（声明式通过，与固件 toggle_master 双端同规则，2026-09-04）</summary>
+    public bool IsMastered { get; set; }
+
     // ---- FSRS 影子列（M3 路径 A，2026-08-22）----
     // 影子运行阶段仅积累不生效（SM-2 仍为主调度）；M4 切换后由
     // FsrsService 同步写主列（NextReview 等），影子列停写保留历史。

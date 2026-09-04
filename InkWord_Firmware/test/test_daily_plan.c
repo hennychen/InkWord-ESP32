@@ -101,6 +101,7 @@ static int64_t     g_now;      /* 自治钟 epoch；<=0 模拟未同步 */
 static const char *g_active;   /* 活跃卡组 id（""=默认） */
 static int         g_deck_new; /* learning_state_deck_today_new 桩值 */
 static int         g_due;      /* learning_state_due_count 桩值 */
+static int         g_active_new; /* learning_state_active_new_count 桩值（墨封判据） */
 
 int64_t standby_time_now(void) { return g_now; }
 
@@ -113,6 +114,8 @@ int learning_state_deck_today_new(const char *deck_id)
 }
 
 int learning_state_due_count(void) { return g_due; }
+
+int learning_state_active_new_count(void) { return g_active_new; }
 
 /* UTC 时刻 -> epoch（daily_plan 内部 +8h 取北京日历，故 4:00Z=正午） */
 static int64_t utc_epoch(int y, int mo, int d, int h)
@@ -129,6 +132,7 @@ static void dp_reset(void)
     g_active   = "";
     g_deck_new = 0;
     g_due      = 0;
+    g_active_new = 0;
 }
 
 /* ---- 目标量：键按卡组分派 ---- */
@@ -211,12 +215,32 @@ void test_dp_done_uses_deck_numerator(void)
     /* 按组分子 8 < 10：未达标（全局口径无关） */
     g_deck_new = 8;
     g_due = 0;
+    g_active_new = 5;
     TEST_ASSERT_FALSE(daily_plan_done());
 
     g_deck_new = 10;                 /* 达标且无到期 */
     TEST_ASSERT_TRUE(daily_plan_done());
 
     g_due = 3;                       /* 达标但有到期词 */
+    TEST_ASSERT_FALSE(daily_plan_done());
+}
+
+/* 墨封边界（2026-09-04）：剩余可学新词全墨封（active_new==0）后
+ * goal 永不可达 → 可学新词耗尽=达标兜底 */
+void test_dp_done_mastered_exhausts_new(void)
+{
+    dp_reset();
+    daily_plan_set_goal(10);
+
+    g_deck_new = 3;                  /* 分子不足且仍有可学新词：未达标 */
+    g_active_new = 5;
+    g_due = 0;
+    TEST_ASSERT_FALSE(daily_plan_done());
+
+    g_active_new = 0;                /* 新词全墨封：耗尽=达标兜底 */
+    TEST_ASSERT_TRUE(daily_plan_done());
+
+    g_due = 2;                       /* 有到期词仍不算完成（due 不受墨封影响口径外的桩预设） */
     TEST_ASSERT_FALSE(daily_plan_done());
 }
 

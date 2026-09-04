@@ -155,6 +155,7 @@ export interface WrongTopItem {
 export interface WrongTopResp {
   items: WrongTopItem[];
   collectedRecords: number;
+  masteredRecords: number;
 }
 
 // ── AI 内容增强（M1 路径 B，2026-08-22）─────────────────

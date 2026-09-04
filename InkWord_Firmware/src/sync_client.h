@@ -2,9 +2,9 @@
  * @file sync_client.h
  * @brief HTTP 同步客户端 (Task F-18)
  *
- * 与后端交互：注册、拉取增量词库、回传学习记录（评分/收藏）、
+ * 与后端交互：注册、拉取增量词库、回传学习记录（评分/收藏/墨封）、
  * 心跳、天气与校时。
- * 词身份协议（P2）：评分/收藏上报的 wordId 为云端词条 Guid 字符串
+ * 词身份协议（P2）：评分/收藏/墨封上报的 wordId 为云端词条 Guid 字符串
  * （words.json 的 cloudId 字段，后端 /admin/words/export 生成）。
  */
 #ifndef INKWORD_SYNC_CLIENT_H
@@ -25,6 +25,12 @@ extern "C" {
  * 逢 401 返回 SYNC_ERR_AUTH，调用方应清钥重注册（MAC 幂等取回新钥，
  * sync_session.cpp sync_recover_auth 自愈链路）；与通用失败 -1 区分。 */
 #define SYNC_ERR_AUTH  (-2)
+
+/* 墨封 404 防队头阻塞（2026-09-04）：固件先行升级而后端 /sync/master
+ * 未部署的窗口期，若按可重试保留会阻塞 flush 队头（后续评分/收藏全停）
+ * 且事件环满覆盖丢评分。返回本码的调用方应丢弃事件——NVS 已存终态，
+ * 后端部署后由后续幂等 set 对账。 */
+#define SYNC_ERR_DROP  (-3)
 
 /** 学习记录条目（回传给后端） */
 typedef struct {
@@ -96,6 +102,14 @@ int sync_push_progress(const ProgressItem *items, int count);
  * @return 0 成功。
  */
 int sync_push_collect(const char *word_id, bool collected);
+
+/**
+ * @brief 墨封状态上报（设备端 toggle_master 切换后同步，2026-09-04）。
+ * @param word_id  云端词条 Guid。
+ * @param mastered 墨封状态（true=墨封，后端同步清 ConsecutiveWrong）。
+ * @return 0 成功。
+ */
+int sync_push_master(const char *word_id, bool mastered);
 
 /**
  * @brief 发送心跳。

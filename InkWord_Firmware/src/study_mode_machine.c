@@ -54,7 +54,7 @@ static bool s_reveal = true;
 
 static const char *s_names[MODE_COUNT] =
     { "Flash", "Dictation", "Review", "Reader", "WrongBook", "收藏",
-      "AI Chat", "测验", "目录", "语音" };
+      "AI Chat", "测验", "目录", "语音", "墨封录" };
 
 /* ---- 序列抽象：默认全词库，错词本换连错过滤视图，阅读换页序列 ---- */
 
@@ -62,13 +62,16 @@ static int seq_total(void)
 {
     if (s_current == MODE_WRONGBOOK)  return learning_state_wrong_count();
     if (s_current == MODE_COLLECTION) return learning_state_collected_count();
+    if (s_current == MODE_MASTERED)   return learning_state_mastered_count();
     if (s_current == MODE_REVIEW)     return learning_state_due_count();
     if (s_current == MODE_READER)     return reader_page_count();
     if (s_current == MODE_CHAT)       return 0;  /* 对话无词序列（状态栏 0/0） */
     if (s_current == MODE_QUIZ)       return 0;  /* 测验题号由 main.cpp 自绘状态栏 */
     if (s_current == MODE_BROWSE)     return 0;  /* 目录页码由 browse_mode 自绘 */
     if (s_current == MODE_VOICE)      return 0;  /* 候选列表由 voice_search 自绘 */
-    return word_parser_get_count();
+    /* 闪卡/听写：未墨封视图（2026-09-04 墨封——学习主链路过滤，
+     * 默认全库直映射退役；无墨封词时与旧行为等价） */
+    return learning_state_active_count();
 }
 
 /* 进入阅读模式时恢复上次阅读页（书签名匹配才有效，否则回第 0 页） */
@@ -85,18 +88,21 @@ static int seq_word_index(int cursor)
 {
     if (s_current == MODE_WRONGBOOK)  return learning_state_wrong_at(cursor);
     if (s_current == MODE_COLLECTION) return learning_state_collected_at(cursor);
+    if (s_current == MODE_MASTERED)   return learning_state_mastered_at(cursor);
     if (s_current == MODE_REVIEW)     return learning_state_due_at(cursor);
-    return cursor;
+    /* 闪卡/听写：active 视图虚游走（越界 -1 交调用方空词兑底） */
+    return learning_state_active_at(cursor);
 }
 
 void study_mode_init(void)
 {
-    /* 从 NVS 恢复上次模式（错词本/收藏/对话是临时视图，不接受恢复） */
+    /* 从 NVS 恢复上次模式（错词本/收藏/墨封录/对话是临时视图，不接受恢复） */
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
         uint8_t m = 0;
         if (nvs_get_u8(h, NVS_KEY_LAST_MODE, &m) == ESP_OK &&
             m < MODE_COUNT && m != MODE_WRONGBOOK && m != MODE_COLLECTION &&
+            m != MODE_MASTERED &&
             m != MODE_CHAT && m != MODE_QUIZ && m != MODE_BROWSE &&
             m != MODE_VOICE) {
             s_current = (study_mode_t)m;
@@ -139,6 +145,7 @@ study_mode_t study_mode_switch_next(void)
     do {
         s_current = (study_mode_t)((s_current + 1) % MODE_COUNT);
     } while (s_current == MODE_WRONGBOOK || s_current == MODE_COLLECTION ||
+             s_current == MODE_MASTERED ||
              s_current == MODE_CHAT || s_current == MODE_QUIZ ||
              s_current == MODE_BROWSE || s_current == MODE_VOICE);
     apply_mode(s_current);
@@ -149,6 +156,7 @@ void study_mode_set(study_mode_t mode)
 {
     if (mode < 0 || mode >= MODE_COUNT) return;
     if (mode == MODE_WRONGBOOK || mode == MODE_COLLECTION ||
+        mode == MODE_MASTERED ||
         mode == MODE_CHAT || mode == MODE_QUIZ ||
         mode == MODE_BROWSE || mode == MODE_VOICE) return;
     apply_mode(mode);   /* 同模式重入也归零游标，与 switch_next 语义一致 */
@@ -376,6 +384,30 @@ void study_mode_exit_collection(void)
     LOG_I("left collection");
 }
 
+/* ---- 墨封录临时视图（2026-09-04，收藏浏览同构镜像） ---- */
+
+bool study_mode_enter_mastered(void)
+{
+    if (learning_state_mastered_count() == 0) {
+        LOG_W("mastered list empty, nothing to enter");
+        return false;
+    }
+    s_current = MODE_MASTERED;
+    s_cursor = 0;
+    s_reveal = true;
+    LOG_I("entered mastered list (%d words)", learning_state_mastered_count());
+    return true;
+}
+
+void study_mode_exit_mastered(void)
+{
+    /* 临时视图：不写 last_mode，重启后自然回学习模式 */
+    s_current = MODE_FLASH;
+    s_cursor = 0;
+    s_reveal = true;
+    LOG_I("left mastered list");
+}
+
 int study_mode_enter_chat(const chat_request_t *req)
 {
     /* 前置：对话全程依赖网络（上传/下载）与 SD（回复 MP3 落盘播放）；
@@ -496,15 +528,26 @@ void study_mode_exit_voice_search(void)
 void study_mode_seek(int word_index)
 {
     /* 词库索引定位（browse 选词/voice 候选确认共用）：切 FLASH +
-     * 游标=index 钳位 + 渲染；不写 NVS（FLASH 本就可恢复） */
+     * 游标=index 钳位 + 渲染；不写 NVS（FLASH 本就可恢复）。
+     * 2026-09-04 墨封：目标词已墨封时先启封——目录/语音选词=要学它
+     * （跳转即启封语义；不启封则 active 视图反查不到该词） */
     int total = word_parser_get_count();
     if (total <= 0) return;
     if (word_index < 0) word_index = 0;
     if (word_index >= total) word_index = total - 1;
+    if (learning_state_is_mastered(word_index)) {
+        learning_state_toggle_master(word_index);
+        LOG_I("seek unmastered word #%d", word_index);
+    }
     s_current = MODE_FLASH;
-    s_cursor = word_index;
+    /* 词库索引→active 序列位置反查（O(N) 单次，翻词路径同量级） */
+    s_cursor = 0;
+    int pos = 0;
+    for (int i = 0; i <= word_index; i++)
+        if (!learning_state_is_mastered(i)) pos++;
+    s_cursor = pos - 1;
     s_reveal = true;
-    LOG_I("seek to word #%d", word_index);
+    LOG_I("seek to word #%d (active pos %d)", word_index, s_cursor);
     page_router_render_top();
 }
 
@@ -535,6 +578,45 @@ bool study_mode_after_quality(int quality)
     }
     if (s_cursor >= learning_state_wrong_count()) s_cursor = 0;
     return true;
+}
+
+/* 墨封/启封后的序列收缩钳位（2026-09-04）：当前词移出所在序列后
+ * 后词前移；游标钳位各模式跟随既有先例（闪卡/听写=after_uncollect
+ * 钳 n-1、错词本=after_quality 回绕 0、复习=after_due_review 钳
+ * total>0?n-1:0）；错词本/墨封录清空自动退回闪卡；闪卡全库墨封完
+ * 鉗 0 交渲染层显「全部词已墨封」空态页。
+ * @return true 表示游标/模式变化，需重绘当前页。 */
+bool study_mode_after_master(void)
+{
+    if (s_current == MODE_FLASH || s_current == MODE_DICTATION) {
+        int total = learning_state_active_count();
+        if (total == 0) { s_cursor = 0; return true; }
+        if (s_cursor >= total) s_cursor = total - 1;
+        return true;
+    }
+    if (s_current == MODE_WRONGBOOK) {
+        if (learning_state_wrong_count() == 0) {
+            study_mode_exit_wrongbook();
+            return true;
+        }
+        if (s_cursor >= learning_state_wrong_count()) s_cursor = 0;
+        return true;
+    }
+    if (s_current == MODE_REVIEW) {
+        int total = learning_state_due_count();
+        if (s_cursor >= total) s_cursor = total > 0 ? total - 1 : 0;
+        return true;
+    }
+    if (s_current == MODE_MASTERED) {
+        int total = learning_state_mastered_count();
+        if (total == 0) {
+            study_mode_exit_mastered();
+            return true;
+        }
+        if (s_cursor >= total) s_cursor = total - 1;
+        return true;
+    }
+    return false;
 }
 
 /* 复习模式自评后：评分即置会话 done 位（该词移出到期序列），后词
