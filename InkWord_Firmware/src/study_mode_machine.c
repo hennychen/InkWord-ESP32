@@ -27,6 +27,7 @@
 #include "settings_ui.h"  /* v1.2 T2.5：发音门控（set_audio） */
 #include "page_router.h" /* T1.4：渲染恢复经 render_top（pron 恢复路径） */
 #include "reader_engine.h"   /* READER 模式：页序列/字号切换/进度恢复 */
+#include "chapter_index.h"   /* 2026-09-05 阅读器增强：章节跳转 */
 
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -643,6 +644,31 @@ void study_mode_reader_font_step(int dir)
     if (s_current != MODE_READER || !reader_ready()) return;
     s_cursor = reader_font_step(dir, s_cursor);
     page_router_render_top();   /* base READER 分支 seq_pos 同口径 */
+}
+
+void study_mode_reader_chapter_step(int dir)
+{
+    if (s_current != MODE_READER || !reader_ready()) return;
+    int ch_count = chapter_index_count();
+    if (ch_count <= 0) return;
+    int cur_ch = chapter_index_find_by_page(s_cursor);
+    int target_ch = cur_ch + dir;
+    if (target_ch < 0 || target_ch >= ch_count) {
+        haptic_event(HAPTIC_ERROR);   /* 首/末章边界拒绝 */
+        return;
+    }
+    s_cursor = chapter_index_jump_to(target_ch);
+    page_router_render_top();
+}
+
+void study_mode_reader_goto_page(int page)
+{
+    if (s_current != MODE_READER || !reader_ready()) return;
+    int total = reader_page_count();
+    if (page < 0) page = 0;
+    if (page >= total) page = total - 1;
+    s_cursor = page;
+    page_router_render_top();
 }
 
 int study_mode_seq_pos(void)

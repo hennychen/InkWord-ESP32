@@ -16,6 +16,9 @@
 #include "epd_driver.h"
 #include "layout_profile.h" /* Phase 5：档位→字库级映射（默认档/占位页） */
 #include "settings_ui.h"   /* v1.2 T2.5：大字档默认级修正（set_font） */
+#include "chapter_index.h" /* 2026-09-05 阅读器增强：章节检测与导航 */
+#include "bookmark_mgr.h"  /* 2026-09-05 阅读器增强：书签管理 */
+#include "book_format.h"   /* 2026-09-05 阅读器增强：多格式支持 */
 #include "debug_log.h"
 
 #include <stdio.h>
@@ -218,37 +221,42 @@ static const char k_demo_book[] =
     "（王阳明《蔽月山房》）\n";
 #endif
 
-static int load_book(void)
+static int load_book(const char *path)
 {
 #ifdef INKWORD_DEMO_BOOK
+    (void)path;
     s_book_len = (uint32_t)strlen(k_demo_book);
     s_book = heap_caps_malloc(s_book_len + 1, MALLOC_CAP_SPIRAM);
     if (!s_book) return -2;
     memcpy(s_book, k_demo_book, s_book_len + 1);
     LOG_I("demo book loaded (%u bytes)", s_book_len);
 #else
-    /* SD 书目录下第一个 .txt */
-    DIR *d = opendir("/sdcard/books");
-    if (!d) {
-        LOG_W("no /sdcard/books directory");
-        return -1;
-    }
-    /* 272 = 前缀 15 + d_name 上限 255 + NUL，最坏情况也不截断 */
-    char path[272] = {0};
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        size_t nl = strlen(e->d_name);
-        if (nl > 4 && strcasecmp(e->d_name + nl - 4, ".txt") == 0) {
-            snprintf(path, sizeof(path), "/sdcard/books/%s", e->d_name);
-            break;
+    char filepath[272] = {0};
+    if (path && path[0]) {
+        /* 书架指定路径：直接加载 */
+        snprintf(filepath, sizeof(filepath), "%s", path);
+    } else {
+        /* 自动探测（init 兜底）：SD 书目录下第一个 .txt */
+        DIR *d = opendir("/sdcard/books");
+        if (!d) {
+            LOG_W("no /sdcard/books directory");
+            return -1;
+        }
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            size_t nl = strlen(e->d_name);
+            if (nl > 4 && strcasecmp(e->d_name + nl - 4, ".txt") == 0) {
+                snprintf(filepath, sizeof(filepath), "/sdcard/books/%s", e->d_name);
+                break;
+            }
+        }
+        closedir(d);
+        if (!filepath[0]) {
+            LOG_W("no .txt book under /sdcard/books");
+            return -1;
         }
     }
-    closedir(d);
-    if (!path[0]) {
-        LOG_W("no .txt book under /sdcard/books");
-        return -1;
-    }
-    FILE *f = fopen(path, "rb");
+    FILE *f = fopen(filepath, "rb");
     if (!f) return -1;
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
@@ -258,21 +266,43 @@ static int load_book(void)
         fclose(f);
         return -1;
     }
-    s_book_len = (uint32_t)sz;
-    s_book = heap_caps_malloc(s_book_len + 1, MALLOC_CAP_SPIRAM);
-    if (!s_book) { fclose(f); return -2; }
-    if (fread(s_book, 1, s_book_len, f) != s_book_len) {
-        fclose(f); heap_caps_free(s_book); s_book = NULL; return -1;
-    }
     fclose(f);
-    s_book[s_book_len] = '\0';
-    /* 跳 UTF-8 BOM */
-    if (s_book_len >= 3 && (uint8_t)s_book[0] == 0xEF &&
-        (uint8_t)s_book[1] == 0xBB && (uint8_t)s_book[2] == 0xBF) {
-        memmove(s_book, s_book + 3, s_book_len - 2);
-        s_book_len -= 3;
+
+    /* 多格式支持：MD/HTML 经 book_format 清洗，TXT 直通 */
+    book_format_t fmt = book_format_detect(filepath);
+    if (fmt != BOOK_FMT_TXT) {
+        char *cleaned = NULL;
+        uint32_t clean_len = 0;
+        int r = book_format_load(filepath, &cleaned, &clean_len, NULL);
+        if (r != 0 || !cleaned) {
+            LOG_W("book_format_load failed (err=%d), fallback raw", r);
+            /* 回退到原始读取 */
+            goto raw_load;
+        }
+        s_book_len = clean_len;
+        s_book = cleaned;   /* PSRAM 分配，由 book_format_load 完成 */
+        s_book[s_book_len] = '\0';
+        LOG_I("book loaded (format cleaned): %s (%u bytes)", filepath, (unsigned)s_book_len);
+    } else {
+raw_load:
+        f = fopen(filepath, "rb");
+        if (!f) return -1;
+        s_book_len = (uint32_t)sz;
+        s_book = heap_caps_malloc(s_book_len + 1, MALLOC_CAP_SPIRAM);
+        if (!s_book) { fclose(f); return -2; }
+        if (fread(s_book, 1, s_book_len, f) != s_book_len) {
+            fclose(f); heap_caps_free(s_book); s_book = NULL; return -1;
+        }
+        fclose(f);
+        s_book[s_book_len] = '\0';
+        /* 跳 UTF-8 BOM */
+        if (s_book_len >= 3 && (uint8_t)s_book[0] == 0xEF &&
+            (uint8_t)s_book[1] == 0xBB && (uint8_t)s_book[2] == 0xBF) {
+            memmove(s_book, s_book + 3, s_book_len - 2);
+            s_book_len -= 3;
+        }
+        LOG_I("book loaded: %s (%u bytes)", filepath, (unsigned)s_book_len);
     }
-    LOG_I("book loaded: %s (%u bytes)", path, (unsigned)s_book_len);
 #endif
     s_sig = book_signature(s_book, s_book_len);
     return 0;
@@ -328,7 +358,7 @@ static void font_level_restore(void)
 /* ---- 公共 API ---- */
 int reader_engine_init(void)
 {
-    int r = load_book();
+    int r = load_book(NULL);
     if (r != 0) return r;
     font_level_restore();
     if (build_pages() != 0) {
@@ -337,6 +367,12 @@ int reader_engine_init(void)
     }
     LOG_I("reader ready: %u bytes, level=%d (%dpx), %d pages",
           (unsigned)s_book_len, s_level, cjk_glyph_cell_size(s_level), s_page_n);
+    /* 章节索引 + 书签恢复（init 路径同样需要） */
+    chapter_format_t fmt = CH_FMT_TXT;
+    chapter_index_build(s_book, s_book_len, fmt);
+    chapter_index_map_pages(s_pages, s_page_n);
+    bookmark_mgr_clear();
+    bookmark_mgr_load(s_sig);
     return 0;
 }
 
@@ -483,4 +519,53 @@ void reader_render_placeholder(void)
     x = (epd_gfx_width() - str_cells(l4) * step) / 2;
     draw_str_cells(x, y + 5 * step, level, l4);
     LOG_I("reader placeholder rendered");
+}
+
+/* ---- 阅读器增强 API（2026-09-05） ---- */
+
+int reader_engine_load_book(const char *path)
+{
+    /* 释放旧书 + 章节索引 */
+    if (s_book) { heap_caps_free(s_book); s_book = NULL; }
+    if (s_pages) { heap_caps_free(s_pages); s_pages = NULL; }
+    s_book_len = 0; s_page_n = 0; s_sig = 0;
+    chapter_index_free();
+
+    int r = load_book(path);
+    if (r != 0) return r;
+    s_sig = book_signature(s_book, s_book_len);
+    font_level_restore();
+    if (build_pages() != 0) {
+        heap_caps_free(s_book); s_book = NULL;
+        return -2;
+    }
+    LOG_I("book loaded: %u bytes, level=%d, %d pages",
+          (unsigned)s_book_len, s_level, s_page_n);
+    /* 章节索引构建（2026-09-05 阅读器增强） */
+    chapter_format_t fmt = CH_FMT_TXT;   /* 默认 TXT；后续 book_format 模块可覆盖 */
+    if (path) {
+        const char *slash = strrchr(path, '/');
+        fmt = chapter_format_detect(slash ? slash + 1 : path);
+    }
+    chapter_index_build(s_book, s_book_len, fmt);
+    chapter_index_map_pages(s_pages, s_page_n);
+    /* 书签恢复（按书 signature 从 NVS 加载） */
+    bookmark_mgr_clear();
+    bookmark_mgr_load(s_sig);
+    return 0;
+}
+
+uint32_t reader_engine_get_signature(void) { return s_sig; }
+const char *reader_engine_get_text(void)    { return s_book; }
+uint32_t reader_engine_get_text_len(void)   { return s_book_len; }
+
+uint32_t reader_engine_page_offset(int page)
+{
+    if (!reader_ready() || page < 0 || page >= s_page_n) return 0;
+    return s_pages[page];
+}
+
+const uint32_t *reader_engine_page_offsets(void)
+{
+    return reader_ready() ? s_pages : NULL;
 }

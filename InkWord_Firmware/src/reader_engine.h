@@ -69,6 +69,31 @@ void reader_render_page(int page);
 /** 无书占位页：提示书籍目录与格式（阅读模式仍可进，按键翻页无效果） */
 void reader_render_placeholder(void);
 
+/* ---- 阅读器增强 API（2026-09-05 书架/章节/书签/搜索） ---- */
+
+/**
+ * @brief 加载指定路径的书籍（释放旧书 + 重新建页表 + 恢复进度）。
+ *        书架选书后经此接口加载，替代 init 内的自动探测。
+ * @param path 书籍文件绝对路径（UTF-8 文本 / .md / .html）。
+ * @return 0 成功；-1 加载失败；-2 内存不足
+ */
+int reader_engine_load_book(const char *path);
+
+/** 当前已加载书的签名（FNV-1a，进度恢复/书架缓存校验用；未加载返回 0） */
+uint32_t reader_engine_get_signature(void);
+
+/** 当前书全文指针（只读，搜索/章节检测/生词联动消费；未加载返回 NULL） */
+const char *reader_engine_get_text(void);
+
+/** 当前书字节长度（与 get_text 配对；未加载返回 0） */
+uint32_t reader_engine_get_text_len(void);
+
+/** 当前页首字节偏移（章节跳转/书签定位用；page 越界返回 0） */
+uint32_t reader_engine_page_offset(int page);
+
+/** 页偏移数组指针（只读，章节索引 map_pages 用；未就绪返回 NULL） */
+const uint32_t *reader_engine_page_offsets(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -252,6 +252,19 @@ int study_mode_seq_total(void);
 void study_mode_reader_font_step(int dir);
 
 /**
+ * @brief 阅读模式章节跳转（上/下长按）：dir=+1 下一章 / -1 上一章。
+ *        非阅读模式/无章节时无操作。
+ */
+void study_mode_reader_chapter_step(int dir);
+
+/**
+ * @brief 阅读模式跳转到指定页（目录/书签跳转用）。
+ *        直接设置游标 page 并渲染，不写 NVS（下次渲染自动保存）。
+ *        非阅读模式/页码越界时无操作。
+ */
+void study_mode_reader_goto_page(int page);
+
+/**
  * @brief 墨封/启封后的序列收缩钳位（learning_state_toggle_master 之后
  *        调用）：当前词移出所在序列（闪卡/听写=active 视图、错词本=
  *        连错清零、复习=到期过滤、墨封录=启封移出），后词前移、游标

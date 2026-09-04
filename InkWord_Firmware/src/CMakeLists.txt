@@ -78,6 +78,13 @@ idf_component_register(
         "cjk_font_sd.c"   # v1.4 T4.5：SD 卡组子集字库级联（主集 miss → 子集）
         "cjk_text.c"
         "reader_engine.c"
+        "book_shelf.c"        # 2026-09-05 阅读器增强：书架管理/列表 UI
+        "chapter_index.c"     # 2026-09-05 阅读器增强：章节检测与导航
+        "bookmark_mgr.c"      # 2026-09-05 阅读器增强：书签管理
+        "reader_search.c"     # 2026-09-05 阅读器增强：文本搜索
+        "reader_word_link.c"  # 2026-09-05 阅读器增强：生词联动
+        "book_format.c"       # 2026-09-05 阅读器增强：多格式支持
+        "reader_menu.c"       # 2026-09-05 阅读器增强：阅读器菜单
         "wifi_manager.c"
         "wifi_config_ui.c"
         "menu_ui.c"          # P 快捷菜单：长按中进入的功能菜单（收藏/模式/配网/门户/LAN/设备信息）

@@ -49,6 +49,7 @@ typedef enum {
     SK_ACT_SETTINGS,     /**< 设置页 */
     SK_ACT_SPEAK,        /**< 当前词发音 */
     SK_ACT_MASTER,       /**< 墨封当前词（已熟练标记切换，2026-09-04） */
+    SK_ACT_BOOKSHELF,    /**< 我的书架（阅读器增强 2026-09-05） */
     SK_ACT_COUNT
 } sk_action_t;
 

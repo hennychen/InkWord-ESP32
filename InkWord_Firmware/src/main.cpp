@@ -89,6 +89,8 @@
 #include "shortcut_map.h" /* 2026-09-03 用户自定义长按快捷键（六槽位） */
 #include "ui_stamp.h"    /* 2026-09-04：墨封落印动画 */
 #include "book_shelf.h"  /* 2026-09-05 阅读器增强：我的书架 */
+#include "reader_menu.h"  /* 2026-09-05 阅读器增强：阅读器菜单 */
+#include "bookmark_mgr.h" /* 2026-09-05 阅读器增强：书签管理 */
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -407,6 +409,13 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
                 study_mode_reader_chapter_step(+1);
                 return true;
             }
+            if (id == NAV_RST) {
+                /* RST 长按 = 退出阅读回闪卡 */
+                haptic_event(HAPTIC_MODE);
+                study_mode_set(MODE_FLASH);
+                page_router_render_top();
+                return true;
+            }
             return true;   /* 其余长按阅读模式不响应 */
         }
         switch (id) {
@@ -500,10 +509,21 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
             study_mode_reader_font_step(+1);  /* 字号放大 */
             return true;
         case NAV_CENTER:
-            /* 阅读器菜单（阶段六 reader_menu 接入前暂忽略） */
+            page_router_push(&g_reader_menu_page);   /* 阅读器菜单 */
             return true;
         case NAV_SET:
-            /* 书签切换（阶段三 bookmark_mgr 接入前暂忽略） */
+            /* SET 短按 = 当前页书签切换（有则删、无则加） */
+            {
+                int bm_page = study_mode_seq_pos();
+                if (bm_page < 0) bm_page = 0;
+                if (bookmark_exists(bm_page)) {
+                    bookmark_remove(bm_page);
+                } else {
+                    bookmark_add(bm_page, NULL);
+                }
+                haptic_event(HAPTIC_REVIEW);
+                page_router_render_top();   /* 重绘当前页（书签标记更新） */
+            }
             return true;
         case NAV_RST:
             study_mode_reset_cursor();        /* 回第一页 */
