@@ -21,6 +21,11 @@ public class AppDbContext : Microsoft.EntityFrameworkCore.DbContext
     public DbSet<ChatTurn> ChatTurns => Set<ChatTurn>();       // A3 对话轮日志
     public DbSet<ChatReview> ChatReviews => Set<ChatReview>(); // A3 对话周报
 
+    // 阅读器后端（2026-09-05）
+    public DbSet<Book> Books => Set<Book>();
+    public DbSet<ReadingProgress> ReadingProgresses => Set<ReadingProgress>();
+    public DbSet<DeviceBookmark> DeviceBookmarks => Set<DeviceBookmark>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -139,5 +144,46 @@ public class AppDbContext : Microsoft.EntityFrameworkCore.DbContext
         modelBuilder.Entity<Word>().HasQueryFilter(e => !e.IsDeleted);
         modelBuilder.Entity<LearningRecord>().HasQueryFilter(e => !e.IsDeleted);
         modelBuilder.Entity<OtaPackage>().HasQueryFilter(e => !e.IsDeleted);
+
+        // Book（阅读器后端 2026-09-05）
+        modelBuilder.Entity<Book>(e =>
+        {
+            e.HasIndex(b => b.BookKey).IsUnique();
+            e.Property(b => b.BookKey).HasMaxLength(64).IsRequired();
+            e.Property(b => b.Title).HasMaxLength(128).IsRequired();
+            e.Property(b => b.Author).HasMaxLength(64);
+            e.Property(b => b.Language).HasMaxLength(8);
+            e.Property(b => b.Tags).HasMaxLength(256);
+            e.Property(b => b.Format).HasMaxLength(8);
+            e.Property(b => b.CoverUrl).HasMaxLength(512);
+            e.Property(b => b.Description).HasMaxLength(1024);
+        });
+
+        // ReadingProgress
+        modelBuilder.Entity<ReadingProgress>(e =>
+        {
+            e.HasIndex(rp => new { rp.DeviceId, rp.BookId }).IsUnique();
+            e.HasIndex(rp => rp.LastReadAt);
+            e.HasOne(rp => rp.Device).WithMany()
+             .HasForeignKey(rp => rp.DeviceId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(rp => rp.Book).WithMany()
+             .HasForeignKey(rp => rp.BookId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // DeviceBookmark
+        modelBuilder.Entity<DeviceBookmark>(e =>
+        {
+            e.HasIndex(db => new { db.DeviceId, db.BookId, db.Page }).IsUnique();
+            e.Property(db => db.Note).HasMaxLength(64);
+            e.HasOne(db => db.Device).WithMany()
+             .HasForeignKey(db => db.DeviceId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(db => db.Book).WithMany()
+             .HasForeignKey(db => db.BookId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // 阅读器软删除过滤
+        modelBuilder.Entity<Book>().HasQueryFilter(e => !e.IsDeleted);
+        modelBuilder.Entity<ReadingProgress>().HasQueryFilter(e => !e.IsDeleted);
+        modelBuilder.Entity<DeviceBookmark>().HasQueryFilter(e => !e.IsDeleted);
     }
 }

@@ -86,3 +86,71 @@ public class OtaPackageRepository : RepositoryBase<OtaPackage>, IOtaPackageRepos
             .OrderByDescending(o => o.CreatedAt)
             .FirstOrDefaultAsync(ct);
 }
+
+// ====== 阅读器后端（2026-09-05） ======
+
+public class BookRepository : RepositoryBase<Book>, IBookRepository
+{
+    public BookRepository(AppDbContext context) : base(context) { }
+
+    public Task<Book?> GetByBookKeyAsync(string bookKey, CancellationToken ct = default)
+        => DbContext.Books.FirstOrDefaultAsync(b => b.BookKey == bookKey, ct);
+
+    public async Task<IReadOnlyList<Book>> GetPublishedAsync(CancellationToken ct = default)
+        => await DbContext.Books.AsNoTracking()
+            .Where(b => b.Published)
+            .OrderBy(b => b.Title)
+            .ToListAsync(ct);
+
+    public async Task<(IReadOnlyList<Book> Items, int Total)> QueryAsync(
+        string? keyword, string? language, bool? published, int page, int size,
+        CancellationToken ct = default)
+    {
+        var q = DbContext.Books.AsNoTracking().Where(b => !b.IsDeleted);
+        if (!string.IsNullOrEmpty(keyword))
+            q = q.Where(b => b.Title.Contains(keyword) || b.Author.Contains(keyword) || b.BookKey.Contains(keyword));
+        if (!string.IsNullOrEmpty(language))
+            q = q.Where(b => b.Language == language);
+        if (published.HasValue)
+            q = q.Where(b => b.Published == published.Value);
+
+        var total = await q.CountAsync(ct);
+        var items = await q.OrderBy(b => b.Title)
+            .Skip((page - 1) * size).Take(size)
+            .ToListAsync(ct);
+        return (items, total);
+    }
+}
+
+public class ReadingProgressRepository : RepositoryBase<ReadingProgress>, IReadingProgressRepository
+{
+    public ReadingProgressRepository(AppDbContext context) : base(context) { }
+
+    public Task<ReadingProgress?> GetAsync(Guid deviceId, Guid bookId, CancellationToken ct = default)
+        => DbContext.ReadingProgresses.FirstOrDefaultAsync(r => r.DeviceId == deviceId && r.BookId == bookId, ct);
+
+    public async Task<IReadOnlyList<ReadingProgress>> GetByDeviceAsync(Guid deviceId, CancellationToken ct = default)
+        => await DbContext.ReadingProgresses.AsNoTracking()
+            .Where(r => r.DeviceId == deviceId)
+            .OrderByDescending(r => r.LastReadAt)
+            .ToListAsync(ct);
+}
+
+public class DeviceBookmarkRepository : RepositoryBase<DeviceBookmark>, IDeviceBookmarkRepository
+{
+    public DeviceBookmarkRepository(AppDbContext context) : base(context) { }
+
+    public async Task<IReadOnlyList<DeviceBookmark>> GetListAsync(Guid deviceId, Guid bookId, CancellationToken ct = default)
+        => await DbContext.DeviceBookmarks.AsNoTracking()
+            .Where(b => b.DeviceId == deviceId && b.BookId == bookId)
+            .OrderBy(b => b.Page)
+            .ToListAsync(ct);
+
+    public async Task DeleteByBookAsync(Guid deviceId, Guid bookId, CancellationToken ct = default)
+    {
+        var marks = await DbContext.DeviceBookmarks
+            .Where(b => b.DeviceId == deviceId && b.BookId == bookId)
+            .ToListAsync(ct);
+        DbContext.DeviceBookmarks.RemoveRange(marks);
+    }
+}

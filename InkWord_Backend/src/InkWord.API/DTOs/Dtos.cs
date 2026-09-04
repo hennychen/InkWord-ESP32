@@ -108,3 +108,80 @@ public record DeckGenReq(string? Source = null, int Limit = 10);
 public record SrsComparisonItem(string Algorithm, int DueToday, int DueWeek, int DueMonth,
     int Future, double AvgIntervalDays);
 public record SrsComparisonResp(int Sm2Records, int FsrsRecords, List<SrsComparisonItem> Items);
+
+// ====== 阅读器设备端 DTO（2026-09-05） ======
+
+/// <summary>阅读进度上报（设备端退出阅读/翻页时推送）</summary>
+public record ReadingProgressReq(
+    string BookKey,       // 书籍标识（文件名去扩展名）
+    uint Signature,       // 内容签名
+    int CurrentPage,
+    int TotalPages,
+    int FontLevel,
+    int ReadMinutes       // 本次阅读时长（分钟）
+);
+
+/// <summary>书签批量同步请求（设备端退出书签管理时推送全量）</summary>
+public record BookmarkSyncReq(
+    string BookKey,
+    uint Signature,
+    List<BookmarkItem> Bookmarks
+);
+public record BookmarkItem(int Page, uint ByteOffset, string Note);
+
+/// <summary>云端书籍列表项（设备端拉取）</summary>
+public record BookDto(
+    string BookKey,
+    string Title,
+    string Author,
+    string Language,
+    string Tags,
+    long FileSize,
+    string Format,
+    string Description,
+    int DownloadCount
+);
+
+// ====== 阅读器管理端 DTO（2026-09-05） ======
+
+/// <summary>书籍创建/编辑</summary>
+public record BookCreateDto(
+    string Title,
+    string? Author = null,
+    string Language = "zh",
+    string? Tags = null,
+    string? Description = null
+);
+
+public record BookUpdateDto(
+    string? Title = null,
+    string? Author = null,
+    string? Language = null,
+    string? Tags = null,
+    string? Description = null,
+    bool? Published = null
+);
+
+public record BookQueryDto(int Page = 1, int Size = 20, string? Keyword = null,
+                           string? Language = null, bool? Published = null);
+
+/// <summary>阅读统计（管理看板扩展）</summary>
+public record ReadingStatsResp(
+    int TotalBooks,
+    int ActiveReadersToday,
+    int TotalReadMinutesToday,
+    List<PopularBookItem> PopularBooks,
+    List<DailyReadingItem> DailyReading
+);
+
+public record PopularBookItem(string BookKey, string Title, int Readers, int AvgProgressPct);
+public record DailyReadingItem(string Date, int Minutes, int Readers);
+
+/// <summary>设备阅读详情（管理端查看单设备阅读情况）</summary>
+public record DeviceReadingDetailResp(
+    List<DeviceBookReadingItem> Books
+);
+public record DeviceBookReadingItem(
+    string BookKey, string Title, int CurrentPage, int TotalPages,
+    int ProgressPct, DateTime LastReadAt, int TotalReadMinutes
+);

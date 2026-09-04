@@ -43,3 +43,25 @@ public interface IOtaPackageRepository : IRepository<OtaPackage>
 {
     Task<OtaPackage?> GetLatestPublishedAsync(string targetBoard, CancellationToken ct = default);
 }
+
+// ====== 阅读器后端（2026-09-05） ======
+
+public interface IBookRepository : IRepository<Book>
+{
+    Task<Book?> GetByBookKeyAsync(string bookKey, CancellationToken ct = default);
+    Task<IReadOnlyList<Book>> GetPublishedAsync(CancellationToken ct = default);
+    Task<(IReadOnlyList<Book> Items, int Total)> QueryAsync(string? keyword, string? language,
+        bool? published, int page, int size, CancellationToken ct = default);
+}
+
+public interface IReadingProgressRepository : IRepository<ReadingProgress>
+{
+    Task<ReadingProgress?> GetAsync(Guid deviceId, Guid bookId, CancellationToken ct = default);
+    Task<IReadOnlyList<ReadingProgress>> GetByDeviceAsync(Guid deviceId, CancellationToken ct = default);
+}
+
+public interface IDeviceBookmarkRepository : IRepository<DeviceBookmark>
+{
+    Task<IReadOnlyList<DeviceBookmark>> GetListAsync(Guid deviceId, Guid bookId, CancellationToken ct = default);
+    Task DeleteByBookAsync(Guid deviceId, Guid bookId, CancellationToken ct = default);
+}

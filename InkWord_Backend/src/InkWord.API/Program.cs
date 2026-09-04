@@ -47,6 +47,10 @@ builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IAccountRepository, AccountRepository>(); // v1.5 T5.3 轻账户
 builder.Services.AddScoped<ILearningRecordRepository, LearningRecordRepository>();
 builder.Services.AddScoped<IOtaPackageRepository, OtaPackageRepository>();
+// 阅读器后端（2026-09-05）
+builder.Services.AddScoped<IBookRepository, BookRepository>();
+builder.Services.AddScoped<IReadingProgressRepository, ReadingProgressRepository>();
+builder.Services.AddScoped<IDeviceBookmarkRepository, DeviceBookmarkRepository>();
 
 // ---- Services ----
 builder.Services.AddScoped<SrsService>();
@@ -56,6 +60,7 @@ builder.Services.AddScoped<PronunciationService>();
 builder.Services.AddScoped<TtsService>();
 builder.Services.AddScoped<ChatService>();
 builder.Services.AddScoped<VoiceSearchService>(); // 语音查词（2026-08-28，ASR+词库三级匹配）
+builder.Services.AddScoped<BookService>(); // 阅读器后端：书籍文件管理（2026-09-05）
 
 // ---- ASR 转写引擎（P2A 2026-08-24）：sherpa-onnx C# 绑定（native 随 NuGet
 // 分发），模型 volume 挂载（Asr:ModelDir，与 M5 GOP 升级共用本绑定）；
@@ -345,6 +350,58 @@ var t21Sql = new[]
         "CREATE INDEX IF NOT EXISTS \"IX_Decks_IsShared\" ON \"Decks\" (\"IsShared\") WHERE \"IsShared\"",
     };
 foreach (var sql in t21Sql)
+        db.Database.ExecuteSqlRaw(sql);
+
+    // 阅读器后端（2026-09-05）：Books / ReadingProgress / DeviceBookmarks 建表
+    var readerSql = new[]
+    {
+        @"CREATE TABLE IF NOT EXISTS ""Books"" (
+            ""Id"" uuid NOT NULL PRIMARY KEY,
+            ""BookKey"" varchar(64) NOT NULL,
+            ""Title"" varchar(128) NOT NULL,
+            ""Author"" varchar(64) NOT NULL DEFAULT '',
+            ""Language"" varchar(8) NOT NULL DEFAULT 'zh',
+            ""Tags"" varchar(256) NOT NULL DEFAULT '',
+            ""FileSize"" bigint NOT NULL DEFAULT 0,
+            ""Format"" varchar(8) NOT NULL DEFAULT 'txt',
+            ""CoverUrl"" varchar(512) NOT NULL DEFAULT '',
+            ""Description"" varchar(1024) NOT NULL DEFAULT '',
+            ""Published"" boolean NOT NULL DEFAULT false,
+            ""DownloadCount"" integer NOT NULL DEFAULT 0,
+            ""CreatedAt"" timestamp with time zone NOT NULL,
+            ""UpdatedAt"" timestamp with time zone,
+            ""IsDeleted"" boolean NOT NULL)",
+        @"CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Books_BookKey"" ON ""Books"" (""BookKey"")",
+
+        @"CREATE TABLE IF NOT EXISTS ""ReadingProgresses"" (
+            ""Id"" uuid NOT NULL PRIMARY KEY,
+            ""DeviceId"" uuid NOT NULL,
+            ""BookId"" uuid NOT NULL,
+            ""CurrentPage"" integer NOT NULL DEFAULT 0,
+            ""TotalPages"" integer NOT NULL DEFAULT 0,
+            ""FontLevel"" integer NOT NULL DEFAULT 1,
+            ""Signature"" bigint NOT NULL DEFAULT 0,
+            ""LastReadAt"" timestamp with time zone NOT NULL,
+            ""TotalReadMinutes"" integer NOT NULL DEFAULT 0,
+            ""CreatedAt"" timestamp with time zone NOT NULL,
+            ""UpdatedAt"" timestamp with time zone,
+            ""IsDeleted"" boolean NOT NULL)",
+        @"CREATE UNIQUE INDEX IF NOT EXISTS ""IX_ReadingProgresses_DeviceId_BookId"" ON ""ReadingProgresses"" (""DeviceId"", ""BookId"")",
+        @"CREATE INDEX IF NOT EXISTS ""IX_ReadingProgresses_LastReadAt"" ON ""ReadingProgresses"" (""LastReadAt"")",
+
+        @"CREATE TABLE IF NOT EXISTS ""DeviceBookmarks"" (
+            ""Id"" uuid NOT NULL PRIMARY KEY,
+            ""DeviceId"" uuid NOT NULL,
+            ""BookId"" uuid NOT NULL,
+            ""Page"" integer NOT NULL,
+            ""ByteOffset"" bigint NOT NULL DEFAULT 0,
+            ""Note"" varchar(64) NOT NULL DEFAULT '',
+            ""CreatedAt"" timestamp with time zone NOT NULL,
+            ""UpdatedAt"" timestamp with time zone,
+            ""IsDeleted"" boolean NOT NULL)",
+        @"CREATE UNIQUE INDEX IF NOT EXISTS ""IX_DeviceBookmarks_DeviceId_BookId_Page"" ON ""DeviceBookmarks"" (""DeviceId"", ""BookId"", ""Page"")",
+    };
+    foreach (var sql in readerSql)
         db.Database.ExecuteSqlRaw(sql);
 
     // 管理端无注册入口（AuthController 仅登录）：首次启动种子默认账号
