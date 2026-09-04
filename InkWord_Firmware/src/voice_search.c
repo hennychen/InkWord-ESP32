@@ -40,7 +40,16 @@ static const char *TAG = "VOICE";
 #define VS_MAX_MS            (3000)      /* 查词档录音上限（设计 §B2） */
 #define VS_UPLOAD_TIMEOUT_MS (20000)     /* ASR + 词库三级匹配 */
 #define VS_RESP_MAX          (1536)      /* 5 候选 × (text64+meaning60+cloud40) + 信封 */
-#define VS_PARTIAL_MAX       (10)        /* 局刷阈值（对齐 MENU_UI） */
+
+/* 局刷保养阈值（menu_ui mu_partial_threshold 同款公式，2026-09-04
+ * 由硬编码 10 公式化：desc 基准 × profile.partial_menu 400 / 100） */
+static int vs_partial_threshold(void)
+{
+    const epd_panel_desc_t *pd = epd_panel_desc();
+    int base = (pd && pd->partial_count_full_refresh > 0)
+             ? pd->partial_count_full_refresh : 8;
+    return base * layout_profile_get()->partial_menu / 100;
+}
 
 /* ---- 模块状态 ---- */
 typedef struct {
@@ -84,6 +93,8 @@ static void vs_flush(void)
     epd_power_on();
     epd_gfx_flush();
     epd_power_off();
+    /* 状态迁移页真全刷等价清残影，计数归零（menu_ui 同款） */
+    refresh_notify_full_done();
 }
 
 static void vs_draw_hint(void)
@@ -186,7 +197,7 @@ void voice_search_render(void)
 static void vs_render_result_partial(void)
 {
     if (!epd_gfx_partial_supported()) return;
-    if (!refresh_gfx_before_partial_n(VS_PARTIAL_MAX)) {
+    if (!refresh_gfx_before_partial_n(vs_partial_threshold())) {
         epd_gfx_fill_rect(0, VS_TITLE_H, epd_gfx_width(),
                           epd_gfx_height() - VS_TITLE_H, EPD_GFX_WHITE);
         vs_draw_result();

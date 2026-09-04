@@ -22,18 +22,18 @@
  * 字段初始化顺序与 struct 声明一致（kind, quote, reader, status_h,
  * margin_x, body_reserve, item_h, hint_h, rv_hint_h, font_lvl_main,
  * font_px_main, ascii_size_main, info_lh, tight_quote, narrow_tiny,
- * kb_scale, partial_std, partial_standby, partial_wifi）*/
+ * kb_scale, partial_std, partial_standby, partial_wifi, partial_menu）*/
 static const layout_profile_t k_profiles[] = {
     [LAYOUT_TINY]  = { LAYOUT_TINY, 0, 0,
                        24,  8, 26, 28,  0, 18, 0, 16, 1, 20, 1, 0, 100,
-                       100, 150, 125 },
+                       100, 150, 125, 400 },
                      /* 2.13"/2.9" 标签屏竖屏（2026-08-23 新增）：
                       * 引文/正文均 16px——短边 122~128px 下 24px 引文
                       * 8 字行宽 192px、正文 20px 每行仅 4~5 字，均不
                       * 可行；narrow_tiny 运行期按 122/128 宽覆盖 */
     [LAYOUT_SMALL] = { LAYOUT_SMALL, 2, 1,
                        32, 16, 30, 36, 22, 24, 1, 20, 2, 28, 1, 0, 60,
-                       100, 150, 125 },
+                       100, 150, 125, 400 },
                      /* 2.7"：引文 24px（待机页 SMALL 紧排版配合，见
                       * tight_quote 字段）/ 正文 20px。2026-08-22 真机
                       * 勘误：初版全 16px 字小笔画糊（16px/117PPI≈
@@ -41,11 +41,11 @@ static const layout_profile_t k_profiles[] = {
                       * 20px(4.3mm) 后改善 */
     [LAYOUT_MID]   = { LAYOUT_MID,   2, 1,
                        32, 16, 30, 44, 22, 24, 1, 20, 2, 28, 0, 0, 100,
-                       100, 150, 125 },
+                       100, 150, 125, 400 },
                      /* 引文 24px / 正文 20px（现状） */
     [LAYOUT_LARGE] = { LAYOUT_LARGE, 3, 3,
                        32, 16, 30, 44, 22, 24, 1, 20, 2, 28, 0, 0, 100,
-                       100, 150, 125 },
+                       100, 150, 125, 400 },
                      /* 引文 32px / 正文 32px（2026-09-03 32px 字库级
                       * 落地后升 3：7.5" 800x480 @~150PPI 下 24px 物理
                       * 字高仅 ~4mm 偏小，32px≈5.4mm 对齐 3.7" 基线

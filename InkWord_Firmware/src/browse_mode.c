@@ -3,8 +3,9 @@
  * @brief 教材目录浏览三级视图实现（设计见头注；数据源 catalog_index）
  *
  * 列表范式抄 menu_ui（2026-08 真机验证）：反选高亮 + 右滚动条 +
- * 标题页码；刷新策略同款——进入/换级全刷，光标移动清列表区单遍局刷
- * （阈值 BROWSE_PARTIAL_MAX 经 refresh_scheduler 升级全刷保养；
+ * 标题页码；刷新策略同款——进入/换级全刷（计数归零），光标移动清
+ * 列表区单遍局刷（阈值 br_partial_threshold 同 menu_ui 公式：
+ * desc 基准×菜单系数 400，经 refresh_scheduler 升级全刷保养；
  * 三色屏无局刷由 epd_gfx_flush_window_passes 内部自动降级，零特判）。
  *
  * 词表行 = text + 释义首行（'\n' 截断）混排单行，超宽由
@@ -42,7 +43,15 @@ static const char *TAG = "BROWSE";
 #define BR_ITEM_W   (epd_gfx_width() - 2 * BR_MARGIN_X)
 #define BR_SB_W     4
 
-#define BROWSE_PARTIAL_MAX  10   /* 局刷阈值（对齐 MENU_UI_PARTIAL_MAX） */
+/* 局刷保养阈值（menu_ui mu_partial_threshold 同款公式，2026-09-04
+ * 由硬编码 10 公式化：desc 基准 × profile.partial_menu 400 / 100） */
+static int br_partial_threshold(void)
+{
+    const epd_panel_desc_t *pd = epd_panel_desc();
+    int base = (pd && pd->partial_count_full_refresh > 0)
+             ? pd->partial_count_full_refresh : 8;
+    return base * layout_profile_get()->partial_menu / 100;
+}
 
 /* ---- 模块状态（静态零初始化；reset 清态） ---- */
 static browse_page_t s_page   = BROWSE_GRADE;
@@ -141,6 +150,8 @@ static void draw_flush(void)
     epd_power_on();
     epd_gfx_flush();
     epd_power_off();
+    /* 进入/换级真全刷等价清残影，计数归零（menu_ui 同款） */
+    refresh_notify_full_done();
 }
 
 /* 列表主体（按页分派；空索引居中空态） */
@@ -217,7 +228,7 @@ static void draw_body(void)
 /* 页面绘制入口（partial=true 局刷 + 阈值升级全刷，抄 menu_ui） */
 static void draw_page(bool partial)
 {
-    if (partial && !refresh_gfx_before_partial_n(BROWSE_PARTIAL_MAX)) {
+    if (partial && !refresh_gfx_before_partial_n(br_partial_threshold())) {
         epd_gfx_fill_rect(0, BR_TITLE_H, epd_gfx_width(),
                           epd_gfx_height() - BR_TITLE_H, EPD_GFX_WHITE);
         draw_body();

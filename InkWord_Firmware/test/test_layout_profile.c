@@ -83,5 +83,6 @@ void test_layout_profile_sanity_all_kinds(void)
         TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, p->partial_std, label);
         TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, p->partial_standby, label);
         TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, p->partial_wifi, label);
+        TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, p->partial_menu, label);
     }
 }
