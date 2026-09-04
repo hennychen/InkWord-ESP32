@@ -1,12 +1,15 @@
 /**
  * @file ui_stamp.c
- * @brief 墨封圆形盖章动画 + 词卡「熟」角标实现（设计见 ui_stamp.h）
+ * @brief 墨封圆形印章 + 词卡「熟」角标实现（设计见 ui_stamp.h）
  *
- * 圆形盖章动画（3 帧节拍式，同步阻塞 ~300ms）：
- *   ①小圆点（12px）→ ②中圆（36px）→ ③大圆印「熟」（80px）。
- * 每帧直接画圆不清屏——大圆自然覆盖小圆，章盖在词卡上面。
- * 动画结束后调用方 after_master + render_top 翻页（新词覆盖圆印）。
- * 「熟」字渲染上限 24px（cjk 字库 level 2），终印 TINY 56px / 常规 80px。
+ * 单帧圆形印章（同步阻塞 ~100ms）：
+ *   双同心圆环（外 r=52 w=3 / 内 r=44 w=2）+ 断线纹理（压印质感）
+ *   + 印泥纹理黑点（环间 4% 密度）+ 中心「熟」字。
+ * 直接画在词卡上，调用方 after_master + render_top 翻页覆盖。
+ *
+ * 断线策略：Bresenham 逐像素画圆，按角度位置跳过——外环 10%、
+ * 内环 6%，确定性伪随机（固定种子，每次印章外观一致）。
+ * 印泥纹理：固定种子伪随机在环间区域散布 1px 黑点，密度 4%。
  */
 #include "ui_stamp.h"
 #include "epd_driver.h"
@@ -16,58 +19,107 @@
 #include "haptic.h"
 #include "ui_sfx.h"
 
-#include <math.h>          /* sqrtf（fill_circle 中点圆算法） */
+#include <math.h>           /* atan2f */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define STAMP_BEAT_MS  100   /* 帧间停顿（3 帧 ~300ms 极速盖章） */
-
-/* 实心圆（中点圆算法逐行填充）：epd_gfx 无 fill_circle，
- * 用 draw_hline 逐行画——每行宽度由圆方程 sqrt(r²-dy²) 决定 */
-static void fill_circle(int cx, int cy, int r, uint16_t color)
+/* ---- 确定性伪随机（固定种子，每次印章外观一致） ---- */
+static unsigned s_rng;
+static void rng_seed(unsigned s) { s_rng = s ? s : 1; }
+static unsigned rng_next(void)
 {
-    for (int dy = -r; dy <= r; dy++) {
-        int dx = (int)(0.5f + sqrtf((float)(r * r - dy * dy)));
-        epd_gfx_draw_hline(cx - dx, cy + dy, 2 * dx + 1, color);
+    s_rng ^= s_rng << 13;
+    s_rng ^= s_rng >> 17;
+    s_rng ^= s_rng << 5;
+    return s_rng;
+}
+
+/* ---- 断线圆环：Bresenham 逐像素画圆，按角度跳过 ----
+ * cx,cy 圆心；r 半径；skip_pct 跳过百分比（0~100）；color 颜色。
+ * 跳过判定：atan2(dy,dx) 映射到 [0,360)，每 30° 一档，
+ * rng_next()%100 < skip_pct 则跳过该档全部像素。
+ * 效果：圆弧被随机分成 ~12 段，部分段缺失 = 压印断线质感。 */
+static void draw_ring_broken(int cx, int cy, int r,
+                             int skip_pct, uint16_t color)
+{
+    int x = 0, y = r;
+    int d = 3 - 2 * r;
+
+    while (y >= x) {
+        /* 八对称点 */
+        int px[8] = { cx+x, cx-x, cx+x, cx-x, cx+y, cx-y, cx+y, cx-y };
+        int py[8] = { cy+y, cy+y, cy-y, cy-y, cy+x, cy+x, cy-x, cy-x };
+        for (int i = 0; i < 8; i++) {
+            int ddx = px[i] - cx;
+            int ddy = py[i] - cy;
+            int ang = (int)(atan2f((float)ddy, (float)ddx) * 57.2958f);
+            if (ang < 0) ang += 360;
+            /* 每 30° 一档，rng 决定该档是否跳过 */
+            int slot = ang / 30;
+            /* 每个 slot 独立判定（用 slot+round 做种子） */
+            unsigned saved = s_rng;
+            s_rng = (unsigned)(slot * 7 + r * 13 + 1);
+            bool skip = (int)(rng_next() % 100) < skip_pct;
+            s_rng = saved;
+            if (!skip)
+                epd_gfx_fill_rect(px[i], py[i], 1, 1, color);
+        }
+        x++;
+        if (d < 0) {
+            d += 4 * x + 1;
+        } else {
+            y--;
+            d += 4 * (x - y) + 1;
+        }
     }
 }
 
-/* 圆形印「熟」：黑底圆 + 24px 白字居中 */
-static void draw_circle_seal(int cx, int cy, int r)
+/* ---- 印章主体 ----
+ * 按用户规格：
+ *   外圆环 r=52 w=3（画 r=50,51,52 三层）断线 10%
+ *   内圆环 r=44 w=2（画 r=43,44 两层）断线 6%
+ *   环间印泥黑点 4% 密度（固定种子伪随机）
+ *   中心「熟」字 24px（cjk font_size=2） */
+static void draw_stamp(int cx, int cy)
 {
-    fill_circle(cx, cy, r, EPD_GFX_BLACK);
-    /* 「熟」字居中（24px cjk，字面占圆面 ~30%） */
-    cjk_text_draw(cx - 12, cy - 12, 2, "熟", EPD_GFX_WHITE);
+    rng_seed(0x544D5021);   /* "TMP!" 固定种子 */
+
+    /* 外圆环 r=52 w=3：画 r=50,51,52 三层 Bresenham 圆 */
+    for (int dr = 0; dr < 3; dr++)
+        draw_ring_broken(cx, cy, 50 + dr, 10, EPD_GFX_BLACK);
+
+    /* 内圆环 r=44 w=2：画 r=43,44 两层 */
+    for (int dr = 0; dr < 2; dr++)
+        draw_ring_broken(cx, cy, 43 + dr, 6, EPD_GFX_BLACK);
+
+    /* 印泥纹理：环间区域（r∈[46,49]）散布 1px 黑点，密度 4% */
+    for (int i = 0; i < 500; i++) {
+        int dx = (int)(rng_next() % 99) - 49;     /* [-49, 49] */
+        int dy = (int)(rng_next() % 99) - 49;
+        int dist2 = dx * dx + dy * dy;
+        if (dist2 >= 46 * 46 && dist2 <= 49 * 49)
+            epd_gfx_fill_rect(cx + dx, cy + dy, 1, 1, EPD_GFX_BLACK);
+    }
+
+    /* 中心「熟」字（24px cjk，居中于圆心） */
+    cjk_text_draw(cx - 12, cy - 12, 2, "熟", EPD_GFX_BLACK);
 }
 
 void ui_stamp_play(void)
 {
     int w = epd_gfx_width();
     int h = epd_gfx_height();
-    int top = layout_profile_get()->status_h;   /* 正文区顶（UI_STATUS_H 同源） */
+    int top = layout_profile_get()->status_h;   /* 正文区顶 */
     int cy = top + (h - top) / 2;               /* 正文区几何中心 */
     int cx = w / 2;
-    int final_r = layout_profile_get()->kind == LAYOUT_TINY ? 28 : 40;
 
-    /* 帧①小圆点（12px）——「印胚初现」，直接画在词卡上 */
-    fill_circle(cx, cy, 6, EPD_GFX_BLACK);
-    haptic_pulse(30);
-    epd_gfx_flush_window(0, top, w, h - top);
-    vTaskDelay(pdMS_TO_TICKS(STAMP_BEAT_MS));
-
-    /* 帧②中圆（36px）——「盖下」，大圆覆盖小圆，不清屏 */
-    fill_circle(cx, cy, 18, EPD_GFX_BLACK);
-    epd_gfx_flush_window(0, top, w, h - top);
-    vTaskDelay(pdMS_TO_TICKS(STAMP_BEAT_MS));
-
-    /* 帧③大圆印「熟」（final_r）——「盖章落地」
-     * 大圆覆盖中圆，不清屏；词卡内容被圆印覆盖，圆印外词卡仍可见。
-     * 末帧保留圆印：调用方 after_master + render_top 翻页时新词覆盖 */
-    draw_circle_seal(cx, cy, final_r);
+    /* 单帧直接画完整印章——盖在词卡上，不清屏 */
+    draw_stamp(cx, cy);
     haptic_pulse(80);                           /* 重震一记（盖章手感） */
     ui_sfx_play(UI_SFX_STAMP);                  /* 「咚」（缺样本静默降级） */
     epd_gfx_flush_window(0, top, w, h - top);
+    vTaskDelay(pdMS_TO_TICKS(100));             /* 100ms 视觉停留 */
 }
 
 void ui_draw_seal_mark(int right_x, int y)

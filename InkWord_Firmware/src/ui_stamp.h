@@ -13,15 +13,15 @@ extern "C" {
 #endif
 
 /**
- * @brief 墨封圆形盖章动画（同步阻塞 ~450ms，按键回调上下文）。
+ * @brief 墨封圆形印章（单帧 ~100ms，按键回调上下文）。
  *
- * 3 帧节拍式：①小圆点（12px）→ ②中圆（36px）→ ③大圆印「熟」（80px）。
- * 尺寸递增 = 从小到大盖章。末帧保留圆印，调用方 render_top 渲染新词
- * 直接覆盖（无白屏过渡）。仅 master 置位方向调用——启封不播动画。
+ * 单帧直接画完整印章：双同心圆环（外 r=52 w=3 / 内 r=44 w=2）
+ * + 断线纹理（压印质感）+ 印泥黑点 + 中心「熟」字。
+ * 盖在词卡上，调用方 after_master + render_top 翻页覆盖。
+ * 仅 master 置位方向调用——启封不播动画。
  *
- * 动画期间按键由 button_handler 队列缓冲，动画后按新状态正常处理。
- * 调用方应在动画后调 study_mode_after_master() + render_top() 自动
- * 跳转下词。
+ * 调用方应在印章后调 study_mode_after_master() + render_top()
+ * 自动跳转下词。
  */
 void ui_stamp_play(void);
 
