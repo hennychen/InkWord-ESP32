@@ -215,4 +215,73 @@ public class AdminDashboardController : ControllerBase
 
         return Ok(ApiResponse<List<DailyActiveDto>>.Ok(items));
     }
+
+    // ====== 阅读器后端阅读统计（2026-09-05） ======
+
+    /// <summary>阅读统计看板（阅读器后端）</summary>
+    [HttpGet("reading-stats")]
+    public async Task<IActionResult> ReadingStats(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var todayStart = now.Date;
+
+        var totalBooks = await _db.Books.AsNoTracking().CountAsync(b => b.Published, ct);
+        var activeReaders = await _db.ReadingProgresses.AsNoTracking()
+            .Where(p => p.LastReadAt >= todayStart)
+            .Select(p => p.DeviceId).Distinct().CountAsync(ct);
+        var totalMinutes = await _db.ReadingProgresses.AsNoTracking()
+            .Where(p => p.LastReadAt >= todayStart)
+            .SumAsync(p => p.TotalReadMinutes, ct); // 一期简化：总量代替今日增量
+
+        // 热门书籍 Top 10（按阅读设备数）
+        var popular = await _db.ReadingProgresses.AsNoTracking()
+            .GroupBy(p => p.BookId)
+            .Select(g => new
+            {
+                BookId = g.Key,
+                Readers = g.Count(),
+                AvgPage = g.Average(p => p.TotalPages > 0 ? (double)p.CurrentPage / p.TotalPages * 100 : 0),
+            })
+            .OrderByDescending(x => x.Readers)
+            .Take(10)
+            .Join(_db.Books.AsNoTracking(), x => x.BookId, b => b.Id,
+                  (x, b) => new PopularBookItem(b.BookKey, b.Title, x.Readers, (int)Math.Round(x.AvgPage)))
+            .ToListAsync(ct);
+
+        // 近 7 天阅读时长趋势
+        var weekStart = now.AddDays(-6).Date;
+        var dailyByDate = await _db.ReadingProgresses.AsNoTracking()
+            .Where(p => p.LastReadAt >= weekStart)
+            .GroupBy(p => p.LastReadAt.Date)
+            .Select(g => new { Date = g.Key, Minutes = g.Sum(p => p.TotalReadMinutes), Readers = g.Select(p => p.DeviceId).Distinct().Count() })
+            .ToListAsync(ct);
+
+        var dailyMap = dailyByDate.ToDictionary(x => x.Date, x => (x.Minutes, x.Readers));
+        var daily = Enumerable.Range(0, 7).Select(i =>
+        {
+            var d = todayStart.AddDays(-(6 - i));
+            dailyMap.TryGetValue(d, out var v);
+            return new DailyReadingItem(d.ToString("yyyy-MM-dd"), v.Minutes, v.Readers);
+        }).ToList();
+
+        return Ok(ApiResponse<ReadingStatsResp>.Ok(
+            new ReadingStatsResp(totalBooks, activeReaders, totalMinutes, popular, daily)));
+    }
+
+    /// <summary>单设备阅读详情（管理端查看某设备的阅读情况）</summary>
+    [HttpGet("device-reading/{deviceId:guid}")]
+    public async Task<IActionResult> DeviceReading(Guid deviceId, CancellationToken ct)
+    {
+        var list = await _db.ReadingProgresses.AsNoTracking()
+            .Where(p => p.DeviceId == deviceId)
+            .Join(_db.Books.AsNoTracking(), p => p.BookId, b => b.Id,
+                  (p, b) => new DeviceBookReadingItem(
+                      b.BookKey, b.Title, p.CurrentPage, p.TotalPages,
+                      p.TotalPages > 0 ? (p.CurrentPage * 100 / p.TotalPages) : 0,
+                      p.LastReadAt, p.TotalReadMinutes))
+            .OrderByDescending(x => x.LastReadAt)
+            .ToListAsync(ct);
+
+        return Ok(ApiResponse<DeviceReadingDetailResp>.Ok(new DeviceReadingDetailResp(list)));
+    }
 }
