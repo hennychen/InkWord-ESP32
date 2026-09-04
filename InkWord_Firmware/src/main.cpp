@@ -88,6 +88,7 @@
 #include "power_manager.h"   /* P5 深睡/唤醒分流与入睡检查 */
 #include "shortcut_map.h" /* 2026-09-03 用户自定义长按快捷键（六槽位） */
 #include "ui_stamp.h"    /* 2026-09-04：墨封落印动画 */
+#include "book_shelf.h"  /* 2026-09-05 阅读器增强：我的书架 */
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -266,8 +267,10 @@ static void shortcut_exec(sk_action_t act)
         break;
     case SK_ACT_READER:
         haptic_event(HAPTIC_MODE);
-        study_mode_set(MODE_READER);   /* 临时视图内被拒（安全无操作） */
-        page_router_render_top();
+        page_router_push(&g_book_shelf_page);   /* 阅读器增强：进书架选书 */
+        break;
+    case SK_ACT_BOOKSHELF:
+        page_router_push(&g_book_shelf_page);
         break;
     case SK_ACT_GHOST:   /* =出厂上键长按体 */
         refresh_force_full();
@@ -394,6 +397,18 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
      * （守卫见 shortcut_try_long，未定制键走出厂 switch） */
     if (event == BUTTON_EVENT_LONG_PRESS) {
         if (shortcut_try_long(id)) return true;
+        /* 阅读模式长按：上/下=章节跳转（阅读器增强 2026-09-05） */
+        if (study_mode_current() == MODE_READER) {
+            if (id == NAV_UP) {
+                study_mode_reader_chapter_step(-1);
+                return true;
+            }
+            if (id == NAV_DOWN) {
+                study_mode_reader_chapter_step(+1);
+                return true;
+            }
+            return true;   /* 其余长按阅读模式不响应 */
+        }
         switch (id) {
         case NAV_CENTER:
             page_router_push(&g_menu_ui_page);   /* T1.4：enter=menu_ui_enter */
@@ -467,9 +482,9 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
      * 错词本内答对自动移出，序列清空自动退回闪卡） */
     if (event != BUTTON_EVENT_SHORT_PRESS) return true;
 
-    /* 阅读模式短按路由（P3）：上/下=翻页，左/右=字号缩放，
-     * RST=回第一页（“回到当前模式第一条”全局语义）；
-     * 词相关动作（发音/自评/遮蔽）不适用，中/SET 忽略 */
+    /* 阅读模式短按路由（P3 + 阅读器增强 2026-09-05）：
+     * 上/下=翻页，左/右=字号缩放，中=阅读菜单，SET=书签切换，
+     * RST=回第一页（“回到当前模式第一条”全局语义） */
     if (study_mode_current() == MODE_READER) {
         switch (id) {
         case NAV_UP:
@@ -479,10 +494,16 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
             study_mode_handle_action(1);      /* 下一页 */
             return true;
         case NAV_LEFT:
-            study_mode_reader_font_step(-1);  /* 字号缩小（震动由去抖层 20ms 覆盖） */
+            study_mode_reader_font_step(-1);  /* 字号缩小 */
             return true;
         case NAV_RIGHT:
             study_mode_reader_font_step(+1);  /* 字号放大 */
+            return true;
+        case NAV_CENTER:
+            /* 阅读器菜单（阶段六 reader_menu 接入前暂忽略） */
+            return true;
+        case NAV_SET:
+            /* 书签切换（阶段三 bookmark_mgr 接入前暂忽略） */
             return true;
         case NAV_RST:
             study_mode_reset_cursor();        /* 回第一页 */
@@ -532,7 +553,7 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
         haptic_event(HAPTIC_REVIEW);   /* 自评提交 30ms（PRD 5.4） */
         ui_sfx_play(UI_SFX_RATE);      /* T1.6 自评提交音「滴答」 */
         /* 2026-09-04：自评简单联动墨封——用户认为简单=已掌握，
-         * 置位方向播落印动画（toggle 幂等，已墨封词不重复触发） */
+         * 置位方向播旋转盖章动画（toggle 幂等，已墨封词不重复触发） */
         {
             int wi_rt = study_mode_current_word_index();
             if (wi_rt >= 0) {
@@ -540,8 +561,9 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
                 if (just_mastered) ui_stamp_play();
             }
         }
-        if (study_mode_after_quality(5))
-            page_router_render_top();
+        /* 墨封后序列收缩 + 自动跳转下词（避免动画后白屏） */
+        study_mode_after_master();
+        page_router_render_top();
         return true;
     default:
         return true;

@@ -2,13 +2,14 @@
  * @file ui_stamp.c
  * @brief 墨封落印动画 + 词卡「熟」角标实现（设计见 ui_stamp.h）
  *
- * 节拍式分镜（quiz 反馈帧 QUIZ_FB_OK_MS 同上下文先例：同步阻塞 +
- * vTaskDelay 节拍，局刷窗口限正文区不碰状态栏）；残影：动画局刷
- * 直连 epd_gfx_flush_window，不经 refresh_scheduler 计数，但无窗口
- * 差分局刷自身无残影，幕三清白 + 调用方 render_top 重绘收敛，无需
- * 保养特判。
- * 「熟」字渲染上限 24px（cjk 字库 level 2），主印 56px（TINY 40px）
- * ——字面占印面 ~43%，黑白对比下清晰可读（印章密加盖风格）。
+ * 旋转盖章动画（4 帧节拍式，同步阻塞 + vTaskDelay）：
+ *   ①小方印胚（16px 实心）→ ②菱形旋转 45°（36px 空心）→
+ *   ③大方形旋转回 0°（56px 空心）→ ④终印落地（80px 实心「熟」）→
+ *   清白交调用方 render_top。
+ * 方/菱交替 = 视觉旋转，尺寸递增 = 从小到大盖章。残影处理同
+ * 前版：无窗口差分局刷自身无残影，末帧清白 + 调用方 render_top
+ * 重绘收敛。
+ * 「熟」字渲染上限 24px（cjk 字库 level 2），终印 TINY 56px / 常规 80px。
  */
 #include "ui_stamp.h"
 #include "epd_driver.h"
@@ -21,20 +22,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define STAMP_BEAT_MS  400   /* 幕间停顿（quiz 反馈帧同档节拍） */
+#define STAMP_BEAT_MS  250   /* 帧间停顿（盖章节奏，比前版 400ms 更紧凑） */
 
-/* 幕数档位（运行期读面板 desc）：无局刷（三色屏）或慢局刷
- * （>700ms）1 幕；标准局刷（>400ms）2 幕；快屏 3 幕 */
-static int stamp_beats(void)
-{
-    const epd_panel_desc_t *pd = epd_panel_desc();
-    if (!pd || !pd->partial_enabled) return 1;
-    if (pd->partial_ms > 700) return 1;
-    if (pd->partial_ms > 400) return 2;
-    return 3;
-}
-
-/* 反白方印「熟」：黑底 rect + 24px 白字居中 */
+/* 实心方印「熟」：黑底 rect + 24px 白字居中 */
 static void draw_seal(int cx, int cy, int size)
 {
     int x0 = cx - size / 2;
@@ -44,32 +34,54 @@ static void draw_seal(int cx, int cy, int size)
                   2, "熟", EPD_GFX_WHITE);
 }
 
+/* 空心菱形（45° 旋转方形）：四顶点 (cx±r,cy)/(cx,cy±r)，斜率 ±1
+ * epd_gfx 无 draw_line，逐像素 fill_rect 画四条边 */
+static void draw_diamond(int cx, int cy, int r)
+{
+    for (int i = 0; i < r; i++) {
+        epd_gfx_fill_rect(cx + r - i, cy + i, 1, 1, EPD_GFX_BLACK);   /* 顶→右 */
+        epd_gfx_fill_rect(cx + r - i, cy + i, 1, 1, EPD_GFX_BLACK);   /* 右→底 */
+        epd_gfx_fill_rect(cx - r + i, cy + r - i, 1, 1, EPD_GFX_BLACK); /* 底→左 */
+        epd_gfx_fill_rect(cx - r + i, cy - i, 1, 1, EPD_GFX_BLACK);   /* 左→顶 */
+    }
+}
+
 void ui_stamp_play(void)
 {
     int w = epd_gfx_width();
     int h = epd_gfx_height();
     int top = layout_profile_get()->status_h;   /* 正文区顶（UI_STATUS_H 同源） */
     int cy = top + (h - top) / 2;               /* 正文区几何中心 */
-    int cx = w / 2 + w / 8;                     /* 中央偏右（视觉重心） */
-    int size = layout_profile_get()->kind == LAYOUT_TINY ? 40 : 56;
+    int cx = w / 2;
+    int final_size = layout_profile_get()->kind == LAYOUT_TINY ? 56 : 80;
 
-    /* 幕①：大印落下 */
-    draw_seal(cx, cy, size);
-    haptic_pulse(50);                           /* 重震一记（落印手感） */
+    /* 帧①小方印胚（16px 实心）——「印胚初现」 */
+    epd_gfx_fill_rect(cx - 8, cy - 8, 16, 16, EPD_GFX_BLACK);
+    epd_gfx_flush_window(0, top, w, h - top);
+    haptic_pulse(30);
+    vTaskDelay(pdMS_TO_TICKS(STAMP_BEAT_MS));
+
+    /* 帧②菱形旋转 45°（36px 空心）——「旋转」 */
+    epd_gfx_fill_rect(0, top, w, h - top, EPD_GFX_WHITE);
+    draw_diamond(cx, cy, 18);
+    epd_gfx_flush_window(0, top, w, h - top);
+    vTaskDelay(pdMS_TO_TICKS(STAMP_BEAT_MS));
+
+    /* 帧③大方形旋转回 0°（56px 空心）——「旋转回正」 */
+    epd_gfx_fill_rect(0, top, w, h - top, EPD_GFX_WHITE);
+    epd_gfx_draw_rect(cx - 28, cy - 28, 56, 56, EPD_GFX_BLACK);
+    epd_gfx_flush_window(0, top, w, h - top);
+    vTaskDelay(pdMS_TO_TICKS(STAMP_BEAT_MS));
+
+    /* 帧④终印落地（final_size 实心「熟」）——「盖章」 */
+    epd_gfx_fill_rect(0, top, w, h - top, EPD_GFX_WHITE);
+    draw_seal(cx, cy, final_size);
+    haptic_pulse(80);                           /* 重震一记（盖章手感） */
     ui_sfx_play(UI_SFX_STAMP);                  /* 「咚」（缺样本静默降级） */
     epd_gfx_flush_window(0, top, w, h - top);
     vTaskDelay(pdMS_TO_TICKS(STAMP_BEAT_MS));
 
-    /* 幕②（仅快屏）：印面微收正（清印区重画小印，差分=边缘收缩） */
-    if (stamp_beats() == 3) {
-        epd_gfx_fill_rect(cx - size / 2 - 2, cy - size / 2 - 2,
-                          size + 4, size + 4, EPD_GFX_WHITE);
-        draw_seal(cx, cy, size - 6);
-        epd_gfx_flush_window(0, top, w, h - top);
-        vTaskDelay(pdMS_TO_TICKS(STAMP_BEAT_MS));
-    }
-
-    /* 幕③：收印清白（词卡恢复由调用方 render_top 重绘带角标） */
+    /* 清白：词卡恢复由调用方 render_top 重绘（带角标/下词） */
     epd_gfx_fill_rect(0, top, w, h - top, EPD_GFX_WHITE);
     epd_gfx_flush_window(0, top, w, h - top);
 }

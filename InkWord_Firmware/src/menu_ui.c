@@ -57,6 +57,7 @@ extern bool deck_flow_switch(int idx);
 #include "shortcut_map.h" /* 2026-09-03：按键说明页学习页长按列动态化 */
 #include "ui_stamp.h"     /* 2026-09-04：墨封当前词落印动画 */
 #include "word_card_ui.h" /* 2026-09-04：菜单退出强制全刷（ui_force_full_refresh_next） */
+#include "book_shelf.h"   /* 2026-09-05 阅读器增强：我的书架 */
 
 #include "freertos/FreeRTOS.h"   /* A3：周报拉取一次性任务 */
 #include "freertos/task.h"
@@ -281,7 +282,7 @@ static void act_master(void)
     bool mastered = learning_state_toggle_master(wi);
     haptic_event(HAPTIC_REVIEW);
     if (mastered) ui_stamp_play();
-    study_mode_after_master();
+    study_mode_after_master();   /* 序列收缩 + 自动跳转下词 */
     page_router_render_top();
 }
 
@@ -489,6 +490,14 @@ static void act_quiz(void)
     page_router_push(&g_quiz_page);   /* T2.2 栈化：enter 自绘首帧 */
 }
 
+/* 我的书架（2026-09-05 阅读器增强）：菜单自退后推书架覆盖层
+ * （无前置条件——空书架也显示占位提示页） */
+static void act_bookshelf(void)
+{
+    menu_ui_exit();
+    page_router_push(&g_book_shelf_page);
+}
+
 /* 教材目录（2026-08-28 设计 §B3）：前置词库 ≥1 在
  * study_mode_enter_browse 内，不满足长震回学习页；满足则三级视图
  * 清态 + 首帧全刷（T1.4 经 g_browse_page 栈顶 render 承担） */
@@ -570,6 +579,7 @@ static const mu_item_t s_items[] = {
     { "AI 对话",    false, menu_icon_chat,     NULL,             act_chat },
     { "对话周报",   false, menu_icon_info,     NULL,             act_review },
     { "快速测验",   false, menu_icon_quiz,     NULL,             act_quiz },
+    { "我的书架",   false, menu_icon_decks,    NULL,             act_bookshelf },
     { "[ 同步 ]",  true,  NULL,               NULL,             NULL },
     { "音频同步",   false, menu_icon_audio,    badge_audio_sync, act_audio_sync },
     { "Wi-Fi 配网", false, menu_icon_wifi,     badge_wifi,       act_wifi },
