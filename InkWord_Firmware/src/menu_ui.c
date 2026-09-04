@@ -923,7 +923,7 @@ static const mu_keyrow_t s_keys[] = {
     { "上",     NULL, NAV_UP,    "上一词" },
     { "下",     NULL, NAV_DOWN,  "下一词" },
     { "左",     NULL, NAV_LEFT,  "自评忘记" },
-    { "右",     NULL, NAV_RIGHT, "自评简单" },
+    { "右",     NULL, NAV_RIGHT, "简单·墨封" },  /* 2026-09-04：自评简单联动墨封 */
     { "中",     "发音 / 功能菜单", 0, NULL },   /* 锚点不可定制，恒出厂 */
     { "SET",    NULL, NAV_SET,   "遮蔽" },
     { "RST",    NULL, NAV_RST,   "进设置" },

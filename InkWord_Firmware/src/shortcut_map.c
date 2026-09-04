@@ -108,7 +108,7 @@ sk_action_t shortcut_factory_action(nav_key_t key)
     case NAV_CENTER: return SK_ACT_MENU;
     case NAV_UP:     return SK_ACT_GHOST;
     case NAV_DOWN:   return SK_ACT_MODE;
-    case NAV_LEFT:   return SK_ACT_MASTER;   /* 2026-09-04：墨封当前词（替代 AP 门户） */
+    case NAV_LEFT:   return SK_ACT_PORTAL;   /* 出厂 AP 门户（墨封由右键自评简单联动） */
     case NAV_RIGHT:  return SK_ACT_LAN;
     case NAV_SET:    return SK_ACT_COLLECT;
     case NAV_RST:    return SK_ACT_WRONGBOOK;

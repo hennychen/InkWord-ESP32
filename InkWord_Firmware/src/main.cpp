@@ -531,6 +531,15 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
         learning_state_apply_quality(study_mode_current_word_index(), 5);
         haptic_event(HAPTIC_REVIEW);   /* 自评提交 30ms（PRD 5.4） */
         ui_sfx_play(UI_SFX_RATE);      /* T1.6 自评提交音「滴答」 */
+        /* 2026-09-04：自评简单联动墨封——用户认为简单=已掌握，
+         * 置位方向播落印动画（toggle 幂等，已墨封词不重复触发） */
+        {
+            int wi_rt = study_mode_current_word_index();
+            if (wi_rt >= 0) {
+                bool just_mastered = learning_state_toggle_master(wi_rt);
+                if (just_mastered) ui_stamp_play();
+            }
+        }
         if (study_mode_after_quality(5))
             page_router_render_top();
         return true;
