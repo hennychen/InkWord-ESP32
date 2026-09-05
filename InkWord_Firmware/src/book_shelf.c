@@ -142,7 +142,6 @@ static void restore_progress(book_entry_t *e)
     /* 尝试无 scope 默认键（reader_engine rd_page） */
     bool hit = nvs_get_u32(h, NVS_KEY_RD_SIG, &sig) == ESP_OK && sig == e->signature;
     if (hit) {
-        uint32_t total_pages = 0;
         /* 粗略进度：page / 估算总页数（文件字节数 / 每页约 600 字节 @20px） */
         if (nvs_get_u32(h, NVS_KEY_RD_PAGE, &page) == ESP_OK && e->file_size > 0) {
             uint32_t est_pages = e->file_size / 600;

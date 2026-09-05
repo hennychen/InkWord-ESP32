@@ -44,8 +44,9 @@ static uint32_t utf8_peek(const char *p, uint32_t avail)
     return 0xFFFD;
 }
 
-/* UTF-8 字符字节数 */
-static int utf8_char_len(uint8_t c)
+/* UTF-8 字符字节数（章节扫描当前走 utf8_decode 内联判定；
+ * static inline 消未用告警，后续独立调用可直取） */
+static inline int utf8_char_len(uint8_t c)
 {
     if (c < 0x80) return 1;
     if ((c & 0xE0) == 0xC0) return 2;

@@ -109,7 +109,6 @@ static int decode_entity(const char *src, uint32_t len, char *out, size_t out_sz
         int i = 1;
         bool hex = false;
         if (i < (int)len && (src[i] == 'x' || src[i] == 'X')) { hex = true; i++; }
-        int start = i;
         while (i < (int)len && src[i] != ';') {
             if (hex) {
                 if (src[i] >= '0' && src[i] <= '9') cp = cp * 16 + (src[i] - '0');
@@ -170,8 +169,9 @@ static int decode_entity(const char *src, uint32_t len, char *out, size_t out_sz
     return 0;
 }
 
-/* UTF-8 编码单个码点到 dst，返回写入字节数 */
-static int encode_utf8(uint32_t cp, char *dst, size_t sz)
+/* UTF-8 编码单个码点到 dst，返回写入字节数（实体表当前全 ASCII repl
+ * 未启用动态编码；static inline 消未用告警，阅读器后续可调用） */
+static inline int encode_utf8(uint32_t cp, char *dst, size_t sz)
 {
     if (cp < 0x80 && sz >= 1) { dst[0] = (char)cp; return 1; }
     if (cp < 0x800 && sz >= 2) {

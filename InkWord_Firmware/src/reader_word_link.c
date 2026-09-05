@@ -16,6 +16,7 @@
 
 #include <string.h>
 #include <ctype.h>
+#include <stdio.h>   /* snprintf（wl->meaning 填充，缺此头为隐式声明 UB 风险） */
 
 static const char *TAG = "WORDLINK";
 
@@ -117,7 +118,6 @@ int reader_word_link_scan(int page, word_link_t *out, int max_links)
             /* 先看后续是否也是 CJK，尝试 2/3/4 字组合 */
             for (int wlen = 4; wlen >= 2; wlen--) {
                 uint32_t try_end = word_end;
-                int valid = 1;
                 for (int k = 1; k < wlen && try_end < end; k++) {
                     const uint8_t *nb = (const uint8_t *)(text + try_end);
                     int nn = 0;
