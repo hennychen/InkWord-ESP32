@@ -43,9 +43,9 @@ extern const epd_panel_desc_t g_panel_opm021eb;
 /* panels/panel_e042a13bw.cpp（4.2" 400x300 BW，HINK-E042A13-A0 黑白
  * 版，LAYOUT_MID 档；SSD1619，三色兄弟屏同族，2026-08-30 bring-up 完成） */
 extern const epd_panel_desc_t g_panel_e042a13bw;
-/* panels/panel_310_uc8253.cpp（3.1" 320x240 BW，UC8253，24P FPC 0.5mm，
- * 2026-09-05 新增：骨架取自 DEPG0370 UC8253 同族，PSR 方向待真机标定） */
-extern const epd_panel_desc_t g_panel_310;
+/* panels/panel_gdeq031t10_uc8253.cpp（3.1" 240x320 BW，GDEQ031T10，
+ * UC8253，24P FPC 0.5mm；2026-09-05 新增，demo 序列已接入） */
+extern const epd_panel_desc_t g_panel_gdeq031t10;
 /* panels/panel_hink_e0213a31.cpp（2.13" 122x250 BW 竖屏，HINK-E0213A31-A0，
  * LAYOUT_TINY 档；SSD1680，GxEPD2 B74 序列，2026-09-05 新增） */
 extern const epd_panel_desc_t g_panel_hink_e0213a31;
@@ -58,7 +58,7 @@ static const epd_panel_desc_t *const s_registry[] = {
     &g_panel_wft0290,
     &g_panel_opm021eb,
     &g_panel_e042a13bw,
-    &g_panel_310,
+    &g_panel_gdeq031t10,
     &g_panel_hink_e0213a31,
 };
 

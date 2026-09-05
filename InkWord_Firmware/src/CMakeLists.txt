@@ -20,7 +20,7 @@ idf_component_register(
         "panels/panel_wft0290.cpp"           # 2.9" 128x296 BW 骨架（WFT0290CZ10，bring-up 待硬件，2026-08-23）
         "panels/panel_opm021eb.cpp"          # 2.13" 122x250 BW 骨架（OPM021EB，bring-up 待硬件，2026-08-23）
         "panels/panel_e042a13bw.cpp"         # 4.2" 400x300 BW 骨架（E042A13-A0 黑白版，bring-up 待硬件，2026-08-23）
-        "panels/panel_310_uc8253.cpp"        # 3.1" 320x240 BW（UC8253，2026-09-05 新增）
+        "panels/panel_gdeq031t10_uc8253.cpp" # 3.1" 240x320 BW（GDEQ031T10，UC8253，2026-09-05）
         "panels/panel_hink_e0213a31.cpp"     # 2.13" 122x250 BW（HINK-E0213A31，SSD1680，2026-09-05 新增）
         "audio_player.c"
         "audio_sync.c"       # P0C：词条发音音频同步（http/TLS 分流同 ota_fill_cfg）

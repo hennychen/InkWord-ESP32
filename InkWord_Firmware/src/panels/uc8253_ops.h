@@ -14,11 +14,12 @@
  *   initPartialDemo / demoWriteDualNoWindow / writeImageForFullRefresh /
  *   writeScreenBuffer / refresh / powerOff / hibernate
  *
- * —— P1-b② 待办（2026-09-05 预研结论，实施前置：① 3.1" 屏 bring-up
- * 定稿（PSR/序列字节未定，序列含 0x24 余量填充与试参数，与 DEPG0370
- * 存在实质字节差异，非纯几何换皮）；② 黄金帧基线补齐（GOLDEN_COUNT
- * 现为 0，DEPG0370 为现役主力屏无回归网不动序列）——两条件满足后：
- * 将 GxEPD2_374_DEPG0370 / GxEPD2_310_320x240 两类（仅 WIDTH/HEIGHT/
+ * —— P1-b② 待办（2026-09-05 预研结论；前置① GDEQ031T10 序列已实证
+ * 差异：PSR 仅 1 字节 0x1F vs DEPG0370 两字节、180° 旋转 0x13 vs
+ * 0xD3→0xDB、局刷 E5=0x79、快刷 E5=0x5A，非纯几何换皮，两套序列
+ * 各自保留；② 黄金帧基线补齐（GOLDEN_COUNT
+ * 现仅 3 页=hink 首屏，DEPG0370 等主力屏仍无回归网，序列不动）——两条件满足后：
+ * 将 GxEPD2_374_DEPG0370 / GxEPD2_gdeq031t10 两类（仅 WIDTH/HEIGHT/
  * full/partial_refresh_time 四常量 + 序列字节不同）合并为数据驱动的
  * 单 UC8253 类（构造参数化几何与时序，序列字节表由面板文件提供），
  * 随后可整体移除 GxEPD2 lib_deps（Adafruit GFX 保留），全工程统一

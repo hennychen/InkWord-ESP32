@@ -1,47 +1,51 @@
 /**
- * @file panel_310_uc8253.cpp
- * @brief 3.1" 面板单元（L0）—— GxEPD2_310_320x240 包装 + desc 注册
+ * @file panel_gdeq031t10_uc8253.cpp
+ * @brief 3.1" 面板单元（L0）—— GxEPD2_gdeq031t10 包装 + desc 注册
  *
- * 面板：3.1" 320x240 BW，UC8253 COG，24P FPC 0.5mm
+ * 面板：GDEQ031T10 3.1" 240x320 BW，UC8253 COG，24P FPC 0.5mm
  * 骨架取自 panel_depg0370_uc8253.cpp（同 UC8253 控制器族）。
  *
  * 规格：
- *   分辨率 320x240，SPI，黑白
+ *   分辨率 240x320（竖屏原生），SPI，黑白
  *   全刷 3s / 快刷 1s / 局刷 0.5s
  *   视域 62.72x47.04mm，对角 ≈129 PPI
  *   规格建议：快刷/局刷连续 5 次后加一次全屏刷新减少残影
  *
- * ⚠ bring-up 待标定：PSR 方向字节（0xD3 暂定，见 GxEPD2_310_320x240 注释）
+ * 与 DEPG0370 的关键差异（demo 实证 2026-09-05）：
+ *   - PSR(0x00) 仅 1 字节 0x1F（LUT from register），非 DEPG0370 的 2 字节
+ *   - 局刷 E5=0x79（DEPG0370 用 100/0x64）
+ *   - 快刷 E5=0x5A（DEPG0370 无此模式）
+ *   - SPI 10MHz（DEPG0370 用 20MHz）
  */
 #include "../epd_panel.h"
 #include "../gpio_config.h"
 #include "epd_bus.h"
 
 #include <Arduino.h>
-#include "../GxEPD2_310_320x240.h"
+#include "../GxEPD2_gdeq031t10.h"
 #include "uc8253_ops.h"   /* P1-b①：族通用 ops 宏（序列语义/调优史见该头） */
 
 /* 前置声明：ops 实现引用 desc 几何字段 */
-extern const epd_panel_desc_t g_panel_310;
+extern const epd_panel_desc_t g_panel_gdeq031t10;
 
 /* epd2 层驱动对象。六个 ops 函数经 UC8253_DEFINE_OPS 宏展开
  * （P1-b①，2026-09-05：与 DEPG0370 逐字等价的包装去重；本屏帧
- * 320×240/8 = 9600B，局刷双 RAM 传帧 SPI @20MHz ≈ 5ms） */
-static GxEPD2_310_320x240 s_epd2(
+ * 240×320/8 = 9600B，局刷双 RAM 传帧 SPI @10MHz ≈ 10ms） */
+static GxEPD2_gdeq031t10 s_epd2(
     EPD_CS_PIN, EPD_DC_PIN, EPD_RESET_PIN, EPD_BUSY_PIN);
 
-UC8253_DEFINE_OPS(s_epd2, g_panel_310)
+UC8253_DEFINE_OPS(s_epd2, g_panel_gdeq031t10)
 
 /* —— desc 注册 ——
- * 时序取 GxEPD2_310_320x240.h 静态属性 + 规格书标称值；
+ * 时序取 GxEPD2_gdeq031t10.h 静态属性 + 规格书标称值；
  * 阈值暂取 8（与 DEPG0370 默认一致，真机 bring-up 可按残影表现调整） */
-const epd_panel_desc_t g_panel_310 = {
-    .name       = "panel_310_uc8253",
+const epd_panel_desc_t g_panel_gdeq031t10 = {
+    .name       = "gdeq031t10_uc8253",
     .controller = EPD_CTRL_UC8253,
-    .panel_w    = 320,
-    .panel_h    = 240,
-    .gfx_rotation = 1,       /* 横屏持机（gfx 240x320），bring-up 需验证方向 */
-    .dpi         = 129,       /* 对角 PPI：sqrt(320²+240²)/3.1" ≈ 129 */
+    .panel_w    = 240,
+    .panel_h    = 320,
+    .gfx_rotation = 1,       /* 横屏持机（gfx 320x240），bring-up 需验证方向 */
+    .dpi         = 129,       /* 对角 PPI：sqrt(240²+320²)/3.1" ≈ 129 */
     .color_mode = EPD_COLOR_BW,
     .plane_count = 1,
     .palette    = {
@@ -53,7 +57,7 @@ const epd_panel_desc_t g_panel_310 = {
     .accent_rgb  = 0,
     .fb_location = EPD_FB_AUTO,    /* 9.4KB 双帧+画布全 SRAM */
     .rst_pulse_ms = 20,
-    .busy_level = 1,               /* ⚠ BUSY=HIGH 忙（待真机确认，UC8253 系通常 LOW 忙，但本屏 FPC 不同） */
+    .busy_level = 0,               /* BUSY=LOW 忙（demo 实证：while(!isEPD_W21_BUSY)） */
     .busy_timeout_ms = 5000,       /* 全刷 3s 规格，留 5s 余量 */
     .power_on_ms  = 50,
     .power_off_ms = 50,

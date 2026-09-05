@@ -1,6 +1,6 @@
 /**
- * @file probe_310_busy.cpp
- * @brief 3.1" 屏 BUSY 引脚诊断 —— 检测 COG 响应与 BUSY 极性
+ * @file probe_gdeq031t10_busy.cpp
+ * @brief GDEQ031T10 3.1" 屏 BUSY 引脚诊断 —— 检测 COG 响应与 BUSY 极性
  */
 #include <Arduino.h>
 #include "../gpio_config.h"
@@ -8,7 +8,7 @@
 void setup() {
     Serial.begin(115200);
     delay(3000);
-    Serial.println("\n=== 3.1\" UC8253 BUSY Pin Diagnostic ===\n");
+    Serial.println("\n=== GDEQ031T10 3.1\" UC8253 BUSY Pin Diagnostic ===\n");
 
     pinMode(EPD_BUSY_PIN, INPUT);
     pinMode(EPD_RESET_PIN, OUTPUT);

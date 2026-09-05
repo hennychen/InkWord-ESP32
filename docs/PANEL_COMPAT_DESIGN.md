@@ -504,10 +504,11 @@ LARGE 档几何字段为预估值，「7.5" 上机校准」。上例 `layout_stu
 
 **P2 形态轴兑现（2026-09-05）**：档位表新增运行期字段 `form`
 （`LAYOUT_FORM_LANDSCAPE / PORTRAIT / SQUARE`，`get()` 按 gfx 宽高比
-填充，表值恒 LANDSCAPE）——起因：MID 档将共存 416x240 横 / 400x300
-横 / 240x320 竖（3.1" COG）三形态，单维短边分档无法区分。首个竖屏
-MID 消费方待 3.1" 真机校准参数（档位字段已就绪，UI 侧查 form 即可
-分支）。测试：test_layout_form_axis 用例覆盖五屏形态。
+填充，表值恒 LANDSCAPE）——起因：MID 档将共存多形态，单维短边分档
+无法区分。3.1" GDEQ031T10 经真机实证为 COG 竖屏 240x320 + rotation=1
+→ UI 320x240 横屏，与 416x240/400x300 同形态（非预想的竖屏 MID
+首例）；首个竖屏 MID 消费方仍待未来屏，档位字段已就绪，UI 侧查
+form 即可分支。测试：test_layout_form_axis 用例覆盖五屏形态。
 
 ### 8.2 Phase 4 改动面三分类清单
 

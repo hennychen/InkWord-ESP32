@@ -144,13 +144,13 @@ InkWord-ESP32/
 
 ### 5.1 固件（`InkWord_Firmware/`）
 - **芯片**: ESP32-S3 N16R8（16MB Flash + 8MB Octal PSRAM；Arduino 框架 + ESP-IDF 组件，PlatformIO espressif32@7.0.1）
-- **多屏兼容 9 面板**（panels/）：DEPG0370 UC8253（默认）/ E042A13 SSD1619 / E042A13-BW / WF0270 SSD1680 / GDEW027C44 IL91874 / OPM021EB / WFT0290 UC8151D / 310 UC8253 + 共享总线 epd_bus
+- **多屏兼容 10 面板**（panels/）：DEPG0370 UC8253（默认）/ E042A13 SSD1619 / E042A13-BW / WF0270 SSD1680 / GDEW027C44 IL91874 / OPM021EB / WFT0290 UC8151D / GDEQ031T10 3.1" UC8253 / HINK-E0213A31 SSD1680 + 共享总线 epd_bus；UC8253 族 ops 宏合用 + desc 契约校验器防护
 - **内存布局**（8MB PSRAM）: 词池 4000 词×1096B ＋ 词库 JSON 缓冲 2MB ＋ 阅读器书文件 ≤4MB ＋ 学习状态 LR04 按组隔离
 - **字体**: FreeSans（ASCII）+ 四级点阵中文字库 16/20/24/32px（3892+ 字，Kaiti SC Bold 回退链）+ SD 子集级联（cjk_font_sd，古诗生僻字按需装载）
 - **存储**: NVS（LR04 sparse 按组隔离 21B/词、5s 延迟落盘）+ SD 卡 SPI+FAT（书籍/音频/词库/字库子集）
 - **音频**: ES8311+NS4150B CODEC（I2C 38/39 + I2S 4/5/6/11）+ libhelix MP3 源码内嵌异步播放 + mic_recorder 全双工录音（3s 跟读/10s 对话）+ 音量 0~100 三入口
 - **网络**: Wi-Fi STA + SoftAP 配网 + LAN 直传 v2（8B 帧头 + device-info）+ HTTP 同步 + OTA 双分区 + BLE 配网（待 coex 评估）
-- **构建矩阵 12 环境**：inkword-s3（生产）/ demo / e042 / e042bw / wf0270 / gdew027c44 / 310 / wft0290 / opm021eb / panel310-probe / opm021eb-probe / native-test
+- **构建矩阵 13 环境**：inkword-s3（生产）/ demo / e042 / e042bw / wf0270 / gdew027c44 / gdeq031t10 / wft0290 / opm021eb / hink213 / gdeq031t10-probe / opm021eb-probe / native-test（另 bs-check/串口诊断）；黄金帧回归基线已启用（HINK 首屏 3 页入库）
 
 ### 5.2 后端（`InkWord_Backend/`）
 - .NET 8 WebAPI（5 项目分层 + Unit of Work 模式 + Polly 重试策略）+ EF Core 8（EnsureCreated 自动建表 + 幂等 SQL 迁移）
