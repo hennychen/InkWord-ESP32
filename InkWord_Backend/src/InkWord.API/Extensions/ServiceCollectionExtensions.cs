@@ -15,6 +15,8 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using OpenAI;
 using Serilog;
+using Polly;
+using Polly.Retry;
 using StackExchange.Redis;
 using System.ClientModel;
 using System.Text;
@@ -101,6 +103,22 @@ public static class ServiceCollectionExtensions
 
         // AI IChatClient（按 Ai:Provider 装配：本地 Ollama / OpenAI 兼容云 API）
         services.AddInkWordAiClient(configuration);
+
+        // Polly 重试策略：AI 外部调用 resilience（指数退避 3 次重试）
+        services.AddSingleton(new ResiliencePipelineBuilder()
+            .AddRetry(new RetryStrategyOptions
+            {
+                MaxRetryAttempts = 3,
+                BackoffType = DelayBackoffType.Exponential,
+                Delay = TimeSpan.FromSeconds(2),
+                OnRetry = args =>
+                {
+                    Log.Warning("AI 调用重试 {Attempt}/{Max}：{Reason}",
+                        args.AttemptNumber + 1, 3, args.Outcome.Exception?.Message);
+                    return default;
+                }
+            })
+            .Build());
 
         return services;
     }

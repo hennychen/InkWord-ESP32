@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Hangfire;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using InkWord.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -26,13 +26,13 @@ public class DeckGenJob
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
     private readonly AiContentService _ai;
     private readonly ILogger<DeckGenJob> _logger;
 
-    public DeckGenJob(AppDbContext db, AiContentService ai, ILogger<DeckGenJob> logger)
+    public DeckGenJob(IUnitOfWork uow, AiContentService ai, ILogger<DeckGenJob> logger)
     {
-        _db = db;
+        _uow = uow;
         _ai = ai;
         _logger = logger;
     }
@@ -42,7 +42,7 @@ public class DeckGenJob
     [AutomaticRetry(Attempts = 2)]
     public async Task RunAsync(Guid deckId, string source, int limit, CancellationToken ct)
     {
-        var deck = await _db.Decks.AsNoTracking()
+        var deck = await _uow.Db.Decks.AsNoTracking()
             .FirstOrDefaultAsync(d => d.Id == deckId, ct);
         if (deck == null)
         {
@@ -51,7 +51,7 @@ public class DeckGenJob
         }
 
         // 科目显示名进 prompt 占位符（T3.3 参数化链路）；无科目回退英语默认
-        var subjectName = await _db.Subjects.AsNoTracking()
+        var subjectName = await _uow.Db.Subjects.AsNoTracking()
             .Where(s => s.Id == deck.SubjectId)
             .Select(s => s.Name)
             .FirstOrDefaultAsync(ct);
@@ -64,7 +64,7 @@ public class DeckGenJob
         }
 
         // 既有 front（含归档，占位行驳回后 Text 仍在）：同题面不重建
-        var existing = (await _db.Words.AsNoTracking()
+        var existing = (await _uow.Db.Words.AsNoTracking()
                 .Where(w => w.DeckId == deck.Id)
                 .Select(w => w.Front)
                 .ToListAsync(ct))
@@ -75,7 +75,7 @@ public class DeckGenJob
         {
             if (sug.Front is null || existing.Contains(sug.Front)) continue;
             existing.Add(sug.Front);
-            _db.Words.Add(new InkWord.Core.Entities.Word
+            _uow.Db.Words.Add(new InkWord.Core.Entities.Word
             {
                 Text = sug.Front,
                 Front = sug.Front,
@@ -89,7 +89,7 @@ public class DeckGenJob
             });
             created++;
         }
-        await _db.SaveChangesAsync(ct);
+        await _uow.Db.SaveChangesAsync(ct);
         _logger.LogInformation(
             "DeckGenJob deck={Code} 占位待审 {Created} 条（建议 {Total} 条，跳过重复 {Skipped} 条）",
             deck.Code, created, items.Count, items.Count - created);

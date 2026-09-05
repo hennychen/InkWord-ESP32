@@ -1,5 +1,5 @@
 using Hangfire;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -19,14 +19,14 @@ public static class JobRegistrar
             "daily-review-push",
             j => j.RunAsync(),
             Cron.Daily(8),
-            TimeZoneInfo.Local);
+            new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
 
         // B-21 每周日 00:00 冷词归档
         RecurringJob.AddOrUpdate<CleanupJob>(
             "weekly-cold-word-archive",
             j => j.RunAsync(),
             Cron.Weekly(DayOfWeek.Sunday, 0),
-            TimeZoneInfo.Local);
+            new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
 
         // M1 路径 B（2026-08-22）：每天 02:00 AI 词库内容批量生成。
         // 夜间窗口只跑分级例句（kind=0，直接下发设备）；词根/辨析走
@@ -35,7 +35,7 @@ public static class JobRegistrar
             "nightly-ai-content",
             j => j.RunAsync(0, null, null, 500, CancellationToken.None),
             Cron.Daily(2),
-            TimeZoneInfo.Local);
+            new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
 
         // P0B（2026-08-24）：每天 03:00 词条 TTS 批量合成（错开 AI 内容任务）。
         // 补齐 data/audio/{Id:N}.mp3 缺失词条；幂等，引擎不可用时止损空转。
@@ -43,14 +43,14 @@ public static class JobRegistrar
             "nightly-tts",
             j => j.RunAsync(2000, CancellationToken.None),
             Cron.Daily(3),
-            TimeZoneInfo.Local);
+            new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
 
         // P2A（2026-08-24）：每小时回收过期对话音频（chat_*.mp3 超 1 小时）。
         RecurringJob.AddOrUpdate<ChatAudioCleanupJob>(
             "hourly-chat-audio-cleanup",
             j => j.RunAsync(),
             Cron.Hourly(),
-            TimeZoneInfo.Local);
+            new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
 
         // A3（2026-08-29）：每天 04:00 清理 90 天前对话轮（错开 TTS 03:00）；
         // 每周日 05:00 生成设备对话周报（错开冷词归档 00:00，LLM 低谷窗口）。
@@ -58,31 +58,31 @@ public static class JobRegistrar
             "daily-chat-turn-cleanup",
             j => j.RunAsync(),
             Cron.Daily(4),
-            TimeZoneInfo.Local);
+            new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
         RecurringJob.AddOrUpdate<ChatReviewJob>(
             "weekly-chat-review",
             j => j.RunAsync(CancellationToken.None),
             Cron.Weekly(DayOfWeek.Sunday, 5),
-            TimeZoneInfo.Local);
+            new RecurringJobOptions { TimeZone = TimeZoneInfo.Local });
     }
 }
 
 /// <summary>每日复习提醒（B-20）：统计每个设备的到期词数。</summary>
 public class DailyPushJob
 {
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
     private readonly ILogger<DailyPushJob> _logger;
 
-    public DailyPushJob(AppDbContext db, ILogger<DailyPushJob> logger)
+    public DailyPushJob(IUnitOfWork uow, ILogger<DailyPushJob> logger)
     {
-        _db = db;
+        _uow = uow;
         _logger = logger;
     }
 
     public async Task RunAsync()
     {
         var now = DateTime.UtcNow;
-        var due = await _db.LearningRecords.AsNoTracking()
+        var due = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(r => r.NextReview <= now)
             .GroupBy(r => r.DeviceId)
             .Select(g => new { DeviceId = g.Key, Count = g.Count() })
@@ -99,27 +99,27 @@ public class DailyPushJob
 /// <summary>冷词归档（B-21）：2 年内无人学习的词标记 Archived。</summary>
 public class CleanupJob
 {
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
     private readonly ILogger<CleanupJob> _logger;
 
-    public CleanupJob(AppDbContext db, ILogger<CleanupJob> logger)
+    public CleanupJob(IUnitOfWork uow, ILogger<CleanupJob> logger)
     {
-        _db = db;
+        _uow = uow;
         _logger = logger;
     }
 
     public async Task RunAsync()
     {
         var threshold = DateTime.UtcNow.AddYears(-2);
-        var learnedWordIds = _db.LearningRecords.AsNoTracking()
+        var learnedWordIds = _uow.Db.LearningRecords.AsNoTracking()
             .Where(r => r.LastStudiedAt >= threshold)
             .Select(r => r.WordId).Distinct();
 
-        var cold = await _db.Words.Where(w => !w.Archived && !learnedWordIds.Contains(w.Id))
+        var cold = await _uow.Db.Words.Where(w => !w.Archived && !learnedWordIds.Contains(w.Id))
             .ToListAsync();
         foreach (var w in cold) w.Archived = true;
 
-        var saved = await _db.SaveChangesAsync();
+        var saved = await _uow.Db.SaveChangesAsync();
         _logger.LogInformation("冷词归档完成：标记 {Count} 条", saved);
     }
 }

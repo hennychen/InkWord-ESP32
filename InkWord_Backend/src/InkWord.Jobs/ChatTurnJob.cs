@@ -1,7 +1,7 @@
 using Hangfire;
 using InkWord.Core.Entities;
 using InkWord.Infrastructure.Cache;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using InkWord.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
@@ -18,12 +18,12 @@ namespace InkWord.Jobs;
 /// </summary>
 public class ChatTurnLogger
 {
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
     private readonly ILogger<ChatTurnLogger> _logger;
 
-    public ChatTurnLogger(AppDbContext db, ILogger<ChatTurnLogger> logger)
+    public ChatTurnLogger(IUnitOfWork uow, ILogger<ChatTurnLogger> logger)
     {
-        _db = db;
+        _uow = uow;
         _logger = logger;
     }
 
@@ -32,8 +32,8 @@ public class ChatTurnLogger
     {
         try
         {
-            _db.ChatTurns.Add(turn);
-            await _db.SaveChangesAsync();
+            _uow.Db.ChatTurns.Add(turn);
+            await _uow.Db.SaveChangesAsync();
         }
         catch (Exception ex)
         {
@@ -59,12 +59,12 @@ public class HangfireChatTurnSink : IChatTurnSink
 /// </summary>
 public class ChatTurnCleanupJob
 {
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
     private readonly ILogger<ChatTurnCleanupJob> _logger;
 
-    public ChatTurnCleanupJob(AppDbContext db, ILogger<ChatTurnCleanupJob> logger)
+    public ChatTurnCleanupJob(IUnitOfWork uow, ILogger<ChatTurnCleanupJob> logger)
     {
-        _db = db;
+        _uow = uow;
         _logger = logger;
     }
 
@@ -72,7 +72,7 @@ public class ChatTurnCleanupJob
     public async Task RunAsync()
     {
         var cutoff = DateTime.UtcNow.AddDays(-90);
-        var removed = await _db.ChatTurns
+        var removed = await _uow.Db.ChatTurns
             .Where(t => t.Ts < cutoff)
             .ExecuteDeleteAsync();
         if (removed > 0)
@@ -110,8 +110,8 @@ public class CachedWordListProvider : IWordListProvider
             return cache;
 
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        cache = await db.Words.AsNoTracking()
+        var db = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        cache = await db.Db.Words.AsNoTracking()
             .Where(w => !w.Archived)
             .Select(w => new VocabEntry(w.Text, w.Id.ToString()))
             .ToListAsync(ct);
@@ -141,15 +141,15 @@ public class ChatReviewJob
 
     private const int TurnTextMaxChars = 200;
 
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
     private readonly IChatClient _chat;
     private readonly IRedisCache _cache;
     private readonly ILogger<ChatReviewJob> _logger;
 
-    public ChatReviewJob(AppDbContext db, IChatClient chat, IRedisCache cache,
+    public ChatReviewJob(IUnitOfWork uow, IChatClient chat, IRedisCache cache,
         ILogger<ChatReviewJob> logger)
     {
-        _db = db;
+        _uow = uow;
         _chat = chat;
         _cache = cache;
         _logger = logger;
@@ -161,7 +161,7 @@ public class ChatReviewJob
         var since = DateTime.UtcNow - Window;
 
         // 近 7 天有对话的设备（轮数倒序，LLM 繁忙时优先高活设备）
-        var devices = await _db.ChatTurns.AsNoTracking()
+        var devices = await _uow.Db.ChatTurns.AsNoTracking()
             .Where(t => t.Ts >= since)
             .GroupBy(t => t.DeviceId)
             .Select(g => new { DeviceId = g.Key, Count = g.Count() })
@@ -186,7 +186,7 @@ public class ChatReviewJob
     {
         try
         {
-            var turns = await _db.ChatTurns.AsNoTracking()
+            var turns = await _uow.Db.ChatTurns.AsNoTracking()
                 .Where(t => t.DeviceId == deviceId && t.Ts >= since)
                 .OrderByDescending(t => t.Ts)
                 .Take(MaxTurnsPerDevice)
@@ -204,11 +204,11 @@ public class ChatReviewJob
             }
 
             // 表留痕（同周唯一 upsert）+ Redis 热路径（TTL 7 天到下周生成点）
-            var existing = await _db.ChatReviews
+            var existing = await _uow.Db.ChatReviews
                 .FirstOrDefaultAsync(r => r.DeviceId == deviceId && r.WeekStart == weekStart, ct);
             if (existing is null)
             {
-                _db.ChatReviews.Add(new ChatReview
+                _uow.Db.ChatReviews.Add(new ChatReview
                 {
                     DeviceId = deviceId,
                     WeekStart = weekStart,
@@ -221,7 +221,7 @@ public class ChatReviewJob
                 existing.PayloadJson = payload;
                 existing.TurnCount = turns.Count;
             }
-            await _db.SaveChangesAsync(ct);
+            await _uow.Db.SaveChangesAsync(ct);
 
             await TrySaveCacheAsync(deviceId, weekStart, turns.Count, payload, ct);
             return true;

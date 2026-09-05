@@ -1,5 +1,5 @@
 using Hangfire;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using InkWord.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -22,13 +22,13 @@ public class TtsJob
     private const int PageSize = 50;
     private const int MaxPerRun = 2000;
 
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
     private readonly TtsService _tts;
     private readonly ILogger<TtsJob> _logger;
 
-    public TtsJob(AppDbContext db, TtsService tts, ILogger<TtsJob> logger)
+    public TtsJob(IUnitOfWork uow, TtsService tts, ILogger<TtsJob> logger)
     {
-        _db = db;
+        _uow = uow;
         _tts = tts;
         _logger = logger;
     }
@@ -39,7 +39,7 @@ public class TtsJob
         limit = limit <= 0 || limit > MaxPerRun ? MaxPerRun : limit;
 
         // Id 全量轻量拉取 → 文件缺失过滤 → 截断到 limit
-        var missing = (await _db.Words.AsNoTracking()
+        var missing = (await _uow.Db.Words.AsNoTracking()
                 .Where(w => !w.Archived)
                 .Select(w => new { w.Id, w.Text })
                 .ToListAsync(ct))

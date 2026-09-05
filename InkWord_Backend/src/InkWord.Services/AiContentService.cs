@@ -5,6 +5,7 @@ using InkWord.Core.Entities;
 using InkWord.Infrastructure.Cache;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Polly;
 
 namespace InkWord.Services;
 
@@ -66,12 +67,15 @@ public class AiContentService
 
     private readonly IChatClient _chat;
     private readonly IRedisCache _cache;
+    private readonly ResiliencePipeline _pipeline;
     private readonly ILogger<AiContentService> _logger;
 
-    public AiContentService(IChatClient chat, IRedisCache cache, ILogger<AiContentService> logger)
+    public AiContentService(IChatClient chat, IRedisCache cache,
+        ResiliencePipeline pipeline, ILogger<AiContentService> logger)
     {
         _chat = chat;
         _cache = cache;
+        _pipeline = pipeline;
         _logger = logger;
     }
 
@@ -92,11 +96,12 @@ public class AiContentService
         var (system, user) = BuildPrompt(word, kind, subject);
         try
         {
-            var response = await _chat.GetResponseAsync(
-            [
-                new ChatMessage(ChatRole.System, system),
-                new ChatMessage(ChatRole.User, user),
-            ], new ChatOptions { Temperature = 0.7f }, ct);
+            var response = await _pipeline.ExecuteAsync(
+                async ct => await _chat.GetResponseAsync(
+                [
+                    new ChatMessage(ChatRole.System, system),
+                    new ChatMessage(ChatRole.User, user),
+                ], new ChatOptions { Temperature = 0.7f }, ct), ct);
 
             var suggestion = Parse(response.Text, kind);
             if (suggestion is null)
@@ -141,11 +146,12 @@ public class AiContentService
         var (system, user) = BuildDeckPrompt(deck, subject, source, limit);
         try
         {
-            var response = await _chat.GetResponseAsync(
-            [
-                new ChatMessage(ChatRole.System, system),
-                new ChatMessage(ChatRole.User, user),
-            ], new ChatOptions { Temperature = 0.4f }, ct);
+            var response = await _pipeline.ExecuteAsync(
+                async ct => await _chat.GetResponseAsync(
+                [
+                    new ChatMessage(ChatRole.System, system),
+                    new ChatMessage(ChatRole.User, user),
+                ], new ChatOptions { Temperature = 0.4f }, ct), ct);
 
             var items = ParseDeckItems(response.Text, deck.PayloadType);
             if (items.Count == 0)

@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Hangfire;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using InkWord.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -34,15 +34,15 @@ public class AiContentJob
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
     private readonly AiContentService _ai;
     private readonly IConfiguration _cfg;
     private readonly ILogger<AiContentJob> _logger;
 
-    public AiContentJob(AppDbContext db, AiContentService ai,
+    public AiContentJob(IUnitOfWork uow, AiContentService ai,
         IConfiguration cfg, ILogger<AiContentJob> logger)
     {
-        _db = db;
+        _uow = uow;
         _ai = ai;
         _cfg = cfg;
         _logger = logger;
@@ -72,7 +72,7 @@ public class AiContentJob
 
             var pageSize = Math.Min(PageSize, limit - processed);
             // AsNoTracking 页取 + 逐批重查（词被并发修改时自然跳过，幂等由 AiStatus 守护）
-            var page = await _db.Words.AsNoTracking()
+            var page = await _uow.Db.Words.AsNoTracking()
                 .Where(w => !w.Archived && w.AiStatus == 0
                     && (tag == null || w.Tag == tag))
                 .OrderBy(w => w.Version)
@@ -91,7 +91,7 @@ public class AiContentJob
             await Task.WhenAll(tasks);
 
             var okIds = results.Where(r => r.Sug is not null).Select(r => r.Id).ToHashSet();
-            var tracked = await _db.Words.Where(w => okIds.Contains(w.Id)).ToListAsync(ct);
+            var tracked = await _uow.Db.Words.Where(w => okIds.Contains(w.Id)).ToListAsync(ct);
             foreach (var word in tracked)
             {
                 var sug = results.First(r => r.Id == word.Id).Sug!;
@@ -102,10 +102,10 @@ public class AiContentJob
             var failIds = page.Where(w => !okIds.Contains(w.Id)).Select(w => w.Id).ToList();
             if (failIds.Count > 0)
             {
-                var failTracked = await _db.Words.Where(w => failIds.Contains(w.Id)).ToListAsync(ct);
+                var failTracked = await _uow.Db.Words.Where(w => failIds.Contains(w.Id)).ToListAsync(ct);
                 foreach (var word in failTracked) word.AiStatus = 3;
             }
-            await _db.SaveChangesAsync(ct);
+            await _uow.Db.SaveChangesAsync(ct);
 
             processed += page.Count;
             failed += page.Count - okIds.Count;
