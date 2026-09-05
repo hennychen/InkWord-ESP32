@@ -164,6 +164,29 @@ int sync_fetch_chat_review(chat_review_t *out);
  */
 int64_t sync_fetch_http_time(void);
 
+/* ---- 阅读器后端同步（2026-09-05） ---- */
+
+/** 阅读进度上报 */
+int sync_push_reading_progress(const char *book_key, uint32_t signature,
+    int current_page, int total_pages, int font_level, int read_minutes);
+
+/** 书签同步条目 */
+typedef struct {
+    int      page;
+    uint32_t byte_offset;
+    char     note[32];
+} sync_bookmark_item_t;
+
+/** 书签全量同步 */
+int sync_push_bookmarks(const char *book_key, uint32_t signature,
+    const sync_bookmark_item_t *items, int count);
+
+/** 拉取云端书籍列表（JSON 输出到 out_buf） */
+int sync_pull_book_list(char *out_buf, int buf_size);
+
+/** 下载书籍文件到指定路径 */
+int sync_download_book(const char *book_key, const char *save_path);
+
 #ifdef __cplusplus
 }
 #endif

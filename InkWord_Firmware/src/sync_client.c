@@ -593,3 +593,176 @@ int64_t sync_fetch_http_time(void)
     LOG_W("http time failed (err=%d code=%d)", err, code);
     return 0;
 }
+
+/* ============================================================
+ * 阅读器后端同步（2026-09-05）
+ * ============================================================ */
+
+/* 阅读进度上报：POST /api/device/sync/reading-progress */
+int sync_push_reading_progress(const char *book_key, uint32_t signature,
+    int current_page, int total_pages, int font_level, int read_minutes)
+{
+    if (!book_key || !sync_has_device_key()) return -1;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device/sync/reading-progress", s_base_url);
+
+    char body[512];
+    snprintf(body, sizeof(body),
+        "{\"bookKey\":\"%s\",\"signature\":%u,\"currentPage\":%d,"
+        "\"totalPages\":%d,\"fontLevel\":%d,\"readMinutes\":%d}",
+        book_key, signature, current_page, total_pages, font_level, read_minutes);
+
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 15000);
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    set_common_headers(client);
+    esp_http_client_set_post_field(client, body, strlen(body));
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err == ESP_OK && status == 200) {
+        LOG_I("reading-progress pushed: %s p=%d/%d", book_key, current_page, total_pages);
+        return 0;
+    }
+    if (err == ESP_OK && status == 401) return SYNC_ERR_AUTH;
+    if (err == ESP_OK && status == 404) return SYNC_ERR_DROP;
+    LOG_E("push reading-progress failed: %s status=%d", esp_err_to_name(err), status);
+    return -1;
+}
+
+/* 书签全量同步：POST /api/device/sync/bookmarks */
+int sync_push_bookmarks(const char *book_key, uint32_t signature,
+    const sync_bookmark_item_t *items, int count)
+{
+    if (!book_key || !sync_has_device_key()) return -1;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device/sync/bookmarks", s_base_url);
+
+    /* 构造 JSON body（cJSON 动态构建） */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "bookKey", book_key);
+    cJSON_AddNumberToObject(root, "signature", signature);
+    cJSON *arr = cJSON_AddArrayToObject(root, "bookmarks");
+    for (int i = 0; i < count; i++) {
+        cJSON *bm = cJSON_CreateObject();
+        cJSON_AddNumberToObject(bm, "page", items[i].page);
+        cJSON_AddNumberToObject(bm, "byteOffset", items[i].byte_offset);
+        cJSON_AddStringToObject(bm, "note", items[i].note);
+        cJSON_AddItemToArray(arr, bm);
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) return -1;
+
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 15000);
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    set_common_headers(client);
+    esp_http_client_set_post_field(client, json, strlen(json));
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    free(json);
+
+    if (err == ESP_OK && status == 200) {
+        LOG_I("bookmarks pushed: %s count=%d", book_key, count);
+        return 0;
+    }
+    if (err == ESP_OK && status == 401) return SYNC_ERR_AUTH;
+    if (err == ESP_OK && status == 404) return SYNC_ERR_DROP;
+    LOG_E("push bookmarks failed: %s status=%d", esp_err_to_name(err), status);
+    return -1;
+}
+
+/* 拉取云端书籍列表：GET /api/device/books */
+int sync_pull_book_list(char *out_buf, int buf_size)
+{
+    if (!out_buf || buf_size <= 0 || !sync_has_device_key()) return -1;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device/books", s_base_url);
+
+    recv_ctx_t ctx = { .buf = out_buf, .buf_size = buf_size, .offset = 0 };
+    s_pull_ctx = &ctx;
+
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 15000);
+    cfg.event_handler = pull_event_handler;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_set_method(client, HTTP_METHOD_GET);
+    set_common_headers(client);
+
+    esp_err_t err = esp_http_client_perform(client);
+    s_pull_ctx = NULL;
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err == ESP_OK && status == 200 && ctx.offset > 0) {
+        out_buf[ctx.offset] = '\0';
+        LOG_I("book list pulled: %d bytes", ctx.offset);
+        return 0;
+    }
+    if (err == ESP_OK && status == 401) return SYNC_ERR_AUTH;
+    LOG_E("pull book list failed: %s status=%d", esp_err_to_name(err), status);
+    return -1;
+}
+
+/* 下载书籍文件：GET /api/device/books/{bookKey}/download → save_path */
+int sync_download_book(const char *book_key, const char *save_path)
+{
+    if (!book_key || !save_path || !sync_has_device_key()) return -1;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/device/books/%s/download",
+             s_base_url, book_key);
+
+    /* 文件下载：用 esp_http_client 流式写文件 */
+    FILE *fp = fopen(save_path, "wb");
+    if (!fp) {
+        LOG_E("download: cannot open %s", save_path);
+        return -1;
+    }
+
+    esp_http_client_config_t cfg;
+    fill_cfg(&cfg, url, 30000);
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_set_method(client, HTTP_METHOD_GET);
+    set_common_headers(client);
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    int status = esp_http_client_get_status_code(client);
+    if (err != ESP_OK || status != 200) {
+        LOG_E("download open failed: %s status=%d", esp_err_to_name(err), status);
+        fclose(fp);
+        esp_http_client_cleanup(client);
+        remove(save_path);
+        return -1;
+    }
+
+    /* 读取响应体写文件 */
+    char dl_buf[1024];
+    int total = 0;
+    while (1) {
+        int r = esp_http_client_read(client, dl_buf, sizeof(dl_buf));
+        if (r <= 0) break;
+        fwrite(dl_buf, 1, r, fp);
+        total += r;
+    }
+    fclose(fp);
+    esp_http_client_cleanup(client);
+
+    if (total > 0) {
+        LOG_I("book downloaded: %s -> %s (%d bytes)", book_key, save_path, total);
+        return 0;
+    }
+    LOG_E("download empty: %s", book_key);
+    remove(save_path);
+    return -1;
+}

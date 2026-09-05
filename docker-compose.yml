@@ -95,12 +95,15 @@ services:
       # AI_CHAT_MODE.md §7.3；旧记名 bilingual-zh-en 为误，GitHub 404）
       Asr__Provider: "${ASR_PROVIDER:-none}"
       Asr__ModelDir: "${ASR_MODEL_DIR:-/data/sherpa/zipformer-en}"
+      # 阅读器后端（2026-09-05）：书籍文件存储目录
+      Books__Dir: "/data/books"
     ports:
       - "8080:8080"
     volumes:
       - piperdata:/data/piper
       - audiodata:/data/audio
       - sherpa:/data/sherpa
+      - booksdata:/data/books
 
   # ── Ollama 本地 LLM（M1 路径 B：AI 词库内容增强）──
   # 首次启动需拉模型：docker compose exec ollama ollama pull qwen2.5:7b
@@ -139,3 +142,4 @@ volumes:
   piperdata:
   sherpa:
   audiodata:
+  booksdata:
