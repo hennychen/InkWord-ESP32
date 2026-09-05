@@ -281,6 +281,29 @@ int epd_driver_init(void)
         LOG_I("panel '%s' selected (NVS override, build default '%s')",
               panel_id, EPD_PANEL_DEFAULT_ID);
 
+    /* 0.2 P3 desc 契约校验（2026-09-05）：全注册表开机过一遍（违规
+     *     LOG_W——未选中屏也暴露，新屏 desc 笔误首次任意屏启动即
+     *     现形，不必换屏烧录才能发现）；另查注册名唯一性（strcmp
+     *     主键查表前提）。选中面板违规 fail-fast（desc 违规属构建
+     *     期错误，拒绝带病初始化）。纯字段校验 ~10 屏微秒级 */
+    {
+        char verr[80];
+        for (int i = 0; i < epd_panel_registry_count(); i++) {
+            const epd_panel_desc_t *rd = epd_panel_at(i);
+            if (epd_panel_desc_check(rd, verr, sizeof(verr)) != 0)
+                LOG_W("registry[%d] '%s' desc contract: %s",
+                      i, rd->name, verr);
+            for (int j = i + 1; j < epd_panel_registry_count(); j++)
+                if (strcmp(epd_panel_at(j)->name, rd->name) == 0)
+                    LOG_W("registry[%d]/[%d] duplicate name '%s'",
+                          i, j, rd->name);
+        }
+        if (epd_panel_desc_check(s_panel, verr, sizeof(verr)) != 0) {
+            LOG_E("selected panel '%s' desc contract: %s", panel_id, verr);
+            return -1;
+        }
+    }
+
     /* 0.5 帧一致序列互斥锁（T0.1）：先于首次刷新创建（epd_clear_screen
      * 在 init 返回后即被 main 调用）；此后所有 ops 刷新序列均持锁 */
     if (!s_epd_lock) s_epd_lock = xSemaphoreCreateMutex();

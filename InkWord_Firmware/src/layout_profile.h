@@ -40,12 +40,28 @@ extern "C" {
 typedef enum {
     LAYOUT_TINY = 0,    /**< 短边 <140px：2.13" 122x250 / 2.9" 128x296 竖屏 */
     LAYOUT_SMALL,       /**< 140~199px：2.7" 264x176 */
-    LAYOUT_MID,         /**< 200~319px：3.7" 416x240 / 4.2" 400x300 */
+    LAYOUT_MID,         /**< 200~319px：3.7" 416x240 / 4.2" 400x300 / 3.1" 240x320 竖 */
     LAYOUT_LARGE,       /**< >=320px：7.5" 800x480 */
 } layout_kind_t;
 
+typedef enum {
+    LAYOUT_FORM_LANDSCAPE = 0,  /**< 横屏（gfx w>h）：416x240 / 400x300 / 264x176 */
+    LAYOUT_FORM_PORTRAIT,       /**< 竖屏（gfx h>w）：122x250 / 128x296 / 240x320 */
+    LAYOUT_FORM_SQUARE,         /**< 方屏（w==h）：如 2.66" 152x152，未接入 */
+} layout_form_t;
+/* 形态轴（P2，2026-09-05）：档位只按短边分档，同档内横/竖/方形态
+ * 排版决策（正文分栏、行宽、图标横竖、双栏列表）不同 —— 3.1" 屏
+ * （gfx 240x320 竖）与 4.2"/3.7"（横）同落 MID 档为首个共存案例。
+ * 消费方统一读 form 字段，禁止再散落 h>w 手写比较（T1.5 收敛
+ * 三元宏同理）；竖屏 MID 字号/几何参数待 3.1" 真机校准，若与
+ * 横屏基线差异大再拆竖屏专属条目（k_profiles 表按 kind 一维，
+ * form 是运行期覆盖字段而非独立档位，避免 4×3 稀疏矩阵） */
+
 typedef struct {
     layout_kind_t kind;     /**< 档位（调试/日志用） */
+    layout_form_t form;     /**< 形态（get() 运行期按 gfx 宽高填充，
+                              * 表值恒 LANDSCAPE；同档横竖共存判据，
+                              * 见 layout_form_t 注释） */
     int quote_level;        /**< 大字场景字库级（引文/占位提示） */
     int reader_level;       /**< 阅读正文默认字库级（NVS miss 时） */
     /* ---- T1.5 几何参数（三元宏取值原样搬运；字段注释标注源宏，

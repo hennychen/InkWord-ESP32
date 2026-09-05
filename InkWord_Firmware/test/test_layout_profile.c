@@ -6,7 +6,7 @@
  * 依赖 epd_gfx_width/height 在本文件提供桩（stubs/epd_driver.h 声明）。
  * 档位首调缓存单次初始化，用例间经 layout_profile_test_reset() 清
  * 缓存重新分派。覆盖：短边阈值边界 / 旋转无关 / narrow_tiny 特判 /
- * 缓存指针稳定 / 四档字段健全性。
+ * 缓存指针稳定 / 四档字段健全性 / form 形态轴（P2）。
  */
 #include <stdio.h>
 #include <unity.h>
@@ -58,6 +58,18 @@ void test_layout_narrow_tiny(void)
     TEST_ASSERT_EQUAL_INT(1, dispatch(122, 250)->narrow_tiny);
     TEST_ASSERT_EQUAL_INT(0, dispatch(128, 296)->narrow_tiny);
     TEST_ASSERT_EQUAL_INT(0, dispatch(176, 264)->narrow_tiny);
+}
+
+/* 形态轴（P2，2026-09-05）：同档横竖共存判据 —— MID 档 3.1" 竖
+ * （240x320）与 4.2"/3.7" 横（400x300/416x240）同档不同形态；
+ * 消费方读 form 勿再散落 h>w 手写比较（T1.5 收敛同理） */
+void test_layout_form_axis(void)
+{
+    TEST_ASSERT_EQUAL(LAYOUT_FORM_PORTRAIT,  dispatch(122, 250)->form);  /* 2.13" 竖 TINY */
+    TEST_ASSERT_EQUAL(LAYOUT_FORM_PORTRAIT,  dispatch(240, 320)->form);  /* 3.1" 竖 MID（首个同档共存） */
+    TEST_ASSERT_EQUAL(LAYOUT_FORM_LANDSCAPE, dispatch(416, 240)->form);  /* 3.7" 横 MID */
+    TEST_ASSERT_EQUAL(LAYOUT_FORM_LANDSCAPE, dispatch(400, 300)->form);  /* 4.2" 横 MID */
+    TEST_ASSERT_EQUAL(LAYOUT_FORM_SQUARE,    dispatch(152, 152)->form);  /* 方屏预留（2.66" 类） */
 }
 
 /* 惰性缓存：同尺寸两次调用返回同一指针（调用方持引用跨次有效） */

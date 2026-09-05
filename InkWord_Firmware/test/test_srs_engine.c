@@ -146,6 +146,7 @@ extern void test_lan_v2_header_rejections(void);
 extern void test_layout_dispatch_boundaries(void);
 extern void test_layout_rotation_invariant(void);
 extern void test_layout_narrow_tiny(void);
+extern void test_layout_form_axis(void);
 extern void test_layout_cached_pointer_stable(void);
 extern void test_layout_profile_sanity_all_kinds(void);
 
@@ -258,6 +259,7 @@ int main(void)
     RUN_TEST(test_layout_dispatch_boundaries);
     RUN_TEST(test_layout_rotation_invariant);
     RUN_TEST(test_layout_narrow_tiny);
+    RUN_TEST(test_layout_form_axis);
     RUN_TEST(test_layout_cached_pointer_stable);
     RUN_TEST(test_layout_profile_sanity_all_kinds);
     return UNITY_END();

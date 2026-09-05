@@ -140,6 +140,22 @@ int epd_panel_registry_count(void);
  */
 const epd_panel_desc_t *epd_panel_at(int idx);
 
+/**
+ * @brief 面板描述符契约校验（P3，2026-09-05）。
+ *
+ * 字段间约束静态化（此前靠人工 review）：几何范围/帧预算/色彩平面
+ * 匹配/调色板掩码/时序下限/ops 必填项。epd_driver_init 开机对全
+ * 注册表跑一遍（违规 LOG_W，未选中屏也暴露），选中面板额外
+ * fail-fast（desc 违规属构建期错误，拒绝带病初始化）。纯函数无
+ * 硬件依赖，新屏接入后首个启动即自检 desc 笔误。
+ *
+ * @param d 待校验描述符（NULL 视为违规）。
+ * @param err 违规描述输出缓冲（可 NULL：仅判成败）。
+ * @param err_len err 容量（截断安全）。
+ * @return 0 契约满足；-1 违规（err 填首个命中项）。
+ */
+int epd_panel_desc_check(const epd_panel_desc_t *d, char *err, size_t err_len);
+
 #ifdef __cplusplus
 }
 #endif

@@ -18,83 +18,19 @@
 
 #include <Arduino.h>
 #include "../GxEPD2_374_DEPG0370.h"
+#include "uc8253_ops.h"   /* P1-b①：族通用 ops 宏（序列语义/调优史见该头） */
 
 /* 前置声明：ops 实现引用 desc 几何字段（write_full 全屏参数） */
 extern const epd_panel_desc_t g_panel_depg0370;
 
 /* epd2 层驱动对象（epd2 直驱，不用 GxEPD2_BW 显示层）—— 全工程唯一样例
- * 化点，自 epd_driver.cpp 迁入（Phase 1，行为不变） */
+ * 化点，自 epd_driver.cpp 迁入（Phase 1，行为不变）。
+ * 六个 ops 函数经 UC8253_DEFINE_OPS 宏展开（P1-b①，2026-09-05：与
+ * 3.1" 屏逐字等价的包装去重，函数名/序列字节不变） */
 static GxEPD2_374_DEPG0370 s_epd2(
     EPD_CS_PIN, EPD_DC_PIN, EPD_RESET_PIN, EPD_BUSY_PIN);
 
-static int panel_init(void)
-{
-    /* 原 epd_driver_init 内 s_epd2.init(0, true, 20, false) 原样迁入：
-     * 串口诊断关闭 / initial（复位+上电）/ 复位脉宽 20ms / 常规复位脚 */
-    s_epd2.init(0, true, 20, false);
-    return 0;
-}
-
-static int panel_full_refresh(const uint8_t *frame)
-{
-    /* demo 忠实版真全刷（Display_image_full_update）：硬复位（清局刷残留
-     * E0/E5/PSR2）→ full 初始化（PSR+CDI=0x97）→ 无窗口整屏写 0x13
-     * → 0x04/0x12/0x02。不能用 demoWriteDual 全屏参数代替 —— 窗口包裹的
-     * 全屏刷驱动力不足，真机实测留残影（2026-08-18） */
-    s_epd2.hwReset();
-    s_epd2.initFullDemo();
-    s_epd2.demoWriteFull(frame);
-    s_epd2.updateDemoPartial(); /* update 序列全刷/局刷同款（0x04/0x12/0x02） */
-    return 0;
-}
-
-static int panel_write_full(const uint8_t *frame)
-{
-    /* 竖屏原始帧直通全刷（epd_full_refresh / LAN 语义）：frame=NULL 清白。
-     * 注：本路径不维护 prev 帧一致性，调用方须强制下一次全刷
-     * （main.cpp ui_force_full_refresh_next() 已保证） */
-    if (frame) {
-        s_epd2.writeImageForFullRefresh(frame, 0, 0,
-                                        g_panel_depg0370.panel_w,
-                                        g_panel_depg0370.panel_h);
-    } else {
-        s_epd2.writeScreenBuffer(0xFF);
-    }
-    s_epd2.refresh(false); /* 全刷 */
-    s_epd2.powerOff();
-    return 0;
-}
-
-static int panel_partial(const uint8_t *prev, const uint8_t *new_, uint8_t passes)
-{
-    /* Plan B：无窗口整屏双 RAM 局刷（2026-08-20 取代窗口路径）：
-     * 不发 0x91/0x90，整屏写 0x10 旧帧 + 0x13 新帧，COG 全屏差分驱动
-     * 变化像素、跳过不变像素。窗口模式（demoWriteDual）三组参数实测均
-     * 不能干净刷白（0x1f 留浅影 / 0x0d 无深睡不消失 / +深睡仍遮盖），
-     * 与 GxEPD2「多数 UC 面板禁用 partial window」结论一致，弃用；
-     * 代价：每次传整屏 12KB（SPI @20MHz ≈ 6ms，可忽略）。
-     * passes 双刷：单次翻转不彻底时第二次 0x12 再驱动一遍；
-     * 局刷自身无残影，全刷降为低频深度保养（standby 混合策略）。
-     *
-     * 单平面写（只写 0x13 省 ≈5ms）已实验证伪（2026-08-21）：0x12 后
-     * COG 不自动 new→old，差分基准落后一帧 → 连续局刷残迹；
-     * 0x10 必须每次显式重写 */
-    s_epd2.hwReset();          /* 每次局刷前硬件复位，COG 状态归零 */
-    s_epd2.initPartialDemo();
-    s_epd2.demoWriteDualNoWindow(prev, new_);
-    s_epd2.updateDemoPartial(passes);
-    return 0;
-}
-
-static void panel_power_off(void)
-{
-    s_epd2.powerOff(); /* 0x02 关高压 rails（VCI 3.3V 保持供电） */
-}
-
-static void panel_deep_sleep(void)
-{
-    s_epd2.hibernate(); /* 0x02 下电 + 0x07/0xA5 深睡，可被硬件复位唤醒 */
-}
+UC8253_DEFINE_OPS(s_epd2, g_panel_depg0370)
 
 /* —— desc 注册（首个面板单元，字段值实证见各注释）——
  * 时序取 GxEPD2_374_DEPG0370.h L34-37 静态属性（power_on 50 / power_off
