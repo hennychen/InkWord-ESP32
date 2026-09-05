@@ -161,7 +161,8 @@ static int do_refresh(const uint8_t *frame)
 
     /* 标准全刷序列：0x22/0xF7 → 0x20
      * （0xD7 快速全刷在本屏正式驱动中导致纯黑屏，探针 bitbang 虽通过
-     * 但 HW SPI 连续刷新不兼容；0xF7 = 3861ms 稳定可靠） */
+     * 但 HW SPI 连续刷新不兼容；0xF7 = 3861ms 稳定可靠；
+     * 0xF5 Partial-Update 测试：能显示但速度相同 ~3.5s，OTP 无独立快刷波形） */
     bus_cmd(0x22);
     bus_dat(0xF7);
     bus_cmd(0x20);
