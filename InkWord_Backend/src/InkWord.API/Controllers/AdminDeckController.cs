@@ -2,7 +2,7 @@ using System.Text;
 using Hangfire;
 using InkWord.API.DTOs;
 using InkWord.Core.Common;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using InkWord.Jobs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -18,21 +18,21 @@ namespace InkWord.API.Controllers;
 [Authorize(Roles = "Admin,Operator")]
 public class AdminDeckController : ControllerBase
 {
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
 
-    public AdminDeckController(AppDbContext db) => _db = db;
+    public AdminDeckController(IUnitOfWork uow) => _uow = uow;
 
     /// <summary>卡组列表（T5.4：AI 生成弹窗下拉数据源；含条目计数）</summary>
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct)
     {
-        var decks = await _db.Decks.AsNoTracking()
+        var decks = await _uow.Db.Decks.AsNoTracking()
             .Where(d => !d.IsDeleted)
             .OrderBy(d => d.Code)
             .Select(d => new
             {
                 d.Id, d.Code, d.Name, d.PayloadType, d.SubjectId,
-                ItemCount = _db.Words.Count(w => w.DeckId == d.Id && !w.Archived),
+                ItemCount = _uow.Db.Words.Count(w => w.DeckId == d.Id && !w.Archived),
             })
             .ToListAsync(ct);
         return Ok(ApiResponse<object>.Ok(decks));
@@ -62,13 +62,13 @@ public class AdminDeckController : ControllerBase
     [HttpGet("{code}/charset")]
     public async Task<IActionResult> ExportCharset(string code, CancellationToken ct)
     {
-        var deck = await _db.Decks.AsNoTracking()
+        var deck = await _uow.Db.Decks.AsNoTracking()
             .FirstOrDefaultAsync(d => d.Code == code, ct);
         if (deck == null)
             return NotFound(ApiResponse.Fail(404, $"deck '{code}' not found"));
 
         // Word 侧纯 Id 关联（T4.1 三表 Item 混合模型不建导航），显式按 DeckId 过滤
-        var words = await _db.Words.AsNoTracking()
+        var words = await _uow.Db.Words.AsNoTracking()
             .Where(w => w.DeckId == deck.Id && !w.IsDeleted)
             .Select(w => new
             {

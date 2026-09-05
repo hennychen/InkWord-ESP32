@@ -67,7 +67,8 @@ public class SyncMasterTests
     {
         var ctrl = new DeviceController(null!, null!, repo, null!,
             new SrsService(new FsrsService(), new ConfigurationBuilder().Build()),
-            null!, null!, null!, null!, null!, null!);
+            null!, null!, null!, null!, null!, null!,
+            null!, null!, null!, new ConfigurationBuilder().Build());
         var dev = new Device { Id = Guid.NewGuid() };
         var http = new DefaultHttpContext();
         http.Items["Device"] = dev;

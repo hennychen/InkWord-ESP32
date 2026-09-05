@@ -1,6 +1,6 @@
 using System.Security.Claims;
 using InkWord.Core.Common;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -24,9 +24,9 @@ namespace InkWord.API.Controllers;
 [Authorize(Roles = "learner")]
 public class MyDeviceController : ControllerBase
 {
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
 
-    public MyDeviceController(AppDbContext db) => _db = db;
+    public MyDeviceController(IUnitOfWork uow) => _uow = uow;
 
     public record BindReq(string Mac);
     public record DeviceDto(Guid Id, string Name, string Mac, string FirmwareVersion,
@@ -45,7 +45,7 @@ public class MyDeviceController : ControllerBase
     public async Task<IActionResult> List(CancellationToken ct)
     {
         var accountId = AccountId;
-        var devices = await _db.Devices.AsNoTracking()
+        var devices = await _uow.Db.Devices.AsNoTracking()
             .Where(d => d.UserId == accountId)
             .OrderByDescending(d => d.LastHeartbeat)
             .ToListAsync(ct);
@@ -53,7 +53,7 @@ public class MyDeviceController : ControllerBase
             return Ok(ApiResponse<List<DeviceDto>>.Ok([]));
 
         var ids = devices.Select(d => d.Id).ToList();
-        var counts = await _db.LearningRecords.AsNoTracking()
+        var counts = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(lr => ids.Contains(lr.DeviceId))
             .GroupBy(lr => lr.DeviceId)
             .ToDictionaryAsync(g => g.Key, g => g.Count(), ct);
@@ -75,7 +75,7 @@ public class MyDeviceController : ControllerBase
         if (mac.Length is < 12 or > 32)
             return BadRequest(ApiResponse.Fail(400, "mac 无效（12 位十六进制）"));
 
-        var device = await _db.Devices.FirstOrDefaultAsync(d => d.MacAddress == mac, ct);
+        var device = await _uow.Db.Devices.FirstOrDefaultAsync(d => d.MacAddress == mac, ct);
         if (device == null)
             return NotFound(ApiResponse.Fail(404, "设备未注册（请先让设备联网完成注册）"));
 
@@ -88,7 +88,7 @@ public class MyDeviceController : ControllerBase
             device.UserId = accountId;
             // 换发：旧钥即刻失效（防旧绑定方残留控制），设备 401 自愈重注册
             device.ApiKey = DeviceController.GenerateApiKey();
-            await _db.SaveChangesAsync(ct);
+            await _uow.Db.SaveChangesAsync(ct);
         }
 
         return Ok(ApiResponse<DeviceDto>.Ok(new DeviceDto(
@@ -100,12 +100,12 @@ public class MyDeviceController : ControllerBase
     [HttpPost("devices/{id}/unbind")]
     public async Task<IActionResult> Unbind(Guid id, CancellationToken ct)
     {
-        var device = await _db.Devices.FirstOrDefaultAsync(d => d.Id == id, ct);
+        var device = await _uow.Db.Devices.FirstOrDefaultAsync(d => d.Id == id, ct);
         if (device == null || device.UserId != AccountId)
             return NotFound(ApiResponse.Fail(404, "设备不在你的账户"));
 
         device.UserId = null;
-        await _db.SaveChangesAsync(ct);
+        await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse.Ok());
     }
 
@@ -118,14 +118,14 @@ public class MyDeviceController : ControllerBase
         take = take <= 0 || take > 2000 ? 500 : take;
 
         var accountId = AccountId;
-        var deviceIds = await _db.Devices.AsNoTracking()
+        var deviceIds = await _uow.Db.Devices.AsNoTracking()
             .Where(d => d.UserId == accountId)
             .Select(d => d.Id)
             .ToListAsync(ct);
         if (deviceIds.Count == 0)
             return Ok(ApiResponse<List<AggregateDto>>.Ok([]));
 
-        var rows = await _db.LearningRecords.AsNoTracking()
+        var rows = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(lr => deviceIds.Contains(lr.DeviceId))
             .OrderByDescending(lr => lr.LastStudiedAt)
             .Select(lr => new LwsRow(lr.WordId, lr.DeviceId, lr.FsrsStability,

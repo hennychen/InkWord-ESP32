@@ -1,6 +1,6 @@
 using System.Security.Claims;
 using InkWord.Core.Common;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -31,9 +31,9 @@ public class MyDeckController : ControllerBase
     /// <summary>版式模板白名单（T4.3 card_layout 分派契约）</summary>
     private static readonly string[] PayloadTypes = ["word-card", "qa-card", "poem-card"];
 
-    private readonly AppDbContext _db;
+    private readonly IUnitOfWork _uow;
 
-    public MyDeckController(AppDbContext db) => _db = db;
+    public MyDeckController(IUnitOfWork uow) => _uow = uow;
 
     public record ItemReq(string Front, string Back, string? Phonetic, string? Example);
     public record CreateDeckReq(
@@ -64,14 +64,14 @@ public class MyDeckController : ControllerBase
     public async Task<IActionResult> List(CancellationToken ct)
     {
         var ownerId = OwnerId;
-        var decks = await _db.Decks.AsNoTracking()
+        var decks = await _uow.Db.Decks.AsNoTracking()
             .Where(d => d.OwnerId == ownerId)
             .OrderByDescending(d => d.UpdatedAt ?? d.CreatedAt)
             .ToListAsync(ct);
-        var subjects = await _db.Subjects.AsNoTracking()
+        var subjects = await _uow.Db.Subjects.AsNoTracking()
             .ToDictionaryAsync(s => s.Id, s => s.Code, ct);
 
-        var counts = await _db.Words.AsNoTracking()
+        var counts = await _uow.Db.Words.AsNoTracking()
             .Where(w => w.DeckId != null && !w.Archived)
             .GroupBy(w => w.DeckId!.Value)
             .ToDictionaryAsync(g => g.Key, g => g.Count(), ct);
@@ -88,7 +88,7 @@ public class MyDeckController : ControllerBase
     [HttpGet("subjects")]
     public async Task<IActionResult> Subjects(CancellationToken ct)
     {
-        var list = await _db.Subjects.AsNoTracking()
+        var list = await _uow.Db.Subjects.AsNoTracking()
             .OrderBy(s => s.SortOrder)
             .Select(s => new SubjectDto(s.Code, s.Name, s.SortOrder))
             .ToListAsync(ct);
@@ -102,7 +102,7 @@ public class MyDeckController : ControllerBase
         var deck = await FindOwned(id, ct);
         if (deck == null) return NotFound(ApiResponse.Fail(404, "卡组不存在"));
 
-        var items = await _db.Words.AsNoTracking()
+        var items = await _uow.Db.Words.AsNoTracking()
             .Where(w => w.DeckId == id && !w.Archived)
             .OrderBy(w => w.Version)
             .Select(w => new ItemDto(w.Id, w.Version, w.Front, w.Back, w.Phonetic, w.Example))
@@ -124,7 +124,7 @@ public class MyDeckController : ControllerBase
             return BadRequest(ApiResponse.Fail(400,
                 $"版式须为 {string.Join('/', PayloadTypes)}"));
 
-        var subject = await _db.Subjects.AsNoTracking()
+        var subject = await _uow.Db.Subjects.AsNoTracking()
             .FirstOrDefaultAsync(s => s.Code == req.SubjectCode, ct);
         if (subject == null)
             return BadRequest(ApiResponse.Fail(400, $"科目 '{req.SubjectCode}' 不存在"));
@@ -138,16 +138,16 @@ public class MyDeckController : ControllerBase
             Description = req.Description ?? "",
             OwnerId = OwnerId,
         };
-        _db.Decks.Add(deck);
+        _uow.Db.Decks.Add(deck);
 
         if (req.Items is { Count: > 0 })
         {
-            int v = await _db.Words.AsNoTracking()
+            int v = await _uow.Db.Words.AsNoTracking()
                 .MaxAsync(w => (int?)w.Version, ct) ?? 0;
             foreach (var item in req.Items)
-                _db.Words.Add(ToWord(deck, item, ++v));
+                _uow.Db.Words.Add(ToWord(deck, item, ++v));
         }
-        await _db.SaveChangesAsync(ct);
+        await _uow.Db.SaveChangesAsync(ct);
 
         return Ok(ApiResponse<DeckDto>.Ok(new DeckDto(
             deck.Id, deck.Code, deck.Name, deck.PayloadType, deck.Description,
@@ -166,7 +166,7 @@ public class MyDeckController : ControllerBase
             return BadRequest(ApiResponse.Fail(400, "卡组名 1~128 字符"));
         deck.Name = name;
         deck.Description = req.Description ?? deck.Description;
-        await _db.SaveChangesAsync(ct);
+        await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { deck.Id }));
     }
 
@@ -178,9 +178,9 @@ public class MyDeckController : ControllerBase
         var deck = await FindOwned(id, ct);
         if (deck == null) return NotFound(ApiResponse.Fail(404, "卡组不存在"));
 
-        int v = await _db.Words.AsNoTracking()
+        int v = await _uow.Db.Words.AsNoTracking()
             .MaxAsync(w => (int?)w.Version, ct) ?? 0;
-        var items = await _db.Words.Where(w => w.DeckId == id && !w.Archived).ToListAsync(ct);
+        var items = await _uow.Db.Words.Where(w => w.DeckId == id && !w.Archived).ToListAsync(ct);
         foreach (var w in items)
         {
             w.Archived = true;
@@ -190,7 +190,7 @@ public class MyDeckController : ControllerBase
         // 全局过滤器隐藏；此处裸 DbContext 直接置位）
         deck.IsDeleted = true;
         deck.UpdatedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { deck.Id }));
     }
 
@@ -206,7 +206,7 @@ public class MyDeckController : ControllerBase
 
         deck.IsShared = req.Shared;
         deck.SharedAt = req.Shared ? DateTime.UtcNow : null;
-        await _db.SaveChangesAsync(ct);
+        await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { deck.Id, deck.IsShared }));
     }
 
@@ -221,7 +221,7 @@ public class MyDeckController : ControllerBase
         if (page < 1) page = 1;
         if (pageSize is < 1 or > 50) pageSize = 20;
 
-        var query = _db.Decks.AsNoTracking()
+        var query = _uow.Db.Decks.AsNoTracking()
             .Where(d => d.IsShared && d.OwnerId != OwnerId);
         if (!string.IsNullOrWhiteSpace(q))
         {
@@ -230,7 +230,7 @@ public class MyDeckController : ControllerBase
         }
         if (!string.IsNullOrWhiteSpace(subject))
         {
-            var subjectId = await _db.Subjects.AsNoTracking()
+            var subjectId = await _uow.Db.Subjects.AsNoTracking()
                 .Where(s => s.Code == subject)
                 .Select(s => (Guid?)s.Id)
                 .FirstOrDefaultAsync(ct);
@@ -246,14 +246,14 @@ public class MyDeckController : ControllerBase
         var hasMore = page_.Count > pageSize;
         if (hasMore) page_.RemoveAt(page_.Count - 1);
 
-        var subjects = await _db.Subjects.AsNoTracking()
+        var subjects = await _uow.Db.Subjects.AsNoTracking()
             .ToDictionaryAsync(s => s.Id, s => s.Code, ct);
         var ownerIds = page_.Select(d => d.OwnerId!.Value).Distinct().ToList();
-        var owners = await _db.Accounts.AsNoTracking()
+        var owners = await _uow.Db.Accounts.AsNoTracking()
             .Where(a => ownerIds.Contains(a.Id))
             .ToDictionaryAsync(a => a.Id, a => a.DisplayName, ct);
         var deckIds = page_.Select(d => d.Id).ToList();
-        var counts = await _db.Words.AsNoTracking()
+        var counts = await _uow.Db.Words.AsNoTracking()
             .Where(w => w.DeckId != null && !w.Archived && deckIds.Contains(w.DeckId.Value))
             .GroupBy(w => w.DeckId!.Value)
             .ToDictionaryAsync(g => g.Key, g => g.Count(), ct);
@@ -273,7 +273,7 @@ public class MyDeckController : ControllerBase
     [HttpPost("decks/{id}/fork")]
     public async Task<IActionResult> Fork(Guid id, [FromBody] ForkReq? req, CancellationToken ct)
     {
-        var deck = await _db.Decks.AsNoTracking()
+        var deck = await _uow.Db.Decks.AsNoTracking()
             .FirstOrDefaultAsync(d => d.Id == id, ct);
         if (deck == null || (deck.OwnerId != null && !deck.IsShared))
             return NotFound(ApiResponse.Fail(404, "卡组不存在或未分享"));
@@ -294,21 +294,21 @@ public class MyDeckController : ControllerBase
             Description = deck.Description,
             OwnerId = OwnerId,
         };
-        _db.Decks.Add(copy);
+        _uow.Db.Decks.Add(copy);
 
-        var items = await _db.Words.AsNoTracking()
+        var items = await _uow.Db.Words.AsNoTracking()
             .Where(w => w.DeckId == id && !w.Archived)
             .OrderBy(w => w.Version)
             .ToListAsync(ct);
-        int v = await _db.Words.AsNoTracking()
+        int v = await _uow.Db.Words.AsNoTracking()
             .MaxAsync(w => (int?)w.Version, ct) ?? 0;
         foreach (var w in items)
-            _db.Words.Add(CopyWord(w, copy, ++v));
-        await _db.SaveChangesAsync(ct);
+            _uow.Db.Words.Add(CopyWord(w, copy, ++v));
+        await _uow.Db.SaveChangesAsync(ct);
 
         return Ok(ApiResponse<DeckDto>.Ok(new DeckDto(
             copy.Id, copy.Code, copy.Name, copy.PayloadType, copy.Description,
-            _db.Subjects.AsNoTracking()
+            _uow.Db.Subjects.AsNoTracking()
                 .Where(s => s.Id == copy.SubjectId)
                 .Select(s => s.Code)
                 .First(),
@@ -361,11 +361,11 @@ public class MyDeckController : ControllerBase
         if (req.Items.Count > 2000)
             return BadRequest(ApiResponse.Fail(400, "单批 ≤2000 条"));
 
-        int v = await _db.Words.AsNoTracking()
+        int v = await _uow.Db.Words.AsNoTracking()
             .MaxAsync(w => (int?)w.Version, ct) ?? 0;
         foreach (var item in req.Items)
-            _db.Words.Add(ToWord(deck, item, ++v));
-        await _db.SaveChangesAsync(ct);
+            _uow.Db.Words.Add(ToWord(deck, item, ++v));
+        await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { added = req.Items.Count }));
     }
 
@@ -377,13 +377,13 @@ public class MyDeckController : ControllerBase
         var deck = await FindOwned(id, ct);
         if (deck == null) return NotFound(ApiResponse.Fail(404, "卡组不存在"));
 
-        var w = await _db.Words.FirstOrDefaultAsync(
+        var w = await _uow.Db.Words.FirstOrDefaultAsync(
             x => x.Id == wordId && x.DeckId == id, ct);
         if (w == null) return NotFound(ApiResponse.Fail(404, "条目不存在"));
 
         FillWord(w, req.Front, req.Back, req.Phonetic, req.Example);
         w.Version++;
-        await _db.SaveChangesAsync(ct);
+        await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { w.Id }));
     }
 
@@ -394,13 +394,13 @@ public class MyDeckController : ControllerBase
         var deck = await FindOwned(id, ct);
         if (deck == null) return NotFound(ApiResponse.Fail(404, "卡组不存在"));
 
-        var w = await _db.Words.FirstOrDefaultAsync(
+        var w = await _uow.Db.Words.FirstOrDefaultAsync(
             x => x.Id == wordId && x.DeckId == id, ct);
         if (w == null) return NotFound(ApiResponse.Fail(404, "条目不存在"));
 
         w.Archived = true;
         w.Version++;
-        await _db.SaveChangesAsync(ct);
+        await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { w.Id }));
     }
 
@@ -413,7 +413,7 @@ public class MyDeckController : ControllerBase
 
     /// <summary>归属校验（OwnerId 匹配才可见可改）</summary>
     private Task<InkWord.Core.Entities.Deck?> FindOwned(Guid id, CancellationToken ct) =>
-        _db.Decks.FirstOrDefaultAsync(d => d.Id == id && d.OwnerId == OwnerId, ct);
+        _uow.Db.Decks.FirstOrDefaultAsync(d => d.Id == id && d.OwnerId == OwnerId, ct);
 
     /// <summary>Code 生成：Guid N 前 7 位（设备 deck id 约束同源），冲突重试</summary>
     internal async Task<string> NextCodeAsync(Guid subjectId, CancellationToken ct)
@@ -421,7 +421,7 @@ public class MyDeckController : ControllerBase
         for (var i = 0; i < 5; i++)
         {
             var code = "u" + Guid.NewGuid().ToString("N")[..6];
-            if (!await _db.Decks.AsNoTracking()
+            if (!await _uow.Db.Decks.AsNoTracking()
                     .AnyAsync(d => d.SubjectId == subjectId && d.Code == code, ct))
                 return code;
         }

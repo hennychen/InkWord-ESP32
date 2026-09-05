@@ -6,7 +6,7 @@ using InkWord.API.DTOs;
 using InkWord.Core.Common;
 using InkWord.Core.Entities;
 using InkWord.Core.Repositories;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using InkWord.Jobs;
 using InkWord.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -25,13 +25,13 @@ public class AdminWordController : ControllerBase
 {
     private readonly IWordRepository _wordRepo;
     private readonly AiContentService _ai;
-    private readonly AppDbContext _db; // T4.1：export v2 归属映射
+    private readonly IUnitOfWork _uow; // T4.1：export v2 归属映射
 
-    public AdminWordController(IWordRepository wordRepo, AiContentService ai, AppDbContext db)
+    public AdminWordController(IWordRepository wordRepo, AiContentService ai, IUnitOfWork uow)
     {
         _wordRepo = wordRepo;
         _ai = ai;
-        _db = db;
+        _uow = uow;
     }
 
     /// <summary>B-13 单条新增（含去重校验）</summary>
@@ -195,9 +195,9 @@ public class AdminWordController : ControllerBase
 
         // deck/subject 身份映射（表行数个位数；与 DeviceController.SyncWords
         // 同源逻辑）：Word.SubjectId/DeckId 直查，null/失配兜底 en/junior。
-        var deckById = await _db.Decks.AsNoTracking()
+        var deckById = await _uow.Db.Decks.AsNoTracking()
             .ToDictionaryAsync(d => d.Id, ct);
-        var subCodes = await _db.Subjects.AsNoTracking()
+        var subCodes = await _uow.Db.Subjects.AsNoTracking()
             .ToDictionaryAsync(s => s.Id, s => s.Code, ct);
 
         var payload = new
@@ -315,7 +315,7 @@ public class AdminWordController : ControllerBase
             // T5.4 卡组条目：按目标卡组版式映射写入正字段（AiContentService
             // 内部按版式分派 + 字节截断；poem 对齐 T4.4 云通道契约，word/qa
             // 对齐 T4.3）。req 携人工编辑终值（优先于建议原值）
-            var payloadType = await _db.Decks.AsNoTracking()
+            var payloadType = await _uow.Db.Decks.AsNoTracking()
                 .Where(d => d.Id == word.DeckId)
                 .Select(d => d.PayloadType)
                 .FirstOrDefaultAsync(ct);

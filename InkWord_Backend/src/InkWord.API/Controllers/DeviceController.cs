@@ -7,7 +7,7 @@ using InkWord.Core.Common;
 using InkWord.Core.Entities;
 using InkWord.Core.Repositories;
 using InkWord.Infrastructure.Cache;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using InkWord.Jobs;
 using InkWord.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -32,21 +32,31 @@ public class DeviceController : ControllerBase
     private readonly TtsService _tts;
     private readonly ChatService _chatSvc;
     private readonly VoiceSearchService _voice;
-    private readonly AppDbContext _db; // T4.1：v2 归属映射（deck/subject 身份）
+    private readonly IUnitOfWork _uow; // T4.1：v2 归属映射（deck/subject 身份）
     private readonly IRedisCache _cache; // A3：chat-review 周报 Redis 热路径
+    private readonly IBookRepository _bookRepo;         // 阅读器后端（2026-09-05）
+    private readonly IReadingProgressRepository _progressRepo;
+    private readonly IDeviceBookmarkRepository _bookmarkRepo;
+    private readonly string _bookDir;  // 书籍文件目录
 
     public DeviceController(IDeviceRepository deviceRepo, IWordRepository wordRepo,
         ILearningRecordRepository recordRepo, IOtaPackageRepository otaRepo,
         SrsService srs, PronunciationService pron, TtsService tts, ChatService chatSvc,
-        VoiceSearchService voice, AppDbContext db, IRedisCache cache)
+        VoiceSearchService voice, IUnitOfWork uow, IRedisCache cache,
+        IBookRepository bookRepo, IReadingProgressRepository progressRepo,
+        IDeviceBookmarkRepository bookmarkRepo, IConfiguration config)
     {
         _deviceRepo = deviceRepo; _wordRepo = wordRepo;
         _recordRepo = recordRepo; _otaRepo = otaRepo; _srs = srs; _pron = pron;
         _tts = tts;
         _chatSvc = chatSvc;
         _voice = voice;
-        _db = db;
+        _uow = uow;
         _cache = cache;
+        _bookRepo = bookRepo;
+        _progressRepo = progressRepo;
+        _bookmarkRepo = bookmarkRepo;
+        _bookDir = config["Books:Dir"] ?? "data/books";
     }
 
     /// <summary>B-08 首次注册：生成 ApiKey</summary>
@@ -92,10 +102,10 @@ public class DeviceController : ControllerBase
 
         // v2（T4.1 全科地基）双写：deck/subject 身份映射，与 export 端点同源。
         // 表行数极小（个位数），每请求全量拉取无压力。
-        var decks = await _db.Decks.AsNoTracking()
+        var decks = await _uow.Db.Decks.AsNoTracking()
             .Select(d => new { d.Id, d.Code, d.PayloadType, d.SubjectId }).ToListAsync(ct);
         var deckById = decks.ToDictionary(d => d.Id);
-        var subCodes = await _db.Subjects.AsNoTracking()
+        var subCodes = await _uow.Db.Subjects.AsNoTracking()
             .ToDictionaryAsync(s => s.Id, s => s.Code, ct);
 
         var dto = new SyncResp(newVersion, words.Select(w =>
@@ -430,7 +440,7 @@ public async Task<IActionResult> VoiceSearch(
             return Ok(ApiResponse<object>.Ok(
                 ToPayload(cached.WeekStart, cached.TurnCount, cached.PayloadJson)));
 
-        var latest = await _db.ChatReviews.AsNoTracking()
+        var latest = await _uow.Db.ChatReviews.AsNoTracking()
             .Where(r => r.DeviceId == device.Id)
             .OrderByDescending(r => r.WeekStart)
             .FirstOrDefaultAsync(ct);
@@ -462,5 +472,137 @@ public async Task<IActionResult> VoiceSearch(
         if (Version.TryParse(latest, out var l) && Version.TryParse(current, out var c))
             return l > c;
         return !string.Equals(latest, current, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ====== 阅读器后端同步端点（2026-09-05） ======
+
+    /// <summary>阅读进度上报（设备端退出阅读/翻页时推送）。
+    /// 幂等：同设备同书覆盖更新（Upsert）。离线时设备 NVS 是权威源，
+    /// 联网后批量推送，后端无条件接受最新值。</summary>
+    [HttpPost("sync/reading-progress")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public async Task<IActionResult> SyncReadingProgress([FromBody] ReadingProgressReq req, CancellationToken ct)
+    {
+        var device = (Device)HttpContext.Items["Device"]!;
+
+        // 按 BookKey 查找书籍（设备不持有 BookId，用 BookKey 做身份映射）
+        var book = await _bookRepo.GetByBookKeyAsync(req.BookKey, ct);
+        if (book == null)
+            return NotFound(ApiResponse.Fail(404, "book not found"));
+
+        var progress = await _progressRepo.GetAsync(device.Id, book.Id, ct);
+        if (progress == null)
+        {
+            progress = new ReadingProgress
+            {
+                DeviceId = device.Id,
+                BookId = book.Id,
+            };
+            await _progressRepo.AddAsync(progress, ct);
+        }
+
+        progress.CurrentPage = req.CurrentPage;
+        progress.TotalPages = req.TotalPages;
+        progress.FontLevel = req.FontLevel;
+        progress.Signature = req.Signature;
+        progress.LastReadAt = DateTime.UtcNow;
+        progress.TotalReadMinutes += req.ReadMinutes;
+        progress.UpdatedAt = DateTime.UtcNow;
+
+        await _progressRepo.SaveChangesAsync(ct);
+        return Ok(ApiResponse.Ok());
+    }
+
+    /// <summary>书签全量同步（设备端退出书签管理时推送该书全部书签）。
+    /// 幂等：先删后插（设备 NVS 是权威源，云端全量覆盖）。</summary>
+    [HttpPost("sync/bookmarks")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public async Task<IActionResult> SyncBookmarks([FromBody] BookmarkSyncReq req, CancellationToken ct)
+    {
+        var device = (Device)HttpContext.Items["Device"]!;
+
+        var book = await _bookRepo.GetByBookKeyAsync(req.BookKey, ct);
+        if (book == null)
+            return NotFound(ApiResponse.Fail(404, "book not found"));
+
+        // 先删旧书签
+        await _bookmarkRepo.DeleteByBookAsync(device.Id, book.Id, ct);
+
+        // 插入新书签（全量覆盖）
+        foreach (var item in req.Bookmarks)
+        {
+            await _bookmarkRepo.AddAsync(new DeviceBookmark
+            {
+                DeviceId = device.Id,
+                BookId = book.Id,
+                Page = item.Page,
+                ByteOffset = item.ByteOffset,
+                Note = item.Note ?? "",
+            }, ct);
+        }
+        await _bookmarkRepo.SaveChangesAsync(ct);
+        return Ok(ApiResponse.Ok());
+    }
+
+    /// <summary>拉取已发布书籍列表（设备端云端书架展示）。
+    /// 仅返回元数据（不含文件内容），设备端按 BookKey 与本地 SD 匹配。</summary>
+    [HttpGet("books")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public async Task<IActionResult> BookList(CancellationToken ct)
+    {
+        var books = await _bookRepo.GetPublishedAsync(ct);
+        var dtos = books.Select(b => new BookDto(
+            b.BookKey, b.Title, b.Author, b.Language, b.Tags,
+            b.FileSize, b.Format, b.Description, b.DownloadCount
+        )).ToList();
+        return Ok(ApiResponse<List<BookDto>>.Ok(dtos));
+    }
+
+    /// <summary>书籍文件下载（GET /api/device/books/{bookKey}/download）。
+    /// 返回 text/plain 文件内容，设备端保存到 SD /sdcard/books/。
+    /// 下载计数 +1（统计用）。</summary>
+    [HttpGet("books/{bookKey}/download")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public async Task<IActionResult> BookDownload(string bookKey, CancellationToken ct)
+    {
+        var book = await _bookRepo.GetByBookKeyAsync(bookKey, ct);
+        if (book == null || !book.Published)
+            return NotFound(ApiResponse.Fail(404, "book not found"));
+
+        var filePath = Path.Combine(_bookDir, $"{book.BookKey}.{book.Format}");
+        if (!System.IO.File.Exists(filePath))
+            return NotFound(ApiResponse.Fail(404, "book file missing"));
+
+        book.DownloadCount++;
+        await _bookRepo.SaveChangesAsync(ct);
+
+        return PhysicalFile(filePath, "text/plain; charset=utf-8", $"{book.Title}.{book.Format}");
+    }
+
+    /// <summary>查询当前设备全部阅读进度（设备端书架进度展示备用）。</summary>
+    [HttpGet("reading-progress")]
+    [ServiceFilter(typeof(DeviceAuthFilter))]
+    public async Task<IActionResult> MyReadingProgress(CancellationToken ct)
+    {
+        var device = (Device)HttpContext.Items["Device"]!;
+        var list = await _progressRepo.GetByDeviceAsync(device.Id, ct);
+
+        var items = new List<object>();
+        foreach (var p in list)
+        {
+            var book = await _bookRepo.GetByIdAsync(p.BookId, ct);
+            if (book == null) continue;
+            items.Add(new
+            {
+                bookKey = book.BookKey,
+                title = book.Title,
+                currentPage = p.CurrentPage,
+                totalPages = p.TotalPages,
+                progressPct = p.TotalPages > 0 ? (p.CurrentPage * 100 / p.TotalPages) : 0,
+                lastReadAt = p.LastReadAt,
+                totalReadMinutes = p.TotalReadMinutes,
+            });
+        }
+        return Ok(ApiResponse<object>.Ok(items));
     }
 }

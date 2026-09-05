@@ -1,6 +1,6 @@
 using InkWord.API.DTOs;
 using InkWord.Core.Common;
-using InkWord.Infrastructure.DbContext;
+using InkWord.Infrastructure.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -13,8 +13,8 @@ namespace InkWord.API.Controllers;
 [Authorize(Roles = "Admin,Operator")]
 public class AdminDashboardController : ControllerBase
 {
-    private readonly AppDbContext _db;
-    public AdminDashboardController(AppDbContext db) => _db = db;
+    private readonly IUnitOfWork _uow;
+    public AdminDashboardController(IUnitOfWork uow) => _uow = uow;
 
     [HttpGet("stats")]
     public async Task<IActionResult> Stats(CancellationToken ct)
@@ -22,16 +22,16 @@ public class AdminDashboardController : ControllerBase
         var now = DateTime.UtcNow;
         var todayStart = now.Date;
 
-        var totalWords = await _db.Words.AsNoTracking().CountAsync(ct);
-        var totalDevices = await _db.Devices.AsNoTracking().CountAsync(ct);
-        var onlineDevices = await _db.Devices.AsNoTracking()
+        var totalWords = await _uow.Db.Words.AsNoTracking().CountAsync(ct);
+        var totalDevices = await _uow.Db.Devices.AsNoTracking().CountAsync(ct);
+        var onlineDevices = await _uow.Db.Devices.AsNoTracking()
             .CountAsync(d => d.LastHeartbeat > now.AddMinutes(-5), ct);
-        var activeToday = await _db.LearningRecords.AsNoTracking()
+        var activeToday = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(r => r.LastStudiedAt >= todayStart)
             .Select(r => r.DeviceId).Distinct().CountAsync(ct);
 
         // SRS 等级分布
-        var srsDist = await _db.LearningRecords.AsNoTracking()
+        var srsDist = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(r => !r.Device!.IsDeleted)
             .GroupBy(r => r.SrsLevel)
             .Select(g => new SrsDistributionItem(g.Key, g.Count()))
@@ -39,7 +39,7 @@ public class AdminDashboardController : ControllerBase
 
         // 近 7 天日活（按学习记录）
         var weekStart = now.AddDays(-6).Date;
-        var dailyActive = await _db.LearningRecords.AsNoTracking()
+        var dailyActive = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(r => r.LastStudiedAt >= weekStart)
             .GroupBy(r => r.LastStudiedAt.Date)
             .Select(g => new DailyActiveItem(g.Key, g.Select(r => r.DeviceId).Distinct().Count()))
@@ -60,7 +60,7 @@ public class AdminDashboardController : ControllerBase
         var now = DateTime.UtcNow;
         var todayStart = now.Date;
 
-        var agg = await _db.LearningRecords.AsNoTracking()
+        var agg = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(r => r.LastStudiedAt >= todayStart)
             .GroupBy(_ => 1)
             .Select(g => new
@@ -93,9 +93,9 @@ public class AdminDashboardController : ControllerBase
         // 注意：GroupBy 后直接投影 record 再 OrderBy 会翻译失败
         // （EF Core 8 无法把 record 成员映射回 SUM 聚合列，2026-08-21 实测），
         // 故先投影匿名类型完成排序/Take，最后一步再构造 record。
-        var items = await _db.LearningRecords.AsNoTracking()
+        var items = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(r => r.ConsecutiveWrong > 0)
-            .Join(_db.Words.AsNoTracking(),
+            .Join(_uow.Db.Words.AsNoTracking(),
                   r => r.WordId, w => w.Id,
                   (r, w) => new { w.Text, w.Meaning, r.ConsecutiveWrong })
             .GroupBy(x => new { x.Text, x.Meaning })
@@ -110,9 +110,9 @@ public class AdminDashboardController : ControllerBase
             .Select(x => new WrongTopItem(x.Text, x.Meaning, x.WrongCount, x.Learners))
             .ToListAsync(ct);
 
-        var collected = await _db.LearningRecords.AsNoTracking()
+        var collected = await _uow.Db.LearningRecords.AsNoTracking()
             .CountAsync(r => r.IsCollected, ct);
-        var mastered = await _db.LearningRecords.AsNoTracking()
+        var mastered = await _uow.Db.LearningRecords.AsNoTracking()
             .CountAsync(r => r.IsMastered, ct);   // 墨封（2026-09-04）
 
         return Ok(ApiResponse<WrongTopResp>.Ok(new WrongTopResp(items, collected, mastered)));
@@ -126,7 +126,7 @@ public class AdminDashboardController : ControllerBase
     [HttpGet("srs-distribution")]
     public async Task<IActionResult> SrsDistribution(CancellationToken ct)
     {
-        var levels = await _db.LearningRecords.AsNoTracking()
+        var levels = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(r => !r.Device!.IsDeleted)
             .GroupBy(r => r.SrsLevel)
             .Select(g => new { Level = g.Key, Count = g.Count() })
@@ -158,7 +158,7 @@ public class AdminDashboardController : ControllerBase
         var week = now.AddDays(7);
         var month = now.AddDays(30);
 
-        var agg = await _db.LearningRecords.AsNoTracking()
+        var agg = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(r => !r.Device!.IsDeleted)
             .GroupBy(_ => 1)
             .Select(g => new
@@ -199,7 +199,7 @@ public class AdminDashboardController : ControllerBase
         var today = DateTime.UtcNow.Date;
         var start = today.AddDays(-(days - 1));
 
-        var byDate = await _db.LearningRecords.AsNoTracking()
+        var byDate = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(r => r.LastStudiedAt >= start)
             .GroupBy(r => r.LastStudiedAt.Date)
             .Select(g => new { Date = g.Key, Count = g.Select(r => r.DeviceId).Distinct().Count() })
@@ -225,16 +225,16 @@ public class AdminDashboardController : ControllerBase
         var now = DateTime.UtcNow;
         var todayStart = now.Date;
 
-        var totalBooks = await _db.Books.AsNoTracking().CountAsync(b => b.Published, ct);
-        var activeReaders = await _db.ReadingProgresses.AsNoTracking()
+        var totalBooks = await _uow.Db.Books.AsNoTracking().CountAsync(b => b.Published, ct);
+        var activeReaders = await _uow.Db.ReadingProgresses.AsNoTracking()
             .Where(p => p.LastReadAt >= todayStart)
             .Select(p => p.DeviceId).Distinct().CountAsync(ct);
-        var totalMinutes = await _db.ReadingProgresses.AsNoTracking()
+        var totalMinutes = await _uow.Db.ReadingProgresses.AsNoTracking()
             .Where(p => p.LastReadAt >= todayStart)
             .SumAsync(p => p.TotalReadMinutes, ct); // 一期简化：总量代替今日增量
 
         // 热门书籍 Top 10（按阅读设备数）
-        var popular = await _db.ReadingProgresses.AsNoTracking()
+        var popular = await _uow.Db.ReadingProgresses.AsNoTracking()
             .GroupBy(p => p.BookId)
             .Select(g => new
             {
@@ -244,13 +244,13 @@ public class AdminDashboardController : ControllerBase
             })
             .OrderByDescending(x => x.Readers)
             .Take(10)
-            .Join(_db.Books.AsNoTracking(), x => x.BookId, b => b.Id,
+            .Join(_uow.Db.Books.AsNoTracking(), x => x.BookId, b => b.Id,
                   (x, b) => new PopularBookItem(b.BookKey, b.Title, x.Readers, (int)Math.Round(x.AvgPage)))
             .ToListAsync(ct);
 
         // 近 7 天阅读时长趋势
         var weekStart = now.AddDays(-6).Date;
-        var dailyByDate = await _db.ReadingProgresses.AsNoTracking()
+        var dailyByDate = await _uow.Db.ReadingProgresses.AsNoTracking()
             .Where(p => p.LastReadAt >= weekStart)
             .GroupBy(p => p.LastReadAt.Date)
             .Select(g => new { Date = g.Key, Minutes = g.Sum(p => p.TotalReadMinutes), Readers = g.Select(p => p.DeviceId).Distinct().Count() })
@@ -272,9 +272,9 @@ public class AdminDashboardController : ControllerBase
     [HttpGet("device-reading/{deviceId:guid}")]
     public async Task<IActionResult> DeviceReading(Guid deviceId, CancellationToken ct)
     {
-        var list = await _db.ReadingProgresses.AsNoTracking()
+        var list = await _uow.Db.ReadingProgresses.AsNoTracking()
             .Where(p => p.DeviceId == deviceId)
-            .Join(_db.Books.AsNoTracking(), p => p.BookId, b => b.Id,
+            .Join(_uow.Db.Books.AsNoTracking(), p => p.BookId, b => b.Id,
                   (p, b) => new DeviceBookReadingItem(
                       b.BookKey, b.Title, p.CurrentPage, p.TotalPages,
                       p.TotalPages > 0 ? (p.CurrentPage * 100 / p.TotalPages) : 0,
