@@ -232,20 +232,22 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 
 | 面板 | 注册名 | 规格 | 控制器 | 驱动单元 | 刷新特性 | 状态 |
 |------|--------|------|--------|----------|----------|------|
-| DKE DEPG0370 | `depg0370_uc8253` | 3.7" 240×416 黑白 | UC8253 | [`panels/panel_depg0370_uc8253.cpp`](src/panels/panel_depg0370_uc8253.cpp) | 全刷 ~1.5s / 局刷 ~0.4s | ✅ 在用 |
-| Hink E042A13-A0 | `e042a13_ssd1619` | 4.2" 400×300 黑白红 | SSD1619 | [`panels/panel_e042a13_ssd1619.cpp`](src/panels/panel_e042a13_ssd1619.cpp) | 全刷 ~14.6s（三色物理下限，无局刷） | ✅ 真机验证 |
+| DKE DEPG0370 | `depg0370_uc8253` | 3.7" 240×416 黑白 | UC8253 | [`panels/panel_depg0370_uc8253.cpp`](src/panels/panel_depg0370_uc8253.cpp)（ops 经 [`panels/uc8253_ops.h`](src/panels/uc8253_ops.h) 族宏） | 全刷 ~1.5s / 局刷 ~0.4s | ✅ 在用 |
+| Hink E042A13-A0 三色 | `e042a13_ssd1619` | 4.2" 400×300 黑白红 | SSD1619 | [`panels/panel_e042a13_ssd1619.cpp`](src/panels/panel_e042a13_ssd1619.cpp) | 全刷 ~14.6s（三色物理下限，无局刷） | ✅ 真机验证 |
 | WEIFENG WF0270 | `wf0270_ssd1680` | 2.7" 264×176 黑白红（COG 竖屏 176×264 + rotation=1） | SSD1680 | [`panels/panel_wf0270_ssd1680.cpp`](src/panels/panel_wf0270_ssd1680.cpp) | 全刷 ~15s（同族估计，实测后回填），无局刷 | 🧪 待到货验证（22Pin） |
 | GDEW027C44 同族 | `gdew027c44_il91874` | 2.7" 264×176 黑白红（COG 竖屏 176×264 + rotation=1） | IL91874/EK79652 | [`panels/panel_gdew027c44_il91874.cpp`](src/panels/panel_gdew027c44_il91874.cpp) | 快刷 ~4.4s（E4 LUT 压缩，实测 4361ms）+ 每 8 次插 1 次官方深刷 ~14.7s 抗残影，无局刷；RAM 须逐字节独立 CS 事务（家族铁律） | ✅ 真机验证 |
-| Hink E042A13-A0 黑白版 | `e042a13bw_ssd1619` | 4.2" 400×300 黑白（LAYOUT_MID，UI 零改动即适配） | SSD1619（初判） | [`panels/panel_e042a13bw.cpp`](src/panels/panel_e042a13bw.cpp) | 待 bring-up 实测 | 🧪 骨架（屏在途，2026-08-23） |
-| WFT0290CZ10 | `wft0290_bw` | 2.9" 128×296 黑白竖屏（电子价签源，LAYOUT_TINY） | 待实测（UC8253/SSD1680 候选） | [`panels/panel_wft0290.cpp`](src/panels/panel_wft0290.cpp) | 待 bring-up 实测 | 🧪 骨架（屏在途，2026-08-23） |
-| OPM021EB | `opm021eb_bw` | 2.13" 122×250 黑白竖屏（电子标签，LAYOUT_TINY，当前最小屏） | SSD1680（疑似） | [`panels/panel_opm021eb.cpp`](src/panels/panel_opm021eb.cpp) | 待 bring-up 实测 | 🧪 骨架（屏在途，2026-08-23） |
+| Hink E042A13-A0 黑白版 | `e042a13bw_ssd1619` | 4.2" 400×300 黑白（LAYOUT_MID，UI 零改动即适配） | SSD1619 | [`panels/panel_e042a13bw.cpp`](src/panels/panel_e042a13bw.cpp) | 全刷 ~2.9s / 局刷 ~1.3s（两段式 + DMA，0x22/0xF7 实证） | ✅ 2026-08-30 真机验证 |
+| WFT0290CZ10 | `wft0290_bw` | 2.9" 128×296 黑白竖屏（电子价签源，LAYOUT_TINY） | UC8151D（三轮实锤，GDEW029T5D 同族） | [`panels/panel_wft0290.cpp`](src/panels/panel_wft0290.cpp) | 全刷 3.4s / REG LUT 局刷 0.9s 实测；TRES 修复 | ✅ 真机验证 |
+| OPM021EB | `opm021eb_bw` | 2.13" 122×250 黑白竖屏（电子标签，LAYOUT_TINY） | UC8151D（SSD1680 证伪改判，BUSY/0x2F 实锤） | [`panels/panel_opm021eb.cpp`](src/panels/panel_opm021eb.cpp) | 全刷 3.2s / 打断法快刷 0.65s（K_ABORT_MS=250 + 双写） | ✅ 真机验证 |
+| 3.1" 320×240 | `panel_310_uc8253` | 3.1" 320×240 黑白（COG 横屏 + rotation=1 → UI 240×320 竖屏，MID 档首个竖屏形态，消费 `form` 形态轴） | UC8253 | [`panels/panel_310_uc8253.cpp`](src/panels/panel_310_uc8253.cpp)（同族宏） | 规格全刷 3s / 局刷 0.5s（待实测回填） | 🧪 骨架（PSR 方向待真机标定，2026-09-05） |
+| HINK-E0213A31 | `hink_e0213a31_bw` | 2.13" 122×250 黑白竖屏（COG 128×250 原生 16B/行，右缘 6px 无绑定 UI 避让，LAYOUT_TINY；GxEPD2 B74 同规格） | SSD1680 | [`panels/panel_hink_e0213a31.cpp`](src/panels/panel_hink_e0213a31.cpp) | 快速全刷 0xD7 实测 1911ms（标准 3460ms 省 45%；OTP 无快刷局刷波形，全/局刷统一 0xD7） | 🧪 bring-up 进行中（P0 探针实测回填，2026-09-05） |
 
-> **骨架面板说明**（2026-08-23）：三块在途屏的几何/档位/UI 适配已就绪
-> （TINY 档：短边 <140px 竖屏，超紧凑头部学习页 + 16px 待机引文；
-> 400×300 黑白版归 MID 档零改动），但驱动序列未 bring-up——ops 为
-> fail-safe 桩（init 拒绝），对应 env 编译验证可用，烧录后屏无输出，
-> 按 §十六 SOP 真机 bring-up 回填后方可使用。TINY 屏配网走 AP 门户
-> （手机浏览器连 InkWord 热点），屏上键盘不适用。
+> **骨架/在途面板说明**（2026-09-05 更新）：10 屏注册表中 8 屏已真机
+> 验证；3.1" 屏（PSR 待标定）与 HINK-E0213A31（bring-up 进行中）
+> 几何/档位/UI 适配已就绪，序列按 §十六 SOP 回填 desc 即完成。WF0270
+> （22Pin）屏在途。TINY 屏配网走 AP 门户（手机浏览器连 InkWord 热点），
+> 屏上键盘不适用。新屏接入后开机即受 `epd_panel_desc_check()` 契约
+> 校验保护（全注册表自检，违规 LOG_W / 选中屏 fail-fast）。
 
 ### 切换屏幕（一条命令）
 
@@ -259,6 +261,10 @@ cd InkWord_Firmware
 ~/.platformio/penv/bin/pio run -e inkword-s3-gdew027c44 -t upload --upload-port /dev/cu.usbserial-0001
 # 切到 2.7" 三色屏（WF0270，22Pin FPC 需转接板，待到货）
 ~/.platformio/penv/bin/pio run -e inkword-s3-wf0270 -t upload --upload-port /dev/cu.usbserial-0001
+# 切到 4.2" 黑白屏（全刷 2.9s，比三色快 5 倍）
+~/.platformio/penv/bin/pio run -e inkword-s3-e042bw -t upload --upload-port /dev/cu.usbserial-0001
+# 切到 2.13" OPM021EB（TINY 档，打断法快刷）
+~/.platformio/penv/bin/pio run -e inkword-s3-opm021eb -t upload --upload-port /dev/cu.usbserial-0001
 ```
 
 VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `inkword-s3-e042` / `inkword-s3-gdew027c44` / `inkword-s3-wf0270` 后点 Upload 等效。

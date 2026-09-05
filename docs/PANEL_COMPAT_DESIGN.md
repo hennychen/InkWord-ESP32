@@ -332,6 +332,20 @@ const epd_panel_desc_t g_panel_depg0370 = {
 EPD_PANEL_REGISTER(g_panel_depg0370, "depg0370_uc8253")
 ```
 
+> **§5.3 兑现状态（2026-09-05）**：落地形态为 `epd_panel.c` 静态数组
+> `s_registry[]`（extern 声明 + 追加一行三步注册）而非链接器 section
+> 拼装——gc-sections 会回收无根引用的面板单元，静态数组是唯一可靠
+> 形态；统一固件 `inkword-s3` + NVS `set_panel` 运行期选屏已落地，面板
+> env 的 `-D EPD_PANEL_DEFAULT_ID` 仅作 bring-up 钉默认便利。注册表现
+> 10 屏。新增两道防护：① `epd_panel_desc_check()` 契约校验器（14 项：
+> name/几何范围/帧缓冲 ≤512KB/rotation≤3/color_mode↔plane_count 匹配/
+> palette 掩码/dpi≠0/busy 参数/passes/ops 必填/partial_enabled↔partial
+> ops 一致性），`epd_driver` init 时全注册表自检（违规 LOG_W）+ 选中屏
+> fail-fast + 注册名唯一性；② UC8253 族 ops 宏模板
+> `panels/uc8253_ops.h`（DEPG0370 与 3.1" 两屏合用，序列字节逐字保留，
+> 减重复 ~120 行；GxEPD2 两类合并经预研否定——序列字节实质差异，前置
+> 3.1" 序列定稿 + 黄金帧基线，详见宏头注释）。
+
 ---
 
 ## 六、L3 GFX 抽象层泛化
@@ -487,6 +501,13 @@ voice_search/settings_ui 九文件全部查表；字段值 = 迁移前各文件�
 行距类运行时派生宏（依赖用户字号设置者）不表化，保留各文件派生式；
 LARGE 档几何字段为预估值，「7.5" 上机校准」。上例 `layout_study_t`
 为设计期映射样例，落地形态以 layout_profile.h 为准。
+
+**P2 形态轴兑现（2026-09-05）**：档位表新增运行期字段 `form`
+（`LAYOUT_FORM_LANDSCAPE / PORTRAIT / SQUARE`，`get()` 按 gfx 宽高比
+填充，表值恒 LANDSCAPE）——起因：MID 档将共存 416x240 横 / 400x300
+横 / 240x320 竖（3.1" COG）三形态，单维短边分档无法区分。首个竖屏
+MID 消费方待 3.1" 真机校准参数（档位字段已就绪，UI 侧查 form 即可
+分支）。测试：test_layout_form_axis 用例覆盖五屏形态。
 
 ### 8.2 Phase 4 改动面三分类清单
 
