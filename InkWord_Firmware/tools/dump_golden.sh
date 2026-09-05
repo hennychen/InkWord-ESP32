@@ -33,6 +33,7 @@ set -euo pipefail
 FW_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PIO_PY="$HOME/.platformio/penv/bin/python"
 INI="$FW_DIR/platformio.ini"
+MON_TIMEOUT_S=420   # 捕获超时：三色屏多页全刷 14.6s/页较慢，给足余量
 
 PANEL="${1:-}"
 DUMP="${2:-/tmp/golden_${PANEL:-x}.txt}"
@@ -84,19 +85,47 @@ PYEOF
 echo "==> [2/4] 构建 + 烧录 inkword-s3-demo → $PORT"
 "$PIO_PY" -m platformio run -e inkword-s3-demo -t upload --upload-port "$PORT"
 
-echo "==> [3/4] 串口捕获（等待 selftest done，最长 420s）→ $DUMP"
+echo "==> [3/4] 串口捕获（等待 selftest done，最长 ${MON_TIMEOUT_S}s）→ $DUMP"
 rm -f "$DUMP"
-"$PIO_PY" -m platformio device monitor --port "$PORT" >"$DUMP" 2>&1 &
-MON_PID=$!
-DONE=0
-for _ in $(seq 1 84); do
-    if grep -q "selftest done" "$DUMP" 2>/dev/null; then DONE=1; break; fi
-    if ! kill -0 "$MON_PID" 2>/dev/null; then echo "警告: monitor 提前退出" >&2; break; fi
-    sleep 5
-done
-sleep 2   # 尾部 flush
-kill "$MON_PID" 2>/dev/null || true
-wait "$MON_PID" 2>/dev/null || true
+# 捕获用 pyserial 直读而非 pio device monitor：无 TTY 环境（重定向/SSH/
+# CI）下 pio monitor 的 termios 调用会报 (19, Operation not supported)；
+# 且 CP2102 类 USB-UART 打开串口即经 DTR/RTS 触发板复位，日志完整性
+# 有保障（本板实测）。“selftest done” 检查全量 buffer：完成行是含中文
+# 的 ~150 字节长行，标记在行中部，固定尾部窗口会将其切掉漏检
+# （2026-09-05 HINK 首采实锄，日志总量 <1MB 全量检查无压力）。
+MON_RC=0
+"$PIO_PY" - "$PORT" "$DUMP" "$MON_TIMEOUT_S" <<'PYEOF' || MON_RC=$?
+import serial, sys, time
+
+port, dump, timeout_s = sys.argv[1], sys.argv[2], int(sys.argv[3])
+s = serial.Serial(port, 115200, timeout=1)
+t0 = time.time()
+done = False
+buf = b""
+with open(dump, "wb") as f:
+    while time.time() - t0 < timeout_s:
+        n = s.inWaiting()
+        if n:
+            data = s.read(n)
+            f.write(data)
+            f.flush()
+            buf += data
+            if b"selftest done" in buf:
+                done = True
+                t_end = time.time() + 2   # 尾部 flush
+                while time.time() < t_end:
+                    n = s.inWaiting()
+                    if n:
+                        f.write(s.read(n))
+                        f.flush()
+                break
+        else:
+            time.sleep(0.2)
+s.close()
+sys.exit(0 if done else 3)
+PYEOF
+DONE=$([ "$MON_RC" = 0 ] && echo 1 || echo 0)
+[ "$MON_RC" != 0 ] && echo "警告: 未见 selftest done（monitor rc=$MON_RC）" >&2
 
 echo "==> [4/4] 校验 dump"
 BEGINS=$(grep -c "^\[GOLDEN\] BEGIN" "$DUMP" || true)
