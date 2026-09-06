@@ -136,6 +136,14 @@ int deck_manager_active_index(void)
     return 0;                           /* 未记录/失配回默认 */
 }
 
+int deck_manager_find_index(const char *id)
+{
+    const char *target = (id && id[0]) ? id : "";
+    for (int i = 0; i < s_deck_n; i++)
+        if (strcmp(s_decks[i].id, target) == 0) return i;
+    return -1;
+}
+
 const char *deck_manager_active_name(void)
 {
     return s_decks[deck_manager_active_index()].name;

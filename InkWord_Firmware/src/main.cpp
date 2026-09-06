@@ -91,6 +91,7 @@
 #include "book_shelf.h"  /* 2026-09-05 阅读器增强：我的书架 */
 #include "reader_menu.h"  /* 2026-09-05 阅读器增强：阅读器菜单 */
 #include "bookmark_mgr.h" /* 2026-09-05 阅读器增强：书签管理 */
+#include "schedule.h"     /* v1.6：课程表（周计划编排与自动激活） */
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -134,6 +135,10 @@ extern "C" bool deck_flow_switch(int idx)
         return false;
     }
     if (deck_manager_switch(idx) != 0) return false;
+
+    /* v1.6 课程表：手动切组通知（自动激活路径调 deck_flow_switch 时
+     * last_slot>=0 尚未置位，不会误标 manual_override） */
+    schedule_on_manual_switch();
 
     if (load_words_with_catalog() <= 0) {  /* 重载失败回退默认链路重装 */
         deck_manager_switch(0);
@@ -742,6 +747,8 @@ void setup()
      *     该组 NVS 键恢复（LR04）；必须先于 study_mode_init/首次渲染
      *     （错词序列与收藏标记依赖） */
     learning_state_init(word_parser_get_count(), deck_manager_active_id());
+    /* v1.6 课程表：装载周配置（NVS 无键则默认关闭，开箱不变） */
+    schedule_init();
     /* 考试冲刺 horizon（v1.5 T5.5）：urgent（≤7 天）时到期视图放宽
      * 到考前将到期全部入队（日期反推优先清账；时钟后同步时切组/
      * 下次启动生效——冷启动自治钟未同步则保持 0，同步后切组或重启注入） */
@@ -774,6 +781,9 @@ void setup()
         page_router_render_top();      /* READER 书页/占位页 或 待机页 */
     }
     boot_stamp("first-frame");
+
+    /* v1.6 课程表：渲染显示课表（NVS 无数据则显示占位提示） */
+    schedule_draw_display_table();
 
     /* 8. 启动后台任务（心跳/LAN/天气/OTA；sync_session 内聚任务细节） */
     sync_background_task_start();

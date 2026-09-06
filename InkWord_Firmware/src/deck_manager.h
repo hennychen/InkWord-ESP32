@@ -64,6 +64,13 @@ const char *deck_manager_active_id(void);
 /** 活跃卡组索引（菜单光标预定位用） */
 int deck_manager_active_index(void);
 
+/**
+ * @brief 按 id 反查卡组索引（课程表自动激活用）。
+ * @param id 卡组短 id（NULL/""=默认组）。
+ * @return 索引（0~DECK_MAX-1）；未找到返回 -1。
+ */
+int deck_manager_find_index(const char *id);
+
 /** 活跃卡组显示名 */
 const char *deck_manager_active_name(void);
 

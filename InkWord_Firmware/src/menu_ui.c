@@ -58,6 +58,7 @@ extern bool deck_flow_switch(int idx);
 #include "ui_stamp.h"     /* 2026-09-04：墨封当前词落印动画 */
 #include "word_card_ui.h" /* 2026-09-04：菜单退出强制全刷（ui_force_full_refresh_next） */
 #include "book_shelf.h"   /* 2026-09-05 阅读器增强：我的书架 */
+#include "schedule.h"     /* v1.6：课程表（周计划编排与自动激活） */
 
 #include "freertos/FreeRTOS.h"   /* A3：周报拉取一次性任务 */
 #include "freertos/task.h"
@@ -110,7 +111,7 @@ static int mu_partial_threshold(void)
 /* ---- 模块状态（静态零初始化，无 init 无堆分配；~10B） ---- */
 typedef enum { MU_PAGE_MAIN = 0, MU_PAGE_MODE, MU_PAGE_DECK, MU_PAGE_INFO,
                MU_PAGE_KEYS, MU_PAGE_VOL, MU_PAGE_CHATSEL, MU_PAGE_SCENARIO,
-               MU_PAGE_REVIEW
+               MU_PAGE_REVIEW, MU_PAGE_SCHEDULE
 } mu_page_t;
 
 typedef struct {
@@ -132,6 +133,12 @@ static int       s_keys_page = 0; /* 按键说明页页码 */
 static int       s_info_page = 0; /* 设备信息页页码（学习概况/设备信息） */
 static int       s_chatsel_sel = 0;  /* AI 对话二级页选中（A1：0 自由/1 翻译/2 场景） */
 static int       s_scenario_sel = 0; /* 场景列表选中（s_scenarios 下标） */
+
+/* v1.6 课程表设置页状态 */
+static int       s_sched_day   = 0;  /* 当前编辑星期几（0=周一~6=周日） */
+static int       s_sched_slot  = 0;  /* 当前编辑槽位（0~3） */
+static int       s_sched_line  = 0;  /* 三级页当前行（0=卡组/1=目标/2=考试） */
+static int       s_sched_deck  = 0;  /* 卡组选择游标 */
 
 /* 对话周报页（A3）：拉取一次性任务写入，按键上下文只读；gen 代际计数
  * 防任务渲染串页（退出/重进后旧任务结果丢弃） */
@@ -184,6 +191,7 @@ static void draw_keys(bool partial);
 static void draw_vol(bool partial);
 static void draw_chatsel(bool partial);
 static void draw_scenario(bool partial);
+static void draw_schedule(bool partial);
 
 /* ============================================================
  * 徽标填充（每次重绘现取：均为廉价查询，无缓存失效问题）
@@ -498,6 +506,16 @@ static void act_bookshelf(void)
     page_router_push(&g_book_shelf_page);
 }
 
+/* v1.6 课程表：进入设置页（一级总览，上/下选天，中=编辑该天） */
+static void act_schedule(void)
+{
+    s_page = MU_PAGE_SCHEDULE;
+    s_sched_day = schedule_today_wday();
+    if (s_sched_day < 0) s_sched_day = 0;
+    s_sched_slot = 0;
+    draw_schedule(false);
+}
+
 /* 教材目录（2026-08-28 设计 §B3）：前置词库 ≥1 在
  * study_mode_enter_browse 内，不满足长震回学习页；满足则三级视图
  * 清态 + 首帧全刷（T1.4 经 g_browse_page 栈顶 render 承担） */
@@ -580,6 +598,7 @@ static const mu_item_t s_items[] = {
     { "对话周报",   false, menu_icon_info,     NULL,             act_review },
     { "快速测验",   false, menu_icon_quiz,     NULL,             act_quiz },
     { "我的书架",   false, menu_icon_decks,    NULL,             act_bookshelf },
+    { "课程表",     false, menu_icon_settings, NULL,             act_schedule },
     { "[ 同步 ]",  true,  NULL,               NULL,             NULL },
     { "音频同步",   false, menu_icon_audio,    badge_audio_sync, act_audio_sync },
     { "Wi-Fi 配网", false, menu_icon_wifi,     badge_wifi,       act_wifi },
@@ -908,6 +927,106 @@ static void draw_review(bool partial)
                s_review_state == MU_REVIEW_OK ? s_review_page + 1 : 0,
                review_page_count());
     draw_review_body();
+    draw_hint();
+    draw_flush();
+}
+
+/* ---- v1.6 课程表设置页（一级总览：总开关 + 7 天滚动列表） ---- */
+
+static const char *s_wday_names[7] = {
+    "周一", "周二", "周三", "周四", "周五", "周六", "周日"
+};
+
+/* 课程表绘制体：总开关行 + 可见窗口内天数（滚动跟随选中项） */
+static void draw_schedule_body(void)
+{
+    const schedule_cfg_t *cfg = schedule_cfg();
+    int x = MU_MARGIN_X + 4;
+    int y = MU_LIST_TOP;
+
+    /* 总开关行 */
+    {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "课程表: %s",
+                 cfg->enabled ? "开" : "关");
+        cjk_text_draw(x, y + (MU_INFO_LH - MU_FONT_H) / 2,
+                      MU_FONT_LVL, buf, EPD_GFX_BLACK);
+        y += MU_INFO_LH + 4;
+    }
+
+    /* 计算可见窗口：保证 s_sched_day 始终在窗口内 */
+    int list_h = epd_gfx_height() - y - MU_HINT_H;
+    int visible = list_h / MU_ITEM_H;
+    if (visible > SCHED_DAYS) visible = SCHED_DAYS;
+    if (visible < 1) visible = 1;
+
+    int win_start = 0;
+    if (s_sched_day >= visible)
+        win_start = s_sched_day - visible + 1;
+    if (win_start + visible > SCHED_DAYS)
+        win_start = SCHED_DAYS - visible;
+    if (win_start < 0) win_start = 0;
+
+    /* 可见天数列表 */
+    for (int vi = 0; vi < visible; vi++) {
+        int d = win_start + vi;
+        char buf[64];
+        int slot_count = 0;
+        for (int s = 0; s < SCHED_SLOTS; s++)
+            if (cfg->day[d][s].deck_id[0]) slot_count++;
+
+        bool is_today = (d == schedule_today_wday());
+        bool is_sel   = (d == s_sched_day);
+
+        /* 选中行反白 */
+        if (is_sel) {
+            epd_gfx_fill_rect(0, y, epd_gfx_width(), MU_ITEM_H,
+                              EPD_GFX_BLACK);
+        }
+        uint16_t fg = is_sel ? EPD_GFX_WHITE : EPD_GFX_BLACK;
+
+        if (slot_count == 0) {
+            snprintf(buf, sizeof(buf), "%s%s",
+                     s_wday_names[d], is_today ? " (休息)" : "  休息");
+        } else {
+            char detail[48] = "";
+            for (int s = 0; s < SCHED_SLOTS; s++) {
+                const schedule_slot_t *slot = &cfg->day[d][s];
+                if (!slot->deck_id[0]) continue;
+                int idx = deck_manager_find_index(slot->deck_id);
+                const char *name = (idx >= 0)
+                    ? deck_manager_at(idx)->name : "?";
+                char sn[4];
+                if ((unsigned char)name[0] >= 0xE0)
+                    snprintf(sn, sizeof(sn), "%c%c%c",
+                             name[0], name[1], name[2]);
+                else if ((unsigned char)name[0] >= 0xC0)
+                    snprintf(sn, sizeof(sn), "%c%c",
+                             name[0], name[1]);
+                else
+                    snprintf(sn, sizeof(sn), "%c", name[0]);
+                char item[16];
+                int goal = slot->goal > 0 ? slot->goal
+                    : daily_plan_goal_deck(slot->deck_id);
+                snprintf(item, sizeof(item), "%s%d ", sn, goal);
+                strlcat(detail, item, sizeof(detail));
+            }
+            snprintf(buf, sizeof(buf), "%s%s %s",
+                     s_wday_names[d], is_today ? "" : "", detail);
+        }
+
+        cjk_text_draw(x, y + (MU_ITEM_H - MU_FONT_H) / 2,
+                      MU_FONT_LVL, buf, fg);
+        y += MU_ITEM_H;
+    }
+}
+
+static void draw_schedule(bool partial)
+{
+    (void)partial;   /* 课程表翻页必须全刷（反白行位置变化） */
+    epd_gfx_fill_screen(EPD_GFX_WHITE);
+    draw_title("课程表", 0, 0);
+    draw_schedule_body();
     draw_hint();
     draw_flush();
 }
@@ -1468,6 +1587,39 @@ case MU_PAGE_VOL:
                 draw_review(true);
             }
             break;
+        case NAV_SET:
+            s_page = MU_PAGE_MAIN;
+            draw_main(false);
+            break;
+        case NAV_RST:
+            menu_ui_exit_restore();
+            break;
+        default: break;
+        }
+        break;
+
+    case MU_PAGE_SCHEDULE:
+        /* v1.6 课程表设置页：上/下选天，中=切换总开关，SET 返回主菜单，
+         * RST 退出（一级页简单交互；二级编辑随后续迭代扩展） */
+        switch (id) {
+        case NAV_UP:
+            s_sched_day = (s_sched_day + SCHED_DAYS - 1) % SCHED_DAYS;
+            draw_schedule(true);
+            break;
+        case NAV_DOWN:
+            s_sched_day = (s_sched_day + 1) % SCHED_DAYS;
+            draw_schedule(true);
+            break;
+        case NAV_CENTER:
+        {
+            /* 中键：切换课程表总开关 */
+            schedule_cfg_t *cfg = schedule_cfg_mut();
+            cfg->enabled = !cfg->enabled;
+            schedule_save();
+            haptic_event(HAPTIC_PASS);
+            draw_schedule(true);
+            break;
+        }
         case NAV_SET:
             s_page = MU_PAGE_MAIN;
             draw_main(false);

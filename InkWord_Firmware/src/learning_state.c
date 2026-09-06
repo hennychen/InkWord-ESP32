@@ -17,6 +17,7 @@
 #include "learning_state.h"
 #include "srs_engine.h"
 #include "debug_log.h"
+#include "schedule.h"      /* v1.6：课程表自动激活（评分路径跨日触发） */
 
 #include "nvs.h"
 #include "settings_keys.h"   /* P2b：NVS 键权威表 */
@@ -684,6 +685,11 @@ void learning_state_apply_quality(int word_idx, int quality)
         if (s_dstats.e[di].rev < 65535) s_dstats.e[di].rev++;
         if (was_new && s_dstats.e[di].new_n < 65535) s_dstats.e[di].new_n++;
         s_dstats_dirty = true;
+
+        /* v1.6 课程表：跨日首次评分时尝试自动激活（同日重复调用
+         * 返回 1 无动作；自动激活路径调 deck_flow_switch 会走
+         * schedule_on_manual_switch，但此时 last_slot=-1 不会误标） */
+        schedule_try_activate();
     }
 
     LOG_I("quality %d -> word #%d (wrong=%u interval=%u)",

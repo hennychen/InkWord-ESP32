@@ -65,6 +65,11 @@
 #define NVS_KEY_RD_FONT     "rd_font"   /* 字号档（u8） */
 #define NVS_KEY_RD_PAGE     "rd_page"   /* 页码（u32） */
 
+/* ---- 课程表（schedule；v1.6 新增） ---- */
+#define NVS_KEY_SCHED_CFG    "sched_cfg"    /* 周配置 blob（schedule_cfg_t ~421B） */
+#define NVS_KEY_SCHED_STATE  "sched_last"   /* 激活状态 blob（sched_state_t 12B） */
+#define NVS_KEY_SCHED_DISP   "sched_disp"   /* 显示课表 blob（schedule_display_t ~600B） */
+
 /* ---- 待机页（standby_page） ---- */
 #define NVS_KEY_WX_CACHE    "wx_cache"  /* 天气缓存 blob（weather_info_t） */
 #define NVS_KEY_WX_TS       "wx_ts"     /* 天气缓存时间戳（u32） */

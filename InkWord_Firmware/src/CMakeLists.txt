@@ -65,6 +65,7 @@ idf_component_register(
         "settings_ui.c"      # v1.2 T2.5：设置页覆盖层 + 发音/震动/字号门控（set_*）
         "shortcut_map.c"     # 2026-09-03：长按快捷键映射（sk_*，六槽位，native-test 纯 C）
         "deck_manager.c"     # v1.3 T3.1：词书卡组（manifest 扫描/活跃切换，rd_* 隔离配套）
+        "schedule.c"         # v1.6：课程表（周计划编排与自动激活，NVS sched_cfg/sched_last）
         "catalog_index.c"    # 教材目录索引（年级/unit 分桶，browse_mode 数据源，native-test 纯 C）
         "browse_mode.c"      # 教材目录三级视图（MODE_BROWSE 临时视图：年级→单元→词表）
         "voice_search.c"     # AI 语音查词四态状态机（MODE_VOICE 临时视图：录音→上传→候选）
