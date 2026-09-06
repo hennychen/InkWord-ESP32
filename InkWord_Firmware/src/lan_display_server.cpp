@@ -55,7 +55,7 @@
 #include "debug_log.h"
 #include "epd_driver.h"
 #include "lan_proto.h"        /* T2.3：v2 帧分类/头解析（纯 C，native-test） */
-#include "lan_pages.h"        /* PAGE_HTML/WIFI_HTML 资产（P2 资产/逻辑分离） */
+#include "lan_pages.h"        /* PAGE_HTML/WIFI_HTML/SCHEDULE_HTML 资产 */
 #include "esp_mac.h"          /* v2.0：stats 端点 mac 字段（App 绑定凭据） */
 #include "layout_profile.h"   /* 2026-08-25：TINY 档紧凑版式分派 */
 #include "refresh_scheduler.h"
@@ -67,6 +67,7 @@
 #include "word_parser.h"
 #include "storage_manager.h"
 #include "gpio_config.h"      /* SD_MOUNT_POINT */
+#include "schedule.h"         /* 课程表显示数据读写 */
 
 #include "esp_http_server.h"
 #include "esp_netif.h"
@@ -344,6 +345,10 @@ static esp_err_t deck_list_get_handler(httpd_req_t *req);
 static esp_err_t stats_get_handler(httpd_req_t *req);
 static esp_err_t device_info_get_handler(httpd_req_t *req);
 
+static esp_err_t schedule_get_handler(httpd_req_t *req);
+static esp_err_t schedule_post_handler(httpd_req_t *req);
+static esp_err_t schedule_page_handler(httpd_req_t *req);
+
 /* GET 总入口（路径通配）：路径分发；未知路径 302（captive portal 探测域名重定向） */
 static esp_err_t catchall_get_handler(httpd_req_t *req)
 {
@@ -359,6 +364,8 @@ static esp_err_t catchall_get_handler(httpd_req_t *req)
     if (strcmp(path, "/api/decks") == 0)        return deck_list_get_handler(req);
     if (strcmp(path, "/api/stats") == 0)        return stats_get_handler(req);
     if (strcmp(path, "/api/device-info") == 0)  return device_info_get_handler(req);
+    if (strcmp(path, "/api/schedule") == 0)     return schedule_get_handler(req);
+    if (strcmp(path, "/schedule") == 0)         return schedule_page_handler(req);
 
     /* 其余：captive portal 探测域名（connectivitycheck.gstatic.com 等）
      * 或未知路径 → 302；手机连热点后系统探测被重定向到配网页 → 自动弹出 */
@@ -784,6 +791,147 @@ static esp_err_t deck_active_post_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * 课程表 LAN Web 编辑器（/schedule 页面 + /api/schedule JSON）
+ * ============================================================ */
+
+/* GET /api/schedule：返回当前显示课表 JSON */
+static esp_err_t schedule_get_handler(httpd_req_t *req)
+{
+    const schedule_display_t *d = schedule_display_cfg();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "enabled", d->enabled);
+    cJSON_AddStringToObject(root, "title", d->title[0] ? d->title : "课程表");
+    cJSON_AddNumberToObject(root, "rows", d->rows);
+    cJSON_AddNumberToObject(root, "cols", d->cols);
+
+    cJSON *days = cJSON_AddArrayToObject(root, "days");
+    for (int c = 0; c < d->cols; c++)
+        cJSON_AddItemToArray(days, cJSON_CreateString(d->days[c]));
+
+    cJSON *slots = cJSON_AddArrayToObject(root, "slots");
+    for (int r = 0; r < d->rows; r++)
+        cJSON_AddItemToArray(slots, cJSON_CreateString(d->slots[r]));
+
+    cJSON *grid = cJSON_AddArrayToObject(root, "grid");
+    for (int r = 0; r < d->rows; r++) {
+        cJSON *row = cJSON_CreateArray();
+        for (int c = 0; c < d->cols; c++)
+            cJSON_AddItemToArray(row, cJSON_CreateString(d->grid[r][c]));
+        cJSON_AddItemToArray(grid, row);
+    }
+
+    char *body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!body) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_send(req, NULL, 0);
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t e = httpd_resp_send(req, body, strlen(body));
+    free(body);
+    return e;
+}
+
+/* POST /api/schedule：更新显示课表（JSON body）并渲染到屏幕 */
+static esp_err_t schedule_post_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || (size_t)req->content_len > 4096) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "empty or oversized body");
+        return ESP_OK;
+    }
+    char *body = (char *)malloc(req->content_len + 1);
+    if (!body) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_send(req, NULL, 0);
+    }
+    int r = httpd_req_recv(req, body, req->content_len);
+    if (r <= 0) { free(body); return ESP_FAIL; }
+    body[r] = '\0';
+
+    cJSON *j = cJSON_Parse(body);
+    free(body);
+    if (!j) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "bad json");
+        return ESP_OK;
+    }
+
+    schedule_display_t *d = schedule_display_cfg_mut();
+    memset(d, 0, sizeof(*d));
+
+    /* enabled */
+    cJSON *j_enabled = cJSON_GetObjectItem(j, "enabled");
+    d->enabled = cJSON_IsTrue(j_enabled);
+
+    /* title */
+    const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(j, "title"));
+    if (title) strlcpy(d->title, title, sizeof(d->title));
+    else strlcpy(d->title, "课程表", sizeof(d->title));
+
+    /* rows / cols */
+    cJSON *j_rows = cJSON_GetObjectItem(j, "rows");
+    cJSON *j_cols = cJSON_GetObjectItem(j, "cols");
+    d->rows = (j_rows && j_rows->valueint > 0) ? j_rows->valueint : 0;
+    d->cols = (j_cols && j_cols->valueint > 0) ? j_cols->valueint : 0;
+    if (d->rows > SCHED_DISP_MAX_ROWS) d->rows = SCHED_DISP_MAX_ROWS;
+    if (d->cols > SCHED_DISP_MAX_COLS) d->cols = SCHED_DISP_MAX_COLS;
+
+    /* days */
+    cJSON *j_days = cJSON_GetObjectItem(j, "days");
+    if (cJSON_IsArray(j_days)) {
+        for (int c = 0; c < d->cols && c < cJSON_GetArraySize(j_days); c++) {
+            const char *s = cJSON_GetStringValue(cJSON_GetArrayItem(j_days, c));
+            if (s) strlcpy(d->days[c], s, sizeof(d->days[c]));
+        }
+    }
+
+    /* slots */
+    cJSON *j_slots = cJSON_GetObjectItem(j, "slots");
+    if (cJSON_IsArray(j_slots)) {
+        for (int r2 = 0; r2 < d->rows && r2 < cJSON_GetArraySize(j_slots); r2++) {
+            const char *s = cJSON_GetStringValue(cJSON_GetArrayItem(j_slots, r2));
+            if (s) strlcpy(d->slots[r2], s, sizeof(d->slots[r2]));
+        }
+    }
+
+    /* grid */
+    cJSON *j_grid = cJSON_GetObjectItem(j, "grid");
+    if (cJSON_IsArray(j_grid)) {
+        for (int r2 = 0; r2 < d->rows && r2 < cJSON_GetArraySize(j_grid); r2++) {
+            cJSON *row = cJSON_GetArrayItem(j_grid, r2);
+            if (!cJSON_IsArray(row)) continue;
+            for (int c = 0; c < d->cols && c < cJSON_GetArraySize(row); c++) {
+                const char *s = cJSON_GetStringValue(cJSON_GetArrayItem(row, c));
+                if (s) strlcpy(d->grid[r2][c], s, sizeof(d->grid[r2][c]));
+            }
+        }
+    }
+
+    cJSON_Delete(j);
+    schedule_display_save();
+
+    /* 渲染到屏幕 */
+    schedule_draw_display_table();
+
+    LOG_I("schedule updated via LAN: %dx%d", d->rows, d->cols);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+/* GET /schedule：Web 编辑页面 */
+static esp_err_t schedule_page_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, SCHEDULE_HTML, sizeof(SCHEDULE_HTML) - 1);
+}
+
+/* ============================================================
  * 公共接口
  * ============================================================ */
 static void register_mdns(void)
@@ -811,7 +959,7 @@ int lan_server_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = 80;
     cfg.stack_size = 8192;                   /* handler 内执行整帧全刷，留足调用栈 */
-    cfg.max_uri_handlers = 6;                /* GET 通配 + POST×4（display/wifi/deck×2） */
+    cfg.max_uri_handlers = 10;               /* GET 通配 + POST×6（display/wifi/deck×2/schedule×2） */
     cfg.uri_match_fn = httpd_uri_match_wildcard;  /* 支持路径通配路由 */
 
     esp_err_t err = httpd_start(&s_server, &cfg);
@@ -851,6 +999,12 @@ int lan_server_start(void)
     uri_deck_act.method = HTTP_POST;
     uri_deck_act.handler = deck_active_post_handler;
     httpd_register_uri_handler(s_server, &uri_deck_act);
+
+    httpd_uri_t uri_sched_post = {};
+    uri_sched_post.uri = "/api/schedule";
+    uri_sched_post.method = HTTP_POST;
+    uri_sched_post.handler = schedule_post_handler;
+    httpd_register_uri_handler(s_server, &uri_sched_post);
 
     /* mDNS：仅 STA 在线模式注册 inkword.local（失败不影响 IP 直访）。
      * portal 模式跳过，待配网完成回 STA 后由 monitor 补注册 */

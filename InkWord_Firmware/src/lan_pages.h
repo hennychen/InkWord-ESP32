@@ -31,7 +31,7 @@ button{padding:12px 24px;font-size:16px;width:100%}
 </head>
 <body>
 <h2>InkWord 墨水屏发送</h2>
-<p><a href="/wifi">Wi-Fi 设置</a></p>
+<p><a href="/wifi">Wi-Fi 设置</a> | <a href="/schedule">课程表编辑</a></p>
 <div class="row">
 <label><input type="radio" name="mode" value="text" checked onchange="onMode()">文本</label>
 &nbsp;&nbsp;
@@ -379,6 +379,163 @@ function tick(){
 }
 setInterval(tick,1500);tick();
 scan();
+</script>
+</body>
+</html>)HTML";
+
+
+/* ============================================================
+ * 课程表 Web 编辑页（/schedule）：表格编辑 + 实时预览 + 推送到设备
+ * ============================================================ */
+static const char SCHEDULE_HTML[] = R"HTML(<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>InkWord 课程表</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:sans-serif;max-width:520px;margin:0 auto;padding:12px;background:#f5f5f5}
+h2{margin:4px 0 8px}
+.row{margin:6px 0}
+label{font-size:14px}
+input[type=text],input[type=number]{padding:6px;border:1px solid #ccc;border-radius:4px}
+table{border-collapse:collapse;width:100%;margin:8px 0}
+td,th{border:1px solid #999;padding:2px;text-align:center}
+th{background:#c33;color:#fff;font-size:13px}
+td input{width:100%;border:none;text-align:center;padding:6px 2px;font-size:14px;background:transparent}
+td input:focus{background:#ffe;outline:1px solid #c33}
+.slot-label{background:#f0f0f0;font-weight:bold;font-size:12px;color:#555;min-width:40px}
+.btn{padding:12px;font-size:16px;width:100%;border:none;border-radius:4px;color:#fff;cursor:pointer;margin:4px 0}
+.btn-save{background:#c33}
+.btn-row{background:#666}
+.btn-del{background:#999;font-size:12px;padding:4px 8px;width:auto;margin:0}
+#st{padding:8px;background:#ddd;margin:8px 0;word-break:break-all}
+.ctrl{display:flex;gap:8px;align-items:center;margin:6px 0}
+.ctrl label{flex:0 0 auto}
+.ctrl input{flex:1}
+.sep{height:2px;background:#c33;margin:2px 0}
+</style>
+</head>
+<body>
+<h2>课程表编辑器</h2>
+<p><a href="/">← 返回发送页</a> <a href="/wifi">Wi-Fi 设置</a></p>
+<div class="row">
+<label>标题：<input type="text" id="title" value="课程表" style="width:120px"></label>
+</div>
+<div class="ctrl">
+<label>行数：<input type="number" id="nrows" min="1" max="8" value="8" style="width:50px"></label>
+<label>列数：<input type="number" id="ncols" min="1" max="5" value="5" style="width:50px"></label>
+<button class="btn btn-row" onclick="rebuild()" style="flex:0 0 auto;padding:6px 12px">重建表格</button>
+</div>
+<div id="st">加载中...</div>
+<div id="tableWrap"></div>
+<button class="btn btn-save" onclick="save()">保存到设备并显示</button>
+<script>
+var data={enabled:true,title:'\u8bfe\u7a0b\u8868',rows:8,cols:5,
+days:['\u5468\u4e00','\u5468\u4e8c','\u5468\u4e09','\u5468\u56db','\u5468\u4e94'],
+slots:['\u7b2c1\u828c','\u7b2c2\u828c','\u7b2c3\u828c','\u7b2c4\u828c','\u7b2c5\u828c','\u7b2c6\u828c','\u7b2c7\u828c','\u7b2c8\u828c'],
+grid:[
+  ['\u6570\u5b66','\u9053\u6cd5','\u82f1\u8bed','\u8bed\u6587','\u82f1\u8bed'],
+  ['\u79d1\u5b66','\u8bed\u6587','\u4f53\u80b2','\u5fc3\u7406','\u4f53\u80b2'],
+  ['\u82f1\u8bed','\u6570\u5b66','\u6570\u5b66','\u4f53\u80b2','\u5730\u7406'],
+  ['\u8bed\u6587','\u5730\u7406','\u6570\u5b66','\u6570\u5b66','\u6570\u5b66'],
+  ['\u97f3\u4e50','\u7f8e\u672f','\u79d1\u5b66','\u82f1\u8bed','\u97f3\u4e50'],
+  ['\u82f1\u8bed','\u4f53\u80b2','\u5199\u5b57','\u82f1\u8bed','\u82f1\u8bed'],
+  ['\u73ed\u4f1a','\u82f1\u8bed','\u8bed\u6587','\u9053\u6cd5','\u6821\u672c'],
+  ['\u4f53\u80b2','\u4fe1\u606f','\u8bed\u6587','\u52b3\u52a8','\u65e0']
+]};
+
+function load(){
+  fetch('/api/schedule').then(function(r){return r.json()}).then(function(d){
+    if(d.rows>0&&d.cols>0){
+      data=d;
+      document.getElementById('title').value=d.title||'\u8bfe\u7a0b\u8868';
+      document.getElementById('nrows').value=d.rows;
+      document.getElementById('ncols').value=d.cols;
+    }
+    rebuild();
+    document.getElementById('st').textContent=d.rows>0?'\u5df2\u52a0\u8f7d\u5f53\u524d\u8bfe\u8868\uff0c\u7f16\u8f91\u540e\u70b9\u201c\u4fdd\u5b58\u201d':'\u65e0\u8bfe\u8868\u6570\u636e\uff0c\u8bf7\u7f16\u8f91\u540e\u4fdd\u5b58';
+  }).catch(function(e){
+    rebuild();
+    document.getElementById('st').textContent='\u52a0\u8f7d\u5931\u8d25\uff0c\u663e\u793a\u9ed8\u8ba4\u6a21\u677f';
+  });
+}
+
+function rebuild(){
+  var nr=+document.getElementById('nrows').value||8;
+  var nc=+document.getElementById('ncols').value||5;
+  if(nr<1)nr=1;if(nr>8)nr=8;
+  if(nc<1)nc=1;if(nc>5)nc=5;
+  data.rows=nr;data.cols=nc;
+  /* expand/trim days */
+  while(data.days.length<nc)data.days.push('\u5468'+['','\u4e8c','\u4e09','\u56db','\u4e94'][data.days.length]||'');
+  data.days.length=nc;
+  /* expand/trim slots */
+  while(data.slots.length<nr)data.slots.push('\u7b2c'+(data.slots.length+1)+'\u828c');
+  data.slots.length=nr;
+  /* expand/trim grid */
+  while(data.grid.length<nr)data.grid.push([]);
+  data.grid.length=nr;
+  for(var r=0;r<nr;r++){
+    while(data.grid[r].length<nc)data.grid[r].push('');
+    data.grid[r].length=nc;
+  }
+  renderTable();
+}
+
+function renderTable(){
+  var h='<table><tr><th></th>';
+  for(var c=0;c<data.cols;c++)
+    h+='<th><input type="text" value="'+data.days[c]+'" onchange="data.days['+c+']=this.value" style="width:100%;background:transparent;border:none;color:#fff;text-align:center;font-size:13px"></th>';
+  h+='</tr>';
+  for(var r=0;r<data.rows;r++){
+    h+='<tr><td class="slot-label"><input type="text" value="'+data.slots[r]+'" onchange="data.slots['+r+']=this.value" style="width:100%;border:none;background:transparent;text-align:center;font-size:12px"></td>';
+    for(var c=0;c<data.cols;c++)
+      h+='<td><input type="text" value="'+data.grid[r][c]+'" onchange="data.grid['+r+']['+c+']=this.value" maxlength="6"></td>';
+    h+='</tr>';
+  }
+  h+='</table>';
+  /* split indicator */
+  if(data.rows>4){
+    var amR=Math.floor(data.rows/2);
+    var rows=document.getElementById('tableWrap');
+    /* rebuild with separator */
+    h='<table><tr><th></th>';
+    for(var c=0;c<data.cols;c++)
+      h+='<th><input type="text" value="'+data.days[c]+'" onchange="data.days['+c+']=this.value" style="width:100%;background:transparent;border:none;color:#fff;text-align:center;font-size:13px"></th>';
+    h+='</tr>';
+    for(var r=0;r<data.rows;r++){
+      if(r===amR) h+='<tr><td colspan="'+(data.cols+1)+'" style="padding:0"><div class="sep"></div></td></tr>';
+      h+='<tr><td class="slot-label"><input type="text" value="'+data.slots[r]+'" onchange="data.slots['+r+']=this.value" style="width:100%;border:none;background:transparent;text-align:center;font-size:12px"></td>';
+      for(var c=0;c<data.cols;c++)
+        h+='<td><input type="text" value="'+data.grid[r][c]+'" onchange="data.grid['+r+']['+c+']=this.value" maxlength="6"></td>';
+      h+='</tr>';
+    }
+    h+='</table>';
+  }
+  document.getElementById('tableWrap').innerHTML=h;
+}
+
+function save(){
+  /* collect latest input values */
+  data.title=document.getElementById('title').value;
+  data.enabled=true;
+  document.getElementById('st').textContent='\u4fdd\u5b58\u4e2d...';
+  fetch('/api/schedule',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(data)
+  }).then(function(r){
+    return r.text().then(function(t){
+      document.getElementById('st').textContent=r.status==200?'\u5df2\u4fdd\u5b58\u5e76\u53d1\u9001\u5230\u5c4f\u5e55':'\u4fdd\u5b58\u5931\u8d25('+r.status+'): '+t;
+    });
+  }).catch(function(e){
+    document.getElementById('st').textContent='\u4fdd\u5b58\u5931\u8d25: '+e;
+  });
+}
+
+load();
 </script>
 </body>
 </html>)HTML";
