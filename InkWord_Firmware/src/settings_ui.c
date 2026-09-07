@@ -47,6 +47,7 @@ static int8_t s_bold = -1;       /* 2026-08-27 P2：英文粗细（标准/加粗
 static int8_t s_quizgrid = -1;   /* v1.5 T5.1：测验快答（2×2 方向直选） */
 static int8_t s_rotmode = -1;    /* 2026-08-26 屏幕方向（0=默认/1=竖/2=横） */
 static int8_t s_vol = -1;        /* 2026-08-27 音量（0~100 步进10，默认75） */
+static int8_t s_menuview = -1;   /* v1.4 菜单视图（0=列表/1=宫格；TINY 恒列表） */
 
 /* P1 运行期选屏（2026-09-02）：面板型号切换后的提示行状态——切换
  * 置位并记简短名，draw_page 非 full 绘制也重画提示行（「重启生效」
@@ -168,9 +169,21 @@ void settings_volume_set(int v)
     es8311_set_volume(v);   /* 即时生效（codec 未起播时 -1 无害：dac_start 回写） */
 }
 
+bool settings_menu_grid(void)
+{
+    if (s_menuview < 0) s_menuview = load_u8(NVS_KEY_SET_MENUVIEW, 0);
+    return s_menuview != 0;
+}
+
+void settings_menu_grid_set(bool grid)
+{
+    s_menuview = grid ? 1 : 0;
+    save_u8(NVS_KEY_SET_MENUVIEW, (uint8_t)s_menuview);
+}
+
 /* ---- 覆盖层 UI（menu_ui 范式镜像） ---- */
 
-#define SET_ITEMS 12
+#define SET_ITEMS 13
 
 static bool s_active = false;
 static int  s_sel = 0;          /* 当前编辑行 */
@@ -200,11 +213,11 @@ static const char *set_label(int i)
 {
     static const char *k_full[SET_ITEMS] = {
         "每日新词量", "发音", "震动", "字号", "单词大小", "粗细", "测验快答",
-        "考试倒计时", "屏幕方向", "音量", "面板型号", "快捷键",
+        "考试倒计时", "屏幕方向", "音量", "面板型号", "快捷键", "菜单样式",
     };
     static const char *k_tiny[SET_ITEMS] = {
         "新词量", "发音", "震动", "字号", "单词大小", "粗细", "测验快答",
-        "倒计时", "屏幕方向", "音量", "面板", "快捷键",
+        "倒计时", "屏幕方向", "音量", "面板", "快捷键", "菜单样式",
     };
     return layout_profile_get()->kind == LAYOUT_TINY ? k_tiny[i]
                                                       : k_full[i];
@@ -272,6 +285,11 @@ static void row_value(int i, char *buf, size_t bufsz)
         else        snprintf(buf, bufsz, "%d 项", n);
         break;
     }
+    case 12:   /* 菜单样式（v1.4 §12.4）：值列即偏好；TINY 档菜单恒
+        列表（宫格不开放，MENU_DESIGN §12.2），该档切换仅存偏好，
+        换大屏后生效——同 set_rot 意图相对面板表达哲学 */
+        snprintf(buf, bufsz, "%s", settings_menu_grid() ? "宫格" : "列表");
+        break;
     default: snprintf(buf, bufsz, "%s", "--"); break;
     }
 }
@@ -606,6 +624,11 @@ void settings_ui_on_button(nav_key_t id, button_event_t event)
             draw_page(true);
             LOG_I("settings: shortcut config entered");
             return;
+        case 12:                            /* 菜单样式（v1.4 §12.4）：列表/
+            宫格二态即改即存；下次进菜单生效（菜单内长按 SET 即时
+            切换同键双入口），TINY 档存偏好屏上恒列表 */
+            settings_menu_grid_set(!settings_menu_grid());
+            break;
         }
         draw_page(false);
         LOG_I("settings: row %d toggled", s_sel);

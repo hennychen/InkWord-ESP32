@@ -40,6 +40,7 @@
 #define NVS_KEY_SET_QUIZGRID "set_quizgrid"
 #define NVS_KEY_SET_ROT     "set_rot"
 #define NVS_KEY_SET_VOL     "set_vol"
+#define NVS_KEY_SET_MENUVIEW "set_menuview" /* 菜单主列表视图（v1.4：0=列表/1=宫格；TINY 档恒列表） */
 #define NVS_KEY_SET_DAILY   "set_daily" /* 每日目标量默认组（sd_<id> 族） */
 #define NVS_KEY_SD_PFX      "sd_"       /* 每日目标量卡组键前缀（u8） */
 

@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """gen_menu_icons.py — 功能菜单 1bit 剪影图标生成器（v1.2 菜单视觉升级）
 
-产出 src/menu_icons.h：11 枚 20x20 行主序 MSB-first 位图（bit=1 着色，
-epd_gfx_draw_bitmap 直绘格式，同 cjk_font 先例）。约 60B/枚共 ~660B flash。
+产出 src/menu_icons.h：13 枚 20x20 行主序 MSB-first 位图（bit=1 着色，
+epd_gfx_draw_bitmap 直绘格式，同 cjk_font 先例）。约 60B/枚共 ~780B flash。
 
 设计口径（1bit 墨水屏约束）：
   - 纯剪影无灰度，线宽 >=1.5px 防断线；3x3 过采样多数表决抗锯齿边缘；
@@ -88,7 +88,7 @@ def poly(x, y, pts):
     return inside
 
 
-# ---------------------------------------------------------- 图标定义（11 枚）
+# ---------------------------------------------------------- 图标定义（13 枚）
 # 语义与菜单 s_items 一一对应；「挖空」用 not/in_ 补集表达。
 ICONS = [
     # (符号名, 用途, 谓词)
@@ -148,6 +148,17 @@ ICONS = [
      lambda x, y: circle(x, y, 10, 10, 3)
                   or tri(x, y, 7, 7.5, 13, 7.5, 10, 2) or tri(x, y, 7, 12.5, 13, 12.5, 10, 18)
                   or tri(x, y, 7.5, 7, 7.5, 13, 2, 10) or tri(x, y, 12.5, 7, 12.5, 13, 18, 10)),
+
+    # v1.4 宫格视图补齐（2026-09-07）：宫格以图标为主视觉，补齐
+    # 列表时代 NULL 的两项；墨封=印章剪影（方框+中心印芯），
+    # 音量=喇叭+声波弧（右侧半环，wifi 弧段同款限定写法）
+    ("master", "墨封当前词",
+     lambda x, y: (rect(x, y, 2, 2, 17, 17) and not rect(x, y, 4.5, 4.5, 14.5, 14.5))
+                  or rect(x, y, 7.5, 7.5, 12.5, 12.5)),
+
+    ("volume", "音量",
+     lambda x, y: poly(x, y, [(3, 7), (6.5, 7), (10.5, 3.5), (10.5, 16.5), (6.5, 12), (3, 12)])
+                  or (ring(x, y, 10.5, 10, 5.2, 1.8) and 0.25 <= (x - 10.5) / 5.2 <= 1.0)),
 ]
 
 
@@ -182,10 +193,10 @@ HEADER = """\
  * @file menu_icons.h
  * @brief 功能菜单 1bit 剪影图标（自动生成，勿手改）
  *
- * 由 tools/gen_menu_icons.py 生成：11 枚 20x20 行主序 MSB-first 位图
+ * 由 tools/gen_menu_icons.py 生成：13 枚 20x20 行主序 MSB-first 位图
  * （bit=1 着色），epd_gfx_draw_bitmap 直绘格式（cjk_font 同款）。
  * 消费方 menu_ui.c 独家 include（单编译单元，无重复定义）；TINY 档
- * 项高 28px 不消费（同中文徽标省略先例）。~660B flash。
+ * 项高 28px 不消费（同中文徽标省略先例；宫格视图 TINY 不开放同因）。~780B flash。
  */
 #ifndef INKWORD_MENU_ICONS_H
 #define INKWORD_MENU_ICONS_H

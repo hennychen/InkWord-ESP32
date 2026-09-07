@@ -9,11 +9,22 @@
  * 主列表分组化（2026-08-24，O4）：[学习]/[同步]/[系统] 三组标题行
  * （同按键说明页组头样式，16px 小字不可选中，光标循环跳过）。
  *
+ * v1.4 宫格视图（2026-09-07，§12）：主列表双视图共存——列表（默认）/
+ * 宫格（图标上标签下，组头独占一行），长按 SET 即时切换即存 NVS
+ * （set_menuview，设置页第 13 行同键双入口）；两视图共享线性索引
+ * s_sel（切换时光标保持），宫格四向导航（左/右=±1、上/下=±行，
+ * 组头跳过）；徽标在格内放不下→选中项徽标改提示栏「标签 · 徽标」
+ * 详情显示（body 内重绘：差分局刷下内容不变零成本，随光标更新
+ * 天然自洽）；TINY 档强制列表（宫格不开放，短震反馈不生效）。
+ *
  * 几何全运行期派生（MU_* 宏 + layout_profile 档位，零特判）：
  *   MID 416x240 项高 44 可见 4 / SMALL 264x176 项高 36 可见 3 /
  *   TINY 122x250|128x296 项高 28 可见 8|9、提示栏省略、CJK 徽标省略、
  *   INFO 页裁至 4 行短值项（IP/PSRAM 长值 122px 宽放不下，bring-up 再调）。
  *   按键说明页同理：值列宽 TINY 档不足，bring-up 后改单列两行/键。
+ *   宫格几何（§12.2 实施修订）：列数 avail/90 鉗 2~4（MID 横 4 列、
+ *   MID 竖与 SMALL 2 列——设计稿 SMALL 3 列 88px 格宽放不下 80px
+ *   5 字标签，实施改 2 列）、格高 56、标签 16px 全档统一（图标主视觉）。
  *
  * 字号按档位派生（2026-08-23 真机反馈 16px 偏小）：主内容（列表/标题/
  * 模式页/INFO/按键说明）MID/SMALL 用 20px 点阵、TINY 16px；ASCII 徽标
@@ -125,8 +136,10 @@ typedef struct {
 static bool      s_active = false;
 static const char *s_hint_override = NULL;  /* 预检失败原因等一次性提示 */
 static mu_page_t s_page   = MU_PAGE_MAIN;
-static int       s_sel    = 0;   /* 主列表选中（0 基；恒非组头） */
-static int       s_off    = 0;   /* 主列表滚动偏移 */
+static int       s_sel    = 0;   /* 主列表选中（0 基；恒非组头；两视图共享） */
+static int       s_off    = 0;   /* 主列表滚动偏移（列表视图，行单位） */
+static bool      s_grid   = false; /* v1.4 §12：主列表视图 false=列表/true=宫格 */
+static int       s_goff   = 0;     /* v1.4：宫格滚动窗口像素偏移（行高不均） */
 static int       s_mode_sel = 0; /* 模式列表选中（进入时预定位当前模式） */
 static int       s_deck_sel = 0; /* 词书列表选中（进入时预定位活跃卡组） */
 static int       s_keys_page = 0; /* 按键说明页页码 */
@@ -588,8 +601,8 @@ static void act_keys(void)
 static const mu_item_t s_items[] = {
     { "[ 学习 ]",  true,  NULL,               NULL,             NULL },
     { "收藏列表",   false, menu_icon_collected, badge_collected,  act_collection },
-    { "墨封当前词", false, NULL,               NULL,             act_master },
-    { "墨封录",     false, menu_icon_collected, badge_mastered,   act_mastered_list },
+    { "墨封当前词", false, menu_icon_master,    NULL,             act_master },
+    { "墨封录",     false, menu_icon_master,   badge_mastered,   act_mastered_list },
     { "教材目录",   false, menu_icon_decks,    NULL,             act_browse },
     { "语音查词",   false, menu_icon_chat,     NULL,             act_voice_search },
     { "模式选择",   false, menu_icon_modesel,  badge_mode,       act_modesel },
@@ -605,7 +618,7 @@ static const mu_item_t s_items[] = {
     { "AP 配网门户", false, menu_icon_ap,       NULL,            act_portal },
     { "LAN 接收页", false, menu_icon_lan,      NULL,            act_lan },
     { "[ 系统 ]",  true,  NULL,               NULL,             NULL },
-    { "音量",       false, NULL,               badge_volume,     act_volume },
+    { "音量",       false, menu_icon_volume,   badge_volume,     act_volume },
     { "设置",       false, menu_icon_settings, NULL,             act_settings },
     { "设备信息",   false, menu_icon_info,     NULL,             act_info },
     { "按键说明",   false, menu_icon_keys,     NULL,             act_keys },
@@ -749,6 +762,159 @@ static void draw_main_body(void)
         draw_item(idx, i, &s_items[idx]);
     }
     draw_scrollbar(MU_ITEM_COUNT);
+}
+
+/* ---- v1.4 宫格视图（§12；TINY 不开放，menu_view_toggle 拒绝）---- */
+
+#define MU_GRID_HDR_H   24   /* 组头行高（16px 小字 + 上下 padding） */
+#define MU_GRID_CELL_H  56   /* 格高：pad8 + 图标20 + 间隙4 + 标签16 + pad8 */
+#define MU_GRID_MAX_ROWS 12  /* 行表容量上限：3 列下 3 组头+8 格行=11 行 */
+
+typedef struct {
+    int  first;      /* 行首项索引（组头行=组头自身索引） */
+    int  count;      /* 行内格数（组头行 0） */
+    bool is_header;  /* 组头行（独占一行，不可停驻） */
+} mu_grow_t;
+
+/* 列数派生（§12.2 实施修订）：avail/90 鉀 2~4——90px 下限保证 16px
+ * 5 字标签（80px）+padding 不截断；MID 横 4 列（92~96px/格）、
+ * MID 竖与 SMALL 2 列（104~116px/格，设计稿 3 列 88px 放不下 80px
+ * 标签）；LARGE 同式 4 列。全档标签 16px level 0（图标主视觉） */
+static int grid_cols(void)
+{
+    int cols = MU_ITEM_W / 90;
+    if (cols < 2) cols = 2;
+    if (cols > 4) cols = 4;
+    return cols;
+}
+
+/* 生成宫格行表：s_items 一维展开为组头行+格行二维（每次移动现算，
+ * 22 项遍历成本可忽略；s_items 编译期固定 + cols 会话内恒定） */
+static int grid_layout(mu_grow_t *rows, int cols)
+{
+    int n = 0, i = 0;
+    while (i < MU_ITEM_COUNT && n < MU_GRID_MAX_ROWS) {
+        if (s_items[i].is_header) {
+            rows[n].first = i;
+            rows[n].count = 0;
+            rows[n].is_header = true;
+            n++;
+            i++;
+        } else {
+            int start = i;
+            while (i < MU_ITEM_COUNT && !s_items[i].is_header) i++;
+            int cnt = i - start;
+            for (int off = 0; off < cnt && n < MU_GRID_MAX_ROWS; off += cols) {
+                rows[n].first = start + off;
+                rows[n].count = (cnt - off < cols) ? cnt - off : cols;
+                rows[n].is_header = false;
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
+/* 行高（组头/格行不均匀） */
+static int grid_row_h(const mu_grow_t *r)
+{
+    return r->is_header ? MU_GRID_HDR_H : MU_GRID_CELL_H;
+}
+
+/* 单格绘制：图标上/标签下居中，选中=黑底反白（列表反选同族）；
+ * 图标 NULL 时标签垂直居中（现表已补齐恒非 NULL，防御未来表维护） */
+static void draw_cell(int idx, int cell_x, int row_y, int cell_w)
+{
+    const mu_item_t *it = &s_items[idx];
+    bool sel = (idx == s_sel);
+    uint16_t fg = sel ? EPD_GFX_WHITE : EPD_GFX_BLACK;
+
+    if (sel)
+        epd_gfx_fill_rect(cell_x + 2, row_y + 2,
+                          cell_w - 4, MU_GRID_CELL_H - 4, EPD_GFX_BLACK);
+
+    if (it->icon) {
+        epd_gfx_draw_bitmap(cell_x + (cell_w - MENU_ICON_SZ) / 2,
+                            row_y + 8, MENU_ICON_SZ, MENU_ICON_SZ,
+                            it->icon, fg);
+        int tw = cjk_text_width(0, it->label);
+        cjk_text_draw(cell_x + (cell_w - tw) / 2,
+                      row_y + 8 + MENU_ICON_SZ + 4, 0, it->label, fg);
+    } else {
+        int tw = cjk_text_width(0, it->label);
+        cjk_text_draw(cell_x + (cell_w - tw) / 2,
+                      row_y + (MU_GRID_CELL_H - 16) / 2, 0, it->label, fg);
+    }
+}
+
+/* 宫格详情栏（提示栏位置兼「选中项详情」§12.5）：徽标格内放不下→
+ * 选中项「标签 · 徽标」在此显示；s_hint_override 优先（预检失败
+ * 一次性提示先例）。含分隔线：局刷路径 partial_refresh 的 fill 覆盖
+ * 提示区，body 必须自含重绘（差分下内容不变零成本，随光标更新） */
+static void draw_grid_detail(void)
+{
+    if (MU_HINT_H == 0) return;   /* 防御（TINY 不进宫格恒 22） */
+    epd_gfx_draw_hline(MU_MARGIN_X, epd_gfx_height() - MU_HINT_H,
+                       epd_gfx_width() - 2 * MU_MARGIN_X, EPD_GFX_BLACK);
+
+    const char *text;
+    char line[48];
+    if (s_hint_override) {
+        text = s_hint_override;
+    } else {
+        const mu_item_t *it = &s_items[s_sel];
+        char b[16];
+        if (it->badge) it->badge(b, sizeof(b));
+        else           b[0] = 0;
+        if (b[0]) snprintf(line, sizeof(line), "%s · %s", it->label, b);
+        else      snprintf(line, sizeof(line), "%s", it->label);
+        text = line;
+    }
+    cjk_text_draw(MU_MARGIN_X,
+                  epd_gfx_height() - MU_HINT_H + (MU_HINT_H - 16) / 2,
+                  0, text, EPD_GFX_BLACK);
+}
+
+/* 宫格主体：像素级滑动窗口（选中行驱动，行高不均）+ 可见行绘制；
+ * 详情栏纳入 body（局刷窗口含提示区，见 draw_grid_detail 注） */
+static void draw_grid_body(void)
+{
+    int cols = grid_cols();
+    mu_grow_t rows[MU_GRID_MAX_ROWS];
+    int nrows = grid_layout(rows, cols);
+    int cell_w = MU_ITEM_W / cols;
+
+    /* 选中项定位像素顶（窗口跟随：上顶入窗/下底不出窗） */
+    int sel_top = 0, y = 0;
+    for (int r = 0; r < nrows; r++) {
+        if (!rows[r].is_header && s_sel >= rows[r].first &&
+            s_sel < rows[r].first + rows[r].count)
+            sel_top = y;
+        y += grid_row_h(&rows[r]);
+    }
+    if (sel_top < s_goff) s_goff = sel_top;
+    if (sel_top + MU_GRID_CELL_H > s_goff + MU_LIST_H)
+        s_goff = sel_top + MU_GRID_CELL_H - MU_LIST_H;
+    if (s_goff < 0) s_goff = 0;
+
+    y = -s_goff;
+    for (int r = 0; r < nrows; r++) {
+        int rh = grid_row_h(&rows[r]);
+        if (y + rh > 0 && y < MU_LIST_H) {   /* 窗口裁剪 */
+            int ry = MU_LIST_TOP + y;
+            if (rows[r].is_header) {
+                cjk_text_draw(MU_MARGIN_X + 4, ry + (MU_GRID_HDR_H - 16) / 2,
+                              0, s_items[rows[r].first].label, EPD_GFX_BLACK);
+            } else {
+                for (int c = 0; c < rows[r].count; c++)
+                    draw_cell(rows[r].first + c,
+                              MU_MARGIN_X + c * cell_w, ry, cell_w);
+            }
+        }
+        y += rh;
+    }
+
+    draw_grid_detail();
 }
 
 /* ---- 二级模式列表页（4 项，光标预定位当前模式即「当前」标记，
@@ -1080,9 +1246,11 @@ static const mu_keyrow_t s_keys[] = {
     { "中",     "拉天气 / 功能菜单", 0, NULL },
     { "SET",    "轮换引文", 0, NULL },
     { NULL,     "[ 菜单内 ]", 0, NULL },
-    { "上/下",  "移动选择", 0, NULL },
+    { "上/下",  "移动选择 · 宫格跨行", 0, NULL },
+    { "左/右",  "宫格行内移动", 0, NULL },
     { "中",     "确认 / 进入", 0, NULL },
     { "SET",    "返回 / 主层退出", 0, NULL },
+    { "SET长",  "切换列表/宫格", 0, NULL },
     { "RST",    "退出回原页面", 0, NULL },
 };
 #define MU_KEYS_COUNT ((int)(sizeof(s_keys) / sizeof(s_keys[0])))
@@ -1186,13 +1354,17 @@ static void draw_vol(bool partial)
 static void draw_main(bool partial)
 {
     if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
-        partial_refresh(draw_main_body);
+        partial_refresh(s_grid ? draw_grid_body : draw_main_body);
         return;
     }
     epd_gfx_fill_screen(EPD_GFX_WHITE);
     draw_title("功能菜单", s_sel + 1, MU_ITEM_COUNT);
-    draw_main_body();
-    draw_hint();
+    if (s_grid) {
+        draw_grid_body();   /* 含详情栏（线+文字，§12.5）*/
+    } else {
+        draw_main_body();
+        draw_hint();
+    }
     draw_flush();
 }
 
@@ -1332,6 +1504,7 @@ static void menu_ui_exit(void)
     s_active = false;
     s_page   = MU_PAGE_MAIN;
     s_sel = s_off = 0;
+    s_goff = 0;   /* v1.4：宫格窗口复位（s_grid 不清，下次 enter 重置） */
 }
 
 /* 恢复型退出（SET 主菜单层 / RST 任意层级）：exit 后经
@@ -1354,14 +1527,82 @@ static void main_move(int dir)
     draw_main(true);
 }
 
+/* v1.4 §12.3：视图切换（菜单内长按 SET，即改即存 NVS 全刷重排）；
+ * s_sel 保持（两视图同一索引空间），滚动偏移按新几何复位重算 */
+static void menu_view_toggle(void)
+{
+    if (MU_TINY) {   /* TINY 强制列表（§12.2 档位核算），短震反馈 */
+        haptic_event(HAPTIC_ERROR);
+        return;
+    }
+    s_grid = !s_grid;
+    settings_menu_grid_set(s_grid);
+    s_goff = 0;   /* 几何已变，窗口复位（draw 内跟随重算） */
+    haptic_event(HAPTIC_MODE);
+    draw_main(false);   /* 模式重排=全刷（进入/换页惯例） */
+    LOG_I("menu view -> %s", s_grid ? "grid" : "list");
+}
+
+/* v1.4 §12.3：宫格四向移动——左/右=±1 跳组头（列表 main_move 同款
+ * 循环语义）；上/下=±行（目标行同列、列超行尾钳末格，组头行环形
+ * 跳过；表恒有非组头项无死循环，main_move 先例） */
+static void grid_move(int dx, int dy)
+{
+    if (dx) {
+        do {
+            s_sel = (s_sel + dx + MU_ITEM_COUNT) % MU_ITEM_COUNT;
+        } while (s_items[s_sel].is_header);
+    }
+    if (dy) {
+        int cols = grid_cols();
+        mu_grow_t rows[MU_GRID_MAX_ROWS];
+        int nrows = grid_layout(rows, cols);
+        int r = 0, c = 0;
+        for (int i = 0; i < nrows; i++) {
+            if (!rows[i].is_header && s_sel >= rows[i].first &&
+                s_sel < rows[i].first + rows[i].count) {
+                r = i;
+                c = s_sel - rows[i].first;
+                break;
+            }
+        }
+        int tr = r;
+        do {
+            tr = (tr + dy + nrows) % nrows;   /* 环形（列表循环一致） */
+        } while (rows[tr].is_header);
+        int tc = (c < rows[tr].count) ? c : rows[tr].count - 1;
+        s_sel = rows[tr].first + tc;
+    }
+    draw_main(true);
+}
+
 void menu_ui_on_button(nav_key_t id, button_event_t event)
 {
     if (!s_active) return;
-    if (event != BUTTON_EVENT_SHORT_PRESS) return;   /* 长按全部忽略 */
+    if (event == BUTTON_EVENT_LONG_PRESS) {
+        /* v1.4 §12.3：主菜单层长按 SET=切换列表/宫格视图；其余长按
+         * 全忽略（防误触，原语义不变） */
+        if (s_page == MU_PAGE_MAIN && id == NAV_SET) menu_view_toggle();
+        return;
+    }
+    if (event != BUTTON_EVENT_SHORT_PRESS) return;
     s_hint_override = NULL;                        /* 任意按键清一次性提示 */
 
     switch (s_page) {
     case MU_PAGE_MAIN:
+        if (s_grid) {   /* v1.4：宫格四向导航（左/右从忽略升格为移动） */
+            switch (id) {
+            case NAV_UP:     grid_move(0, -1); break;
+            case NAV_DOWN:   grid_move(0, +1); break;
+            case NAV_LEFT:   grid_move(-1, 0); break;
+            case NAV_RIGHT:  grid_move(+1, 0); break;
+            case NAV_CENTER: s_items[s_sel].activate(); break;
+            case NAV_SET:    menu_ui_exit_restore(); break;
+            case NAV_RST:    menu_ui_exit_restore(); break;
+            default: break;
+            }
+            break;
+        }
         switch (id) {
         case NAV_UP:     main_move(-1); break;
         case NAV_DOWN:   main_move(+1); break;
@@ -1649,9 +1890,13 @@ void menu_ui_enter(void)
     for (s_sel = 0; s_sel < MU_ITEM_COUNT - 1 && s_items[s_sel].is_header;
          s_sel++) {}
     s_off = 0;
+    s_goff = 0;
+    /* v1.4 §12.4：NVS 视图偏好定初始视图；TINY 档强制列表（宫格
+     * 不开放，设置页该档仅存偏好） */
+    s_grid = !MU_TINY && settings_menu_grid();
     haptic_event(HAPTIC_MODE);   /* 进入菜单 50ms（对齐模式切换/错词本） */
     draw_main(false);
-    LOG_I("menu entered");
+    LOG_I("menu entered (%s)", s_grid ? "grid" : "list");
 }
 
 /* T1.4 页面协议：enter=menu_ui_enter（幂等+触觉+首帧自绘）；
@@ -1666,22 +1911,32 @@ static bool menu_page_on_button(nav_key_t id, button_event_t event)
 const page_t g_menu_ui_page = { "menu", NULL, menu_page_on_button,
                                menu_ui_enter, NULL, true };
 
-/* 黄金帧动态区域 mask（T3.2）：主列表徽标列（badge 右对齐绘制，
- * 几何与 draw_item/draw_badge 同源；宽取徽标最大值：中文 3 字
+/* 黄金帧动态区域 mask（T3.2）：列表视图=主列表徽标列（badge 右对齐
+ * 绘制，几何与 draw_item/draw_badge 同源；宽取徽标最大值：中文 3 字
  * 点阵+余量，TINY 档仅 ASCII 徽标取 40）——收藏数/模式名/Wi-Fi
- * 状态/音频同步数/音量为运行期动态，差异不参与基线比对 */
+ * 状态/音频同步数/音量为运行期动态，差异不参与基线比对；
+ * v1.4 宫格视图：反白选中格随光标位置不定 + 详情栏动态 → 列表区
+ * 整区（标题栏下到屏底）均为动态区（自检 env NVS 空默认列表，
+ * 此分支仅 set_menuview=1 时触达） */
 int menu_ui_golden_mask(int (*out)[4], int max)
 {
     int n = 0;
     if (n < max) {
-        int w = MU_ITEM_W - MU_SB_W - 4;            /* 列表主体宽 */
-        int bw = MU_TINY ? 40 : (MU_FONT_H * 3 + 8);
-        int x = MU_MARGIN_X + w - 6 - bw;           /* badge 左缘（right_x 同源） */
-        if (x < 0) x = 0;
-        out[n][0] = x;
-        out[n][1] = MU_LIST_TOP;
-        out[n][2] = bw;
-        out[n][3] = MU_VISIBLE * MU_ITEM_H;        /* 列表可见区 */
+        if (s_grid) {
+            out[n][0] = 0;
+            out[n][1] = MU_TITLE_H;
+            out[n][2] = epd_gfx_width();
+            out[n][3] = epd_gfx_height() - MU_TITLE_H;
+        } else {
+            int w = MU_ITEM_W - MU_SB_W - 4;            /* 列表主体宽 */
+            int bw = MU_TINY ? 40 : (MU_FONT_H * 3 + 8);
+            int x = MU_MARGIN_X + w - 6 - bw;           /* badge 左缘（right_x 同源） */
+            if (x < 0) x = 0;
+            out[n][0] = x;
+            out[n][1] = MU_LIST_TOP;
+            out[n][2] = bw;
+            out[n][3] = MU_VISIBLE * MU_ITEM_H;        /* 列表可见区 */
+        }
         n++;
     }
     return n;

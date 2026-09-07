@@ -25,7 +25,10 @@
  * + 快捷键（2026-09-03：值列 = 已自定义键位数/「默认」；中键进入
  * 长按键配置子模式——上/下/左/右/SET/RST 六槽位 × shortcut_map
  * 动作目录循环切换，即改即存 NVS；映射执行与守卫见 main.cpp
- * shortcut_try_long 与 shortcut_map.h）。
+ * shortcut_try_long 与 shortcut_map.h）
+ * + 菜单样式（v1.4 §12.4 2026-09-07：列表/宫格二态，中键即改即存，
+ * 下次进菜单生效；菜单内长按 SET 即时切换同键双入口；TINY 档菜单
+ * 恒列表，该档仅存偏好换大屏后生效）。
  *
  * 取值 API 与 UI 分层：settings_audio/haptic_enabled 供 haptic.c /
  * ui_sfx.c / study_mode_machine.c 门控（纯 NVS 惰性缓存，无 UI 依赖，
@@ -43,6 +46,8 @@
  *   同一键跨面板重编译语义不漂移；映射见 main ui_apply_rotation）
  *   / set_vol u8（0~100 步进10，默认 75=0dB 历史听感；es8311 驱动
  *   内同步保存，dac_start 起播回写，重启后由 main audio_init 后同步）
+ *   / set_menuview u8（v1.4：0=列表（默认）/1=宫格；menu_ui_enter
+ *   读键定初始视图，TINY 档强制列表）
  *   / set_panel str（P1 运行期选屏：面板注册名，epd_driver_init
  *   读键覆盖 EPD_PANEL_DEFAULT_ID；缺失=跟随构建默认，「默认」选项
  *   删键——deck_active 同哲学）
@@ -111,6 +116,15 @@ int settings_volume(void);
 
 /** 音量 setter：钳 0~100，NVS 持久化 + es8311 即时生效。 */
 void settings_volume_set(int v);
+
+/** 菜单视图（set_menuview，v1.4 §12）：false=列表（默认） /
+ *  true=宫格。menu_ui_enter 读键定初始视图；TINY 档消费方强制
+ *  列表（宫格不开放，MENU_DESIGN §12.2 档位核算）。 */
+bool settings_menu_grid(void);
+
+/** 菜单视图 setter：NVS 即存（菜单内长按 SET 与设置页第 13 行
+ *  两入口共用；菜单激活中切换由 menu_ui 全刷重绘自理）。 */
+void settings_menu_grid_set(bool grid);
 
 #ifdef __cplusplus
 }
