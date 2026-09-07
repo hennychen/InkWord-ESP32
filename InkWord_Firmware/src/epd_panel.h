@@ -38,6 +38,9 @@ typedef enum {
     EPD_CTRL_UC8253, EPD_CTRL_SSD1680, EPD_CTRL_SSD1681,
     EPD_CTRL_IL0398, EPD_CTRL_IL91874, EPD_CTRL_UC8179,
     EPD_CTRL_JD79686, EPD_CTRL_SSD1619, EPD_CTRL_UC8151,
+    EPD_CTRL_SSD1677,   /* 4.26" GDEQ0426T82 800x480 BW（2026-09-06
+                         * 接入：0x44/0x4E 双字节 10-bit 地址，与
+                         * SSD1680/1619 单字节 X 不同族特征） */
     EPD_CTRL_UNKNOWN,
 } epd_controller_t;   /* 色彩面板控制器在选型时按 SOP（§十六）核对 */
 

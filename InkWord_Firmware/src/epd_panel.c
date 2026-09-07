@@ -49,6 +49,10 @@ extern const epd_panel_desc_t g_panel_gdeq031t10;
 /* panels/panel_hink_e0213a31.cpp（2.13" 122x250 BW 竖屏，HINK-E0213A31-A0，
  * LAYOUT_TINY 档；SSD1680，GxEPD2 B74 序列，2026-09-05 新增） */
 extern const epd_panel_desc_t g_panel_hink_e0213a31;
+/* panels/panel_gdeq0426t82_ssd1677.cpp（4.26" 800x480 BW，GDEQ0426T82，
+ * SSD1677，17P FPC；LAYOUT_LARGE 档首例，2026-09-06 新增，demo 序列
+ * 已接入，bring-up 待真机） */
+extern const epd_panel_desc_t g_panel_gdeq0426t82;
 
 static const epd_panel_desc_t *const s_registry[] = {
     &g_panel_depg0370,
@@ -60,6 +64,7 @@ static const epd_panel_desc_t *const s_registry[] = {
     &g_panel_e042a13bw,
     &g_panel_gdeq031t10,
     &g_panel_hink_e0213a31,
+    &g_panel_gdeq0426t82,
 };
 
 const epd_panel_desc_t *epd_panel_get_by_id(const char *id)
