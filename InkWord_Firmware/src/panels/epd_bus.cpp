@@ -16,11 +16,16 @@ extern "C" {
 
 /* —— SPI 事务原语（迁移源：六面板 epd_cmd/epd_dat/epd_write_buf
  * 同构实现，wft0290 注释口径：transfer 逐字节连发，SPI.writeBytes
- * 在 ESP32-S3 Arduino core 有 RAM 不落地陷阱，禁用） —— */
+ * 在 ESP32-S3 Arduino core 有 RAM 不落地陷阱，禁用） ——
+ *
+ * 2026-09-07 SPI 频率提升 4MHz → 8MHz：SSD1677 datasheet 确认
+ * 最高 20MHz（fSCL max 20MHz），SSD1619/1680 均支持 10MHz+，
+ * UC8151 支持 10MHz。8MHz 全面板安全，96KB 传输 192ms → 96ms。 */
+static const uint32_t k_spi_hz = 8000000;
 
 void bus_cmd(uint8_t c)
 {
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+    SPI.beginTransaction(SPISettings(k_spi_hz, MSBFIRST, SPI_MODE0));
     digitalWrite(EPD_CS_PIN, LOW);
     digitalWrite(EPD_DC_PIN, LOW);    /* DC=0 命令 */
     SPI.transfer(c);
@@ -30,7 +35,7 @@ void bus_cmd(uint8_t c)
 
 void bus_dat(uint8_t d)
 {
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+    SPI.beginTransaction(SPISettings(k_spi_hz, MSBFIRST, SPI_MODE0));
     digitalWrite(EPD_CS_PIN, LOW);
     digitalWrite(EPD_DC_PIN, HIGH);   /* DC=1 数据 */
     SPI.transfer(d);
@@ -40,7 +45,7 @@ void bus_dat(uint8_t d)
 
 void bus_dat_stream(const uint8_t *buf, size_t n)
 {
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+    SPI.beginTransaction(SPISettings(k_spi_hz, MSBFIRST, SPI_MODE0));
     digitalWrite(EPD_CS_PIN, LOW);
     digitalWrite(EPD_DC_PIN, HIGH);
     for (size_t i = 0; i < n; i++) SPI.transfer(buf[i]);
@@ -53,7 +58,7 @@ void bus_dat_stream(const uint8_t *buf, size_t n)
  * 地址计数器，帧行重排流不得分段） */
 void bus_dat_begin(void)
 {
-    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+    SPI.beginTransaction(SPISettings(k_spi_hz, MSBFIRST, SPI_MODE0));
     digitalWrite(EPD_CS_PIN, LOW);
     digitalWrite(EPD_DC_PIN, HIGH);
 }
