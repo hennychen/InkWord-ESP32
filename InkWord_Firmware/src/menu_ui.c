@@ -86,6 +86,10 @@ static const char *TAG = "MENU_UI";
 
 /* main.cpp 导出（study_mode_machine.c 引用 ui_render_word 同款先例） */
 extern const char *fw_version(void);
+/* 栈串联重构：学习视图栈页（main.cpp 定义，deck_flow_switch 导出先例） */
+extern const page_t g_collection_page;
+extern const page_t g_mastered_page;
+extern const page_t g_voice_page;
 /* T1.2：quiz_flow_start 迁 quiz_ui.c 或 quiz_ui_start（quiz_ui.h） */
 
 /* ---- 几何派生（MENU_DESIGN §4.2，全档运行期） ---- */
@@ -268,9 +272,11 @@ static void badge_volume(char *buf, size_t n)
 }
 
 /* ============================================================
- * activate 动作（「先 exit 后 enter」纪律：启动子功能前菜单自我
- * 退出（不恢复渲染——子功能自我管理屏幕，避免学习页闪现浪费一次
- * 全刷）；恢复型退出（SET/RST/模式确认）走 menu_ui_exit_restore）
+ * activate 动作（栈串联制 2026-09-08：菜单保持入栈，子功能页入栈
+ * 其上（push enter 自绘首帧，无学习页闪现），退出=pop 回菜单
+ * （render_top 经 menu_page_render 重绘当前层）；终结型动作
+ * （模式/词书确认）与动作型（墨封当前词）仍 menu_ui_exit 回 base；
+ * 恢复型退出（SET/RST）走 menu_ui_exit_restore）
  * ============================================================ */
 
 static void act_collection(void)
@@ -279,9 +285,9 @@ static void act_collection(void)
         haptic_event(HAPTIC_ERROR);   /* 空收藏：长震边界反馈不进入 */
         return;
     }
-    menu_ui_exit();
-    study_mode_enter_collection();   /* 计数已预检非零，必成功 */
-    page_router_render_top();
+    page_router_push(&g_collection_page);   /* 栈串联：enter=进视图
+                                             * +首帧（计数已预检非零），
+                                             * 退出 pop 回菜单 */
 }
 
 /* 墨封当前词（2026-09-04）：菜单自退后对词卡上下文当前词 toggle
@@ -321,9 +327,7 @@ static void act_mastered_list(void)
         haptic_event(HAPTIC_ERROR);   /* 空墨封录：长震边界反馈不进入 */
         return;
     }
-    menu_ui_exit();
-    study_mode_enter_mastered();     /* 计数已预检非零，必成功 */
-    page_router_render_top();
+    page_router_push(&g_mastered_page);     /* 栈串联：act_collection 同构 */
 }
 
 static void act_modesel(void)
@@ -357,20 +361,21 @@ static void act_wifi(void)
         act_portal();
         return;
     }
-    menu_ui_exit();
-    wifi_config_ui_enter();   /* 异步入队自我管理屏幕 */
+    wifi_config_ui_enter();   /* 栈串联：内部 push g_wifi_ui_page，
+                               * 任务异步自绘；主 loop 回收 pop 后
+                               * render_top 重绘菜单 */
 }
 
 static void act_portal(void)
 {
-    menu_ui_exit();
-    lan_portal_enter();
+    page_router_push(&g_portal_page);   /* 栈串联：LAN/portal 栈化收编
+                                         * （lan_display_server 导出），
+                                         * 任意键 pop 回菜单 */
 }
 
 static void act_lan(void)
 {
-    menu_ui_exit();
-    lan_server_enter_receive_page();
+    page_router_push(&g_lan_page);      /* act_portal 同构 */
 }
 
 /* AI 对话（P2B；A1 二级选择页）：先进模式页（自由/英中翻译/场景
@@ -417,9 +422,9 @@ static void chat_enter(int chatsel, int scenario_sel)
         draw_chatsel(false);
         return;
     }
-    menu_ui_exit();
     haptic_event(HAPTIC_MODE);            /* 进入新模式 50ms（先例） */
-    page_router_push(&g_chat_page);       /* T2.2 栈化：enter=首帧全刷 */
+    page_router_push(&g_chat_page);       /* 栈串联：菜单保持入栈，
+                                           * RST 退出 pop 回 CHATSEL 层 */
 }
 
 /* A3 前向声明（绘制函数在绘制区，文件序同 chat_enter 使用点先行） */
@@ -508,22 +513,27 @@ static void act_audio_sync(void)
  * 与 act_browse 同款双轨） */
 static void act_quiz(void)
 {
-    menu_ui_exit();
     if (!study_mode_enter_quiz()) {
-        haptic_event(HAPTIC_ERROR);   /* 词库不足：边界反馈 */
-        page_router_render_top();
+        haptic_event(HAPTIC_ERROR);   /* 词库不足：边界反馈，留菜单 */
         return;
     }
     haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
-    page_router_push(&g_quiz_page);   /* T2.2 栈化：enter 自绘首帧 */
+    page_router_push(&g_quiz_page);   /* 栈串联：退出 pop 回菜单 */
 }
 
-/* 我的书架（2026-09-05 阅读器增强）：菜单自退后推书架覆盖层
- * （无前置条件——空书架也显示占位提示页） */
+/* 我的书架（2026-09-05 阅读器增强；2026-09-07 修复）：空书架
+ * 预扫不进入——长震+菜单提示栏一次性文案（act_collection/act_mastered_list
+ * 空判同构，chat_enter 预检留页先例；原「空书架也显示占位提示页」
+ * 任意键退出后直落单词页，用户反馈不合理） */
 static void act_bookshelf(void)
 {
-    menu_ui_exit();
-    page_router_push(&g_book_shelf_page);
+    if (book_shelf_scan() == 0) {
+        haptic_event(HAPTIC_ERROR);   /* 没有书单：长震边界反馈不进入 */
+        s_hint_override = "没有书单 · SD卡books目录无书籍";
+        draw_main(false);   /* 全刷：提示栏一次性文案可见（任意键清除） */
+        return;
+    }
+    page_router_push(&g_book_shelf_page);   /* 栈串联：退出 pop 回菜单 */
 }
 
 /* v1.6 课程表：进入设置页（一级总览，上/下选天，中=编辑该天） */
@@ -541,16 +551,14 @@ static void act_schedule(void)
  * 清态 + 首帧全刷（T1.4 经 g_browse_page 栈顶 render 承担） */
 static void act_browse(void)
 {
-    menu_ui_exit();
     if (!study_mode_enter_browse()) {
-        haptic_event(HAPTIC_ERROR);   /* 空词库：边界反馈 */
-        page_router_render_top();
+        haptic_event(HAPTIC_ERROR);   /* 空词库：边界反馈，留菜单 */
         return;
     }
     haptic_event(HAPTIC_MODE);        /* 进入新模式 50ms（先例） */
-    page_router_push(&g_browse_page); /* T1.4 试点：enter=browse_mode_reset；
-                                       * 首帧 render_top 走栈顶 render */
-    page_router_render_top();
+    page_router_push(&g_browse_page); /* 栈串联：退出 pop 回菜单；选词
+                                       * seek 终结经 pop_to_base 直达词卡 */
+    page_router_render_top();         /* 首帧走栈顶 render */
 }
 
 /* 语音查词（同设计 §B3）：前置 Wi-Fi/Key 在
@@ -558,15 +566,13 @@ static void act_browse(void)
  * 学习页；满足则状态机清态起任务 + 首帧（MODE_VOICE 分流） */
 static void act_voice_search(void)
 {
-    menu_ui_exit();
     if (!study_mode_enter_voice_search()) {
-        haptic_event(HAPTIC_ERROR);   /* 无网/未配 Key：边界反馈 */
-        page_router_render_top();
+        haptic_event(HAPTIC_ERROR);   /* 无网/未配 Key：留菜单 */
         return;
     }
     haptic_event(HAPTIC_MODE);
-    voice_search_reset();
-    page_router_render_top();
+    page_router_push(&g_voice_page);  /* 栈串联：enter=reset+首帧，
+                                       * 退出 pop 回菜单 */
 }
 
 static void act_info(void)
@@ -589,8 +595,8 @@ static void act_volume(void)
  * （同级语义，退出回学习页由 settings_ui 自理） */
 static void act_settings(void)
 {
-    menu_ui_exit();
-    page_router_push(&g_settings_ui_page);   /* T1.4：enter=settings_ui_enter */
+    page_router_push(&g_settings_ui_page);   /* 栈串联：SET/RST 退出 pop
+                                               * 回菜单（原直落单词页） */
 }
 
 static void act_keys(void)
@@ -1254,12 +1260,12 @@ static const mu_keyrow_t s_keys[] = {
     { NULL,     "[ AI 对话 ]", 0, NULL },
     { "上/下",  "选模式 · 选场景", 0, NULL },
     { "中",     "说话·发送·重说", 0, NULL },
-    { "RST",    "退出回闪卡", 0, NULL },
+    { "RST",    "退出视图", 0, NULL },   /* 栈串联：回上级（菜单/学习页） */
     { NULL,     "[ 快速测验 ]", 0, NULL },
     { "上/下",  "移动选项", 0, NULL },
     { "中",     "作答", 0, NULL },
     { "SET",    "跳过（不评分）", 0, NULL },
-    { "RST",    "退出回闪卡", 0, NULL },
+    { "RST",    "退出视图", 0, NULL },   /* 栈串联：回上级（菜单/学习页） */
     { NULL,     "[ 待机页 ]", 0, NULL },
     { "中",     "拉天气 / 功能菜单", 0, NULL },
     { "SET",    "轮换引文", 0, NULL },
@@ -1518,7 +1524,7 @@ static void draw_scenario(bool partial)
 static void menu_ui_exit(void)
 {
     page_router_pop_if(&g_menu_ui_page);   /* T1.4：所有退出路径统一
-     * 出栈（非栈顶时 NULL 防御；「先 exit 后 enter」纪律不变） */
+     * 出栈（非栈顶时 NULL 防御；栈串联制下退出=pop 回上级） */
     s_active = false;
     s_page   = MU_PAGE_MAIN;
     s_sel = s_off = 0;
@@ -1918,15 +1924,36 @@ void menu_ui_enter(void)
 }
 
 /* T1.4 页面协议：enter=menu_ui_enter（幂等+触觉+首帧自绘）；
- * exit 无（清态统一在 menu_ui_exit，pop_if 由其调用，置 NULL 防双重）；
- * render 无（栈顶期间整页重绘不可达，模块自管局刷） */
+ * exit 无（清态统一在 menu_ui_exit，pop_if 由其调用，置 NULL 防双重） */
 static bool menu_page_on_button(nav_key_t id, button_event_t event)
 {
     menu_ui_on_button(id, event);
     return true;   /* 顶层覆盖层总消费（语义不变） */
 }
 
-const page_t g_menu_ui_page = { "menu", NULL, menu_page_on_button,
+/* 栈串联制（2026-09-08）：子功能页退出 pop 后 render_top 经此重绘菜单
+ * 当前层（s_page/s_sel 保持进入子功能前状态，如从 chat 退出回
+ * CHATSEL 层可立即换场景再进）；全刷（覆盖层退出低频，墨水屏节奏
+ * 可接受；菜单内光标移动仍局刷）。原 render=NULL（自管局刷，栈顶
+ * 期间重绘不可达）仅适用「先 exit 后 enter」时代，串联后必须可重绘 */
+static void menu_page_render(void)
+{
+    switch (s_page) {
+    case MU_PAGE_MODE:     draw_mode(false); break;
+    case MU_PAGE_DECK:     draw_deck(false); break;
+    case MU_PAGE_INFO:     draw_info(false); break;
+    case MU_PAGE_KEYS:     draw_keys(false); break;
+    case MU_PAGE_VOL:      draw_vol(false); break;
+    case MU_PAGE_CHATSEL:  draw_chatsel(false); break;
+    case MU_PAGE_SCENARIO: draw_scenario(false); break;
+    case MU_PAGE_REVIEW:   draw_review(false); break;
+    case MU_PAGE_SCHEDULE: draw_schedule(false); break;
+    case MU_PAGE_MAIN:
+    default:               draw_main(false); break;
+    }
+}
+
+const page_t g_menu_ui_page = { "menu", menu_page_render, menu_page_on_button,
                                menu_ui_enter, NULL, true };
 
 /* 黄金帧动态区域 mask（T3.2）：列表视图=主列表徽标列（badge 右对齐

@@ -477,16 +477,22 @@ void standby_on_button(nav_key_t id, button_event_t event)
     if (event == BUTTON_EVENT_LONG_PRESS) {
         switch (id) {
         case NAV_CENTER:
-            menu_ui_enter();             /* 既有跨任务进入模式（原 Wi-Fi 配网降为菜单项） */
+            /* 栈串联重构（2026-09-08）：menu_ui_enter 直调绕过页栈
+             * （栈非空时菜单不可达/退出无路径，显示真相源旁路）改
+             * push——push 内含 enter 回调，退出 pop 回待机页 */
+            page_router_push(&g_menu_ui_page);
             break;
         case NAV_UP:
             s_flag_ghost_clear = true;       /* loop 中执行清残影+整页重绘 */
             break;
         case NAV_LEFT:
-            lan_portal_enter();
+            page_router_push(&g_portal_page);   /* 栈串联：portal 栈化 */
             break;
         case NAV_RIGHT:
-            lan_server_enter_receive_page();
+            page_router_push(&g_lan_page);      /* 栈串联：LAN 接收页栈化
+                                                 * （原直调退出靠 base 层
+                                                 * 任意键分支，已随栈化
+                                                 * 退役） */
             break;
         default:
             break;

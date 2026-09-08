@@ -284,7 +284,10 @@ const page_t g_browse_page = { "browse", browse_mode_render,
                                browse_page_on_button,
                                browse_mode_reset, NULL, true };
 
-/* 选词跳转：seek 已切 FLASH 并渲染词卡（本视图自然终结，无需 exit） */
+/* 选词跳转：seek 已切 FLASH 并渲染词卡（本视图自然终结，无需 exit）。
+ * 栈串联重构（2026-09-08）：目录可从菜单进入（栈 [menu, browse]），
+ * 选词期望直达词卡而非回菜单——pop_to_base 逐层清栈（menu exit=NULL
+ * 安全；不调 render_top，时序约定同 pop_if，seek 自渲染） */
 static void confirm_word(void)
 {
     int n = 0;
@@ -294,15 +297,14 @@ static void confirm_word(void)
         return;
     }
     haptic_event(HAPTIC_MODE);
-    page_router_pop_if(&g_browse_page);   /* T1.4：seek 自带渲染词卡，
-     * 出栈须先行（栈顶残留 browse 时后续 render_top 会误重绘旧视图） */
+    page_router_pop_to_base();   /* browse + menu 依次清栈（终结型动作） */
     study_mode_seek(e[s_w_sel]);
     LOG_I("browse seek word #%d", e[s_w_sel]);
 }
 
 void browse_mode_on_button(nav_key_t id, button_event_t event)
 {
-    /* RST 长按：任意层级直接退出回闪卡（游标恢复进视图前位置） */
+    /* RST 长按：任意层级直接退出（栈串联回上级，游标恢复进视图前位置） */
     if (id == NAV_RST && event == BUTTON_EVENT_LONG_PRESS) {
         study_mode_exit_browse();
         page_router_exit(&g_browse_page);   /* P2：pop+render 两连收敛 */

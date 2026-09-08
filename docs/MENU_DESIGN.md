@@ -88,7 +88,7 @@ src/main.cpp              ← on_button 路由插入 + 两处长按中改道
         → wifi_config_ui → LAN → standby → 长按块 → 短按模式路由
 ```
 
-菜单置于最前：顶层覆盖层，激活期间接管一切（与 wifi_config_ui 同级语义）。菜单启动子功能（配网/AP/LAN）时**先自我退出**再调既有入口函数（「先 exit 后 enter」纪律），避免双激活。
+菜单置于最前：顶层覆盖层，激活期间接管一切（与 wifi_config_ui 同级语义）。菜单启动子功能时经 `page_router_push` 入栈其上（栈串联制，2026-09-08；原「先 exit 后 enter」互斥 overlay 时代纪律已退役，见 §八）。
 
 **复用先例**：
 - 列表范式：`wifi_config_ui.c` `draw_list_page()` / `draw_list_body()`（反选高亮/滚动条/局刷重绘，2026-08 已真机验证）
@@ -186,7 +186,7 @@ v1.2 兑现原二期预留两项：设置（§7.5）、快速测验；v1.3 兑�
 
 - **渲染策略**：进入/换页 = 全刷；选择移动 = 清列表区 + 重绘 + `epd_gfx_flush_window_passes(0, MU_TITLE_H, W, H-MU_TITLE_H, 1)` 单遍局刷（抄 `wifi_config_ui.c` `draw_list_page(partial=true)` 路径）
 - **局刷保养**：独立计数阈值 10（对齐 `WIFI_UI_PARTIAL_MAX`），达阈值升级全刷
-- **退出恢复**：`menu_ui_exit()` → main 侧 `ui_render_current()`（模式可能已变，need_full 自然触发全刷）
+- **退出恢复**：`menu_ui_exit()` → 栈空后 `page_router_render_top()`（模式可能已变，need_full 自然触发全刷；栈串联后子功能退出回菜单同理，见 §八）
 - **三色屏**：`partial_enabled=false` 的面板局刷请求自动降级全刷，无需特判
 
 ### 与现有路由的互斥
@@ -227,7 +227,7 @@ void  study_mode_exit_collection(void);
 | **SET 长按** | 取消收藏 → 当前词移出序列，游标钳位 n-1（**实施注记**：与 `study_mode_after_quality` 的回绕 0 略异——取消末词时显示前一词不跳跃，清空自动退出，见 `study_mode_after_uncollect` 注释） |
 | 左/右 | 自评（收藏与掌握正交，不从序列移除） |
 | RST 短按 | 回收藏首词 |
-| RST 长按 | 退出收藏视图回闪卡 |
+| RST 长按 | 退出收藏视图（栈串联回上级：菜单/学习页） |
 
 **RST 长按路由改三级判**：`WRONGBOOK→退出；COLLECTION→退出；否则→进错词本`。
 
@@ -493,3 +493,57 @@ set_menuview  u8   0=列表（默认，键缺失同义）/ 1=宫格
 | 四向跨组移动边界语义（组头/组尾衔接） | 实施注记「让位方向与移动方向一致」+ 真机遍历 22 格验证 |
 | 上/下 ±cols 落组头行让位歧义 | 同上；native-test 补移动算法单测（可选） |
 | 备选方案（未采纳）：宫格仅 MID+ 开放 | 与「用户自由切换」需求相悖，改为 TINY 单档限制 + SMALL 注记 |
+
+## 八、栈串联返回语义（2026-09-08 页面跳转重构）
+
+### 8.1 背景
+
+栈化前菜单启动子功能遵循「先 exit 后 enter」（互斥 overlay 时代产物）：子功能退出直落单词页，无法返回菜单（用户主诉）；LAN 接收页/AP portal 不入栈（`display_claim` 外部独占），退出逻辑埋在 base 按键里，栈非空时不可达；待机页进菜单直调 `menu_ui_enter()` 绕过页栈。
+
+### 8.2 设计原则
+
+1. **栈串联制**：菜单是栈一员，子功能页入栈其上；退出=pop 一层，`render_top` 自动恢复上级页（「从哪进退哪」）
+2. **退出键零变化**：各子功能页保持现有退出键（quiz RST=退出、settings SET/RST=退出等），串联后退出落点自然从 base 变为菜单
+3. **全屏视图栈化收编**：LAN/portal/收藏/墨封录/错词本/语音查词补齐 `page_t` 协议入栈，`display_claim` 机制保留（渲染守卫双保险）
+4. **base 层瘦身**：`base_page_on_button` 只留 base 形态路由（pron 前置/READER/REVIEW/待机），词卡七键与出厂长按提取为 `word_view_on_button` 与栈页共用
+
+### 8.3 栈页全景（page_router 栈深 4）
+
+| 栈页 | 定义位置 | owns_display | 进入路径 |
+|---|---|---|---|
+| menu | menu_ui.c | true | 学习/待机页长按中、shortcut |
+| settings / wifi / quiz / browse / book_shelf / chat | 各模块 | true / false | 菜单 act_* / shortcut |
+| lan_rx / portal | lan_display_server.cpp | true | 学习页长按右/左、菜单、待机页、shortcut、无凭据开机 |
+| wrongbook / collection / mastered / voice | main.cpp | false | RST 长按 / 菜单 / shortcut |
+| reader_menu / book_shelf（串联先例） | reader_menu.c / book_shelf.c | true | 阅读页中键 / reader_menu |
+
+最深链：`[menu, collection, settings]`=3（收藏视图内 RST 短按进设置）；极端重复入栈深 4 溢出日志兑底。
+
+### 8.4 关键场景落点对照
+
+| 场景 | 改前落点 | 改后落点 |
+|---|---|---|
+| 菜单→设置/Wi-Fi/LAN/门户/书架/语音查词→退出 | 单词页 | **功能菜单** |
+| 菜单→AI对话→RST | 闪卡 | **菜单（CHATSEL 层）** |
+| 菜单→测验→RST/小结 | 闪卡 | **功能菜单** |
+| 菜单→目录→RST 顶层退出 | 闪卡 | **功能菜单** |
+| 菜单→目录→选词 seek | 词卡 | 词卡（不变，`pop_to_base` 清栈直达） |
+| 学习页长按右→LAN→任意键 | 学习页 | 学习页（不变，栈化机制化） |
+| 无凭据开机自动门户→配网成功 | 学习页 | 待机页（不变） |
+| 收藏/墨封录清空 | 退回闪卡 | **退回上级（菜单/学习页）** |
+| 待机页长按中→菜单→退出 | 待机页 | 待机页（不变）+ 修栈旁路 |
+
+### 8.5 实现锚点
+
+- `page_router.c`：`pop_to_base()`（逐层 pop 不调 render_top，终结型动作用）；push 先入栈后调 enter（新页首帧时栈顶守卫放行）
+- `main.cpp`：`word_view_on_button()`（base 与栈页共用词卡路由）；4 个学习视图栈页（`g_wrongbook/collection/mastered/voice_page`）；主 loop portal 配网自动收尾回收（任务置标志 + 主循环 pop，页栈单写者纪律）
+- `menu_ui.c`：`menu_page_render()` 补齐（退出回菜单可重绘）；act_* 全部 push 化；终结型（模式/切书）保持 `menu_ui_exit` 回 base
+- `browse_mode.c`：`confirm_word` 改 `pop_to_base` + seek（选词直达词卡）
+- `standby_page.c`：长按中/左/右改 push（修栈旁路）
+- `chat_mode.c`：退出编排不变（exit_chat + `page_router_exit`），落点由栈决定
+
+### 8.6 验收要点
+
+- 上表逐行真机回归；菜单状态保持（从 chat 退出回 CHATSEL 层可立即换场景）
+- 栈顶期间各页渲染/按键独占正常（LAN 帧不覆盖菜单等）；深链溢出防御日志不触发
+- 8 env 构建零新警告 + native-test 门禁通过

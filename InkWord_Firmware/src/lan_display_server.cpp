@@ -61,7 +61,6 @@
 #include "refresh_scheduler.h"
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
-#include "study_mode_machine.h"
 #include "deck_manager.h"
 #include "learning_state.h"
 #include "word_parser.h"
@@ -114,11 +113,12 @@ static bool s_portal_provision = false;        /* 无凭据配网场景（连上
 static volatile bool s_dns_run = false;        /* DNS 劫持任务运行标志 */
 static TaskHandle_t s_dns_task = NULL;
 static TaskHandle_t s_portal_task = NULL;
+static volatile bool s_portal_auto_exit = false; /* 栈串联重构：配网成功
+                                                  * 自动收尾标志（任务置位，
+                                                  * 主 loop 读清回收栈页） */
 
 /* main.cpp 提供：外部直刷后强制下一次学习界面渲染走全刷 */
 extern "C" void ui_force_full_refresh_next(void);
-/* main.cpp 提供：学习界面渲染入口（portal 结束后恢复画面用） */
-extern "C" void ui_render_word(study_mode_t mode, int index);
 /* main.cpp 提供：切书编排（v1.3 T3.1：NVS+词库重载+状态作废+进度隔离） */
 extern "C" bool deck_flow_switch(int idx);
 
@@ -1277,7 +1277,12 @@ static void portal_monitor_task(void *arg)
         if (lan_server_is_active())
             lan_server_leave_receive_page();
 
-        ui_render_word(study_mode_current(), 0);   /* 恢复学习界面 */
+        /* 栈串联重构（2026-09-08）：原任务上下文直调 ui_render_word
+         * 恢复学习界面——portal 栈化后页栈仍在（任务不动栈，单写者
+         * 纪律），改置标志由主 loop 回收 pop_if+render_top（wifi 页
+         * 任务回收同款）；portal 已被用户按键退出时主 loop pop_if
+         * NULL 防御零动作 */
+        s_portal_auto_exit = true;
         break;
     }
     s_portal_task = NULL;
@@ -1364,3 +1369,32 @@ void lan_portal_exit(void)
 
     LOG_I("AP portal exited by user");
 }
+
+bool lan_portal_take_auto_exit(void)
+{
+    if (!s_portal_auto_exit) return false;
+    s_portal_auto_exit = false;
+    return true;
+}
+
+/* ---- 页面协议实例（栈串联重构 2026-09-08）----
+ * LAN 接收页/AP portal 原为 display_claim 外部独占（不入栈），退出
+ * 逻辑埋在 base_page_on_button——栈非空时不可达，是菜单「先 exit 后
+ * enter」的技术强制根源。栈化收编：任意按键事件返回 false（dispatch
+ * 统一 pop+render_top 回上级页，原 base 层任意键退出同语义）；
+ * enter/exit 复用幂等生命周期函数；render=NULL（任务/enter 自绘整帧，
+ * render_top 有 NULL 防御）；owns_display=true 与保留的 claim 机制
+ * 双保险（display_busy / top_owns_display 两道渲染守卫均覆盖）。 */
+static bool lan_anykey_on_button(nav_key_t id, button_event_t event)
+{
+    (void)id;
+    (void)event;
+    return false;   /* 任意键请求退出（含长按；幂等 exit 防重复收尾） */
+}
+
+const page_t g_lan_page = { "lan_rx", NULL, lan_anykey_on_button,
+                            lan_server_enter_receive_page,
+                            lan_server_leave_receive_page, true };
+
+const page_t g_portal_page = { "portal", NULL, lan_anykey_on_button,
+                               lan_portal_enter, lan_portal_exit, true };

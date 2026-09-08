@@ -2,8 +2,9 @@
  * @file page_router.c
  * @brief 页面路由实现（T1.4）：覆盖层小栈 + base 委托
  *
- * 栈深上限 4：现役最深串联为 menu→settings 同级替换（深 1），
- * 预留 quiz/browse/voice/chat 等临时视图后续接入的极端叠层。
+ * 栈深上限 4：栈串联制（2026-09-08）现役最深链为 menu→collection→
+ * settings（收藏视图内 RST 短按进设置，深 3），menu→子功能页常规深 2；
+ * reader_menu→book_shelf 串联深 2。
  * 调用方均在主 loop / 按键回调上下文，无并发（display_busy 渲染
  * 守卫与 claim/release 的 LAN 生命周期调用同上下文，原子 bool 读）。
  */
@@ -50,6 +51,14 @@ bool page_router_exit(const page_t *p)
     if (!page_router_pop_if(p)) return false;
     page_router_render_top();
     return true;
+}
+
+void page_router_pop_to_base(void)
+{
+    while (s_top > 0) {
+        const page_t *p = s_stack[--s_top];
+        if (p->exit) p->exit();
+    }
 }
 
 const page_t *page_router_top(void)

@@ -9,13 +9,15 @@
  *   上 短按=上一条（释义多页时先翻上一释义页）/ 长按=清残影全刷；
  *   下 短按=下一条（释义多页时先翻下一释义页）/ 长按=切换学习模式；
  *   中 短按=发音 / 长按=进入功能菜单（快捷菜单 menu_ui：收藏/模式/
- *        配网/门户/LAN/设备信息；Wi-Fi 配网降为菜单项，2026-08-23）；
+ *        配网/门户/LAN/设备信息；Wi-Fi 配网降为菜单项，2026-08-23；
+ *        栈串联制下菜单入栈，子功能页退出回菜单，2026-09-08）；
  *   左 短按=自评「忘记」Q1（SM-2 质量分 1：连错+1，>0 入错词本）/ 长按=进入 AP 直连/配网门户
- *        （手机连 InkWord-Setup 热点直传，绕开路由器隔离；任意键退出）；
- *   右 短按=自评「简单」Q5（SM-2 质量分 5：连错清零，错词本中移出）/ 长按=进入 LAN 接收页（同网浏览器直传，任意键退出）；
+ *        （手机连 InkWord-Setup 热点直传，绕开路由器隔离；栈页任意键
+ *        退出回上级）；
+ *   右 短按=自评「简单」Q5（SM-2 质量分 5：连错清零，错词本中移出）/ 长按=进入 LAN 接收页（同网浏览器直传，栈页任意键退出回上级）；
  *   SET 短按=遮蔽/揭晓释义（闪卡自测；待机页=轮换下一条引文）/ 长按=收藏/取消当前词（左栏 * 标记；收藏视图内=移出序列）；
- *   RST 短按=回到当前模式第一条 / 长按=临时视图进出（错词本/收藏/墨封录
- *        浏览，按当前所在视图退出，否则进错词本）；墨封=已熟练标记
+ *   RST 短按=回到当前模式第一条 / 长按=临时视图进出（错词本/收藏/墨封
+ *        录栈页，视图内=退出回上级，否则进错词本）；墨封=已熟练标记
  *        （菜单「墨封当前词」/快捷键 SK_ACT_MASTER，置位播落印动画，
  *        闪卡/听写序列过滤；墨封录内 SET 长按=启封移出）。
  * 上述长按动作出厂映射可由用户改绑（2026-09-03 shortcut_map：设置页
@@ -196,6 +198,17 @@ static void base_render(void)
  * 唤醒后首个中键事件后清位（见 on_button 注释） */
 static bool s_wake_swallow_center = false;
 
+/* ---- 学习视图栈页前置声明（栈串联重构 2026-09-08；定义见
+ * base_page_on_button 之后——收藏/墨封录/语音查词经 extern "C" 导出
+ * 供 menu_ui.c act_* 引用；错词本仅固件内部引用） ---- */
+extern "C" const page_t g_collection_page;
+extern "C" const page_t g_mastered_page;
+extern "C" const page_t g_voice_page;
+extern const page_t g_wrongbook_page;   /* 仅固件内部引用（无 C 侧）；
+                                        * extern 声明+后置定义保 external
+                                        * linkage（const 聚合无默认初始化
+                                        * 不可 tentative 声明） */
+
 /* ---- 用户自定义长按快捷键执行器（2026-09-03，shortcut_map）----
  * 编排镜像 menu_ui act_*（去掉菜单自退；覆盖层进入均经 page_router_push
  * 栈化，enter 失败长震留在当前页）。默认/无动作不由此处理。 */
@@ -211,14 +224,15 @@ static void shortcut_exec(sk_action_t act)
         study_mode_switch_next();
         page_router_render_top();
         break;
-    case SK_ACT_COLLECTION:   /* =菜单 act_collection */
+    case SK_ACT_COLLECTION:   /* =菜单 act_collection（进收藏视图） */
         if (learning_state_collected_count() == 0) {
             haptic_event(HAPTIC_ERROR);   /* 空收藏：边界反馈不进入 */
             return;
         }
-        study_mode_enter_collection();   /* 计数已预检非零，必成功 */
         haptic_event(HAPTIC_MODE);
-        page_router_render_top();
+        page_router_push(&g_collection_page);   /* 栈串联：enter=置
+                                                  * 状态+首帧（计数已
+                                                  * 预检非零必成功） */
         break;
     case SK_ACT_WRONGBOOK:   /* =出厂 RST 长按体（非临时视图分支） */
         if (!study_mode_enter_wrongbook()) {
@@ -226,17 +240,15 @@ static void shortcut_exec(sk_action_t act)
             return;
         }
         haptic_event(HAPTIC_MODE);
-        page_router_render_top();
+        page_router_push(&g_wrongbook_page);    /* 状态已置，enter=首帧 */
         break;
     case SK_ACT_VOICE:   /* =菜单 act_voice_search */
         if (!study_mode_enter_voice_search()) {
             haptic_event(HAPTIC_ERROR);   /* 无网/未配 Key：边界反馈 */
-            page_router_render_top();
             return;
         }
         haptic_event(HAPTIC_MODE);
-        voice_search_reset();
-        page_router_render_top();
+        page_router_push(&g_voice_page);   /* 栈串联：enter=reset+首帧 */
         break;
     case SK_ACT_CHAT:   /* 自由对话直入（菜单 A1 二级页默认项；预检在
                           * enter_chat，失败码仅区分长震不显原因文案） */
@@ -273,20 +285,24 @@ static void shortcut_exec(sk_action_t act)
         page_router_render_top();
         break;
     case SK_ACT_READER:
+    case SK_ACT_BOOKSHELF:
+        /* 空书架预检（2026-09-07 用户反馈修复）：菜单 act_bookshelf
+         * 同款边界——没有书单长震不进入（防空态占位页按键直落单词页） */
+        if (book_shelf_scan() == 0) {
+            haptic_event(HAPTIC_ERROR);
+            return;
+        }
         haptic_event(HAPTIC_MODE);
         page_router_push(&g_book_shelf_page);   /* 阅读器增强：进书架选书 */
-        break;
-    case SK_ACT_BOOKSHELF:
-        page_router_push(&g_book_shelf_page);
         break;
     case SK_ACT_GHOST:   /* =出厂上键长按体 */
         refresh_force_full();
         break;
     case SK_ACT_PORTAL:   /* =出厂左键长按体 */
-        lan_portal_enter();
+        page_router_push(&g_portal_page);   /* 栈串联：portal 栈化收编 */
         break;
     case SK_ACT_LAN:   /* =出厂右键长按体 */
-        lan_server_enter_receive_page();
+        page_router_push(&g_lan_page);      /* 栈串联：LAN 接收页栈化收编 */
         break;
     case SK_ACT_COLLECT:   /* =出厂 SET 长按体（星标/收藏切换） */
         if (study_mode_current() == MODE_READER) return;
@@ -344,11 +360,24 @@ static bool shortcut_try_long(nav_key_t id)
     return true;
 }
 
-/* base 页按键编排（P2 路由补完收编：原 on_button 的 dispatch 后段落
- * 整体迁入，行为零变化）：pron 短事务（与栈互斥，base 层触发）→
- * 语音查词/LAN/待机页转发 → 长按功能（菜单/清残影/模式/门户/LAN/
- * 收藏/错词本）→ 短按学习流（翻词/发音/遮蔽/自评/设置页直达）。
- * base 为最底层，事件总被消费（true），忽略分支同样返回 true */
+/* 词卡视图通用按键路由（栈串联重构 2026-09-08 提取）：base 层
+ * （FLASH/听写/拼写）与学习视图栈页（错词本/收藏/墨封录）共用同源
+ * ——上/下短按=词内释义翻页→翻词，中=发音，SET=遮蔽/揭晓，RST=进
+ * 设置，左/右=自评；出厂长按六键；SET 长按=移出收藏/启封（after_*
+ * 清空自动归位时退视图），RST 长按=临时视图退出/进错词本。
+ * 返回 false=请求退出视图（栈页 dispatch 统一 pop+render_top；base
+ * 调用时 m 恒为持久模式，RST/SET 分支不会返回 false） */
+static bool word_view_on_button(study_mode_t m, nav_key_t id,
+                                button_event_t event);
+
+/* base 页按键编排（P2 路由补完收编 + 栈串联重构 2026-09-08 瘦身）：
+ * pron 短事务前置（与栈互斥，base 层触发）→ 待机页转发 → 长按功能
+ * （用户自定义 shortcut/阅读模式章节）→ READER/REVIEW 专用路由 →
+ * 词卡视图通用路由（word_view_on_button 与临时视图栈页同源）。
+ * MODE_VOICE（g_voice_page 栈页）与 LAN/portal（g_lan_page/g_portal_
+ * page 栈页）栈化后由栈顶分发，base 分支退役；错词本/收藏/墨封录
+ * 临时视图按键由栈页接管。base 为最底层，事件总被消费（true），
+ * 忽略分支同样返回 true */
 static bool base_page_on_button(nav_key_t id, button_event_t event)
 {
 
@@ -366,31 +395,11 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
      * on_button 转发与刷新编排均在 quiz_ui 模块内 */
 
     /* 教材目录浏览（设计 §A2）经页面路由栈顶分发（T1.4 试点，顶部
-     * dispatch；选词 confirm 经 seek 终结视图时 pop_if 归位） */
+     * dispatch；选词 confirm 经 seek 终结视图时 pop_to_base 归位） */
 
-    /* AI 语音查词（设计 §B2）：按键全转发（中=录音/提前停/确认，上下=
-     * 候选移动，RST=重说）；退出请求由编排层执行——chat 同款编排 */
-    if (study_mode_current() == MODE_VOICE) {
-        if (!voice_search_on_button(id, event)) {
-            haptic_event(HAPTIC_MODE);
-            voice_search_request_exit();
-            study_mode_exit_voice_search();
-            page_router_render_top();
-        }
-        return true;
-    }
-
-    /* Wi-Fi 配置页：T2.2 栈化后经 g_wifi_ui_page 栈顶分发（任务异步
-     * 自绘，退出由下方 loop 回收归位） */
-
-    /* LAN 接收页 / AP portal 激活时，任意按键退出并回到学习界面
-     * （portal 模式下 lan_portal_exit 关热点回 STA；均为幂等调用） */
-    if (lan_server_is_active()) {
-        lan_portal_exit();
-        lan_server_leave_receive_page();
-        page_router_render_top();
-        return true;
-    }
+    /* 栈串联重构（2026-09-08）：MODE_VOICE（g_voice_page 栈页）、LAN
+     * 接收页/AP portal（g_lan_page/g_portal_page 栈页）均由栈顶分发，
+     * 原 base 层转发/任意键退出分支退役 */
 
     /* 待机页激活时（词库为空），按键交给待机页处理 */
     if (standby_is_active()) {
@@ -398,13 +407,13 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
         return true;
     }
 
-    /* 长按功能集中在五键上：中=功能菜单，上=清残影，下=模式切换，
-     * 左=AP 门户（隔离环境下 STA 页面不可达时的可靠通道），
-     * 右=LAN 接收页；2026-09-03 起六槽位可经 shortcut_map 改绑
-     * （守卫见 shortcut_try_long，未定制键走出厂 switch） */
+    /* 长按：用户自定义 shortcut 先行（守卫见 shortcut_try_long）；
+     * 阅读模式长按：上/下=章节跳转（阅读器增强 2026-09-05）、
+     * RST=退出阅读回闪卡（其余不响应）。出厂六键长按（菜单/清残影/
+     * 模式/门户/LAN/收藏/错词本）统一收编 word_view_on_button（与
+     * 词卡短按同源单一真相，临时视图栈页共用） */
     if (event == BUTTON_EVENT_LONG_PRESS) {
         if (shortcut_try_long(id)) return true;
-        /* 阅读模式长按：上/下=章节跳转（阅读器增强 2026-09-05） */
         if (study_mode_current() == MODE_READER) {
             if (id == NAV_UP) {
                 study_mode_reader_chapter_step(-1);
@@ -415,7 +424,6 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
                 return true;
             }
             if (id == NAV_RST) {
-                /* RST 长按 = 退出阅读回闪卡 */
                 haptic_event(HAPTIC_MODE);
                 study_mode_set(MODE_FLASH);
                 page_router_render_top();
@@ -423,77 +431,8 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
             }
             return true;   /* 其余长按阅读模式不响应 */
         }
-        switch (id) {
-        case NAV_CENTER:
-            page_router_push(&g_menu_ui_page);   /* T1.4：enter=menu_ui_enter */
-            return true;
-        case NAV_UP:
-            LOG_I("user requested ghost-clear full refresh");
-            refresh_force_full();
-            return true;
-        case NAV_DOWN:
-            /* 切换学习模式并重绘（ui_render_word 检测到模式变化自动全刷） */
-            haptic_event(HAPTIC_MODE);   /* 模式切换 50ms（PRD 5.4） */
-            ui_sfx_play(UI_SFX_MODE);    /* T1.6 模式切换音「滴--」 */
-            study_mode_switch_next();
-            page_router_render_top();
-            return true;
-        case NAV_LEFT:
-            lan_portal_enter();
-            return true;
-        case NAV_RIGHT:
-            /* 幂等启动服务器并显示访问 URL */
-            lan_server_enter_receive_page();
-            return true;
-        case NAV_SET:
-            /* 收藏/取消当前词（P1）：局部重绘内容区刷新 * 标记；
-             * 阅读模式无“当前词”概念，不响应；
-             * 收藏视图（MODE_COLLECTION）内=移出序列（after_uncollect
-             * 收缩钳位，清空自动退回闪卡），2026-08-23；
-             * 墨封录（MODE_MASTERED）内=启封当前词移出序列
-             * （after_master 同构，启封无动画，2026-09-04） */
-            if (study_mode_current() == MODE_READER) return true;
-            haptic_event(HAPTIC_REVIEW); /* 确认型操作归自评档 30ms（PRD 5.4 未单列） */
-            if (study_mode_current() == MODE_MASTERED) {
-                learning_state_toggle_master(study_mode_current_word_index());
-                study_mode_after_master();
-                page_router_render_top();   /* 清空退回闪卡或游标收缩 */
-                return true;
-            }
-            learning_state_toggle_collect(study_mode_current_word_index());
-            if (study_mode_current() == MODE_COLLECTION &&
-                study_mode_after_uncollect()) {
-                page_router_render_top();   /* 清空退回闪卡或游标收缩 */
-                return true;
-            }
-            page_router_render_top();  /* T2.2：星标局部重绘经 base 分流 */
-            return true;
-        case NAV_RST:
-            /* 临时视图进出四级判：错词本/收藏/墨封录浏览内=退出，否则进
-             * 错词本（无错词 100ms 长震边界反馈，PRD 5.4） */
-            if (study_mode_current() == MODE_WRONGBOOK) {
-                study_mode_exit_wrongbook();
-            } else if (study_mode_current() == MODE_COLLECTION) {
-                study_mode_exit_collection();
-            } else if (study_mode_current() == MODE_MASTERED) {
-                study_mode_exit_mastered();
-            } else if (!study_mode_enter_wrongbook()) {
-                haptic_event(HAPTIC_ERROR);
-                ui_sfx_play(UI_SFX_ERR); /* T1.6 边界拒绝音「嘟-」 */
-                return true;
-            }
-            haptic_event(HAPTIC_MODE);
-            page_router_render_top(); /* 模式变化 -> 全刷重绘第一条 */
-            return true;
-        default:
-            return true;
-        }
     }
 
-    /* 短按：上/下翻词（释义多页时先词内翻释义页），中=发音，
-     * SET=遮蔽/揭晓释义，RST=回第一条；
-     * 左=自评「忘记」Q1，右=自评「简单」Q5（FSRS 评分入 learning_state，
-     * 错词本内答对自动移出，序列清空自动退回闪卡） */
     if (event != BUTTON_EVENT_SHORT_PRESS) return true;
 
     /* 阅读模式短按路由（P3 + 阅读器增强 2026-09-05）：
@@ -545,6 +484,89 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
         review_ui_on_button(id, event))
         return true;
 
+    /* 词卡视图通用路由（栈串联重构收编：原出厂长按 switch + 词卡
+     * 短按 switch；base 层 m 恒为 FLASH/听写/拼写等持久模式，
+     * 临时视图专属分支由栈页侧消费） */
+    return word_view_on_button(study_mode_current(), id, event);
+}
+
+/* ---- word_view_on_button 实现（提取自原 base 通用词卡路由，
+ * 行为零变化 + 栈化清空退视图；见前置声明处协议注释） ---- */
+static bool word_view_on_button(study_mode_t m, nav_key_t id,
+                                button_event_t event)
+{
+    if (event == BUTTON_EVENT_LONG_PRESS) {
+        switch (id) {
+        case NAV_CENTER:
+            page_router_push(&g_menu_ui_page);   /* T1.4：enter=menu_ui_enter */
+            return true;
+        case NAV_UP:
+            LOG_I("user requested ghost-clear full refresh");
+            refresh_force_full();
+            return true;
+        case NAV_DOWN:
+            /* 切换学习模式并重绘（ui_render_word 检测到模式变化自动全刷） */
+            haptic_event(HAPTIC_MODE);   /* 模式切换 50ms（PRD 5.4） */
+            ui_sfx_play(UI_SFX_MODE);    /* T1.6 模式切换音「滴--」 */
+            study_mode_switch_next();
+            page_router_render_top();
+            return true;
+        case NAV_LEFT:
+            page_router_push(&g_portal_page);   /* 栈串联：portal 栈化 */
+            return true;
+        case NAV_RIGHT:
+            page_router_push(&g_lan_page);      /* 栈串联：LAN 接收页栈化 */
+            return true;
+        case NAV_SET:
+            /* 收藏/取消当前词（P1）：局部重绘内容区刷新 * 标记；
+             * 阅读模式无“当前词”概念，不响应；
+             * 收藏视图（MODE_COLLECTION）内=移出序列（after_uncollect
+             * 收缩钳位，清空自动退视图），2026-08-23；
+             * 墨封录（MODE_MASTERED）内=启封当前词移出序列
+             * （after_master 同构，启封无动画，2026-09-04）；栈化后
+             * 清空（after_* 内部归位 FLASH）以模式变化判据退视图 */
+            if (m == MODE_READER) return true;
+            haptic_event(HAPTIC_REVIEW); /* 确认型操作归自评档 30ms */
+            if (m == MODE_MASTERED) {
+                learning_state_toggle_master(study_mode_current_word_index());
+                study_mode_after_master();
+                if (study_mode_current() != MODE_MASTERED)
+                    return false;   /* 清空：退视图回上级（栈页 pop） */
+                page_router_render_top();   /* 游标收缩留视图重绘 */
+                return true;
+            }
+            learning_state_toggle_collect(study_mode_current_word_index());
+            if (m == MODE_COLLECTION) {
+                study_mode_after_uncollect();
+                if (study_mode_current() != MODE_COLLECTION)
+                    return false;   /* 清空：退视图回上级 */
+            }
+            page_router_render_top();  /* 星标局部重绘/游标收缩 */
+            return true;
+        case NAV_RST:
+            /* 临时视图=RST 长按退出（原四级判语义；dispatch 统一 pop
+             * 回上级）；base=进错词本（无错词 100ms 长震+拒绝音，PRD 5.4） */
+            if (m == MODE_WRONGBOOK || m == MODE_COLLECTION ||
+                m == MODE_MASTERED)
+                return false;
+            if (!study_mode_enter_wrongbook()) {
+                haptic_event(HAPTIC_ERROR);
+                ui_sfx_play(UI_SFX_ERR); /* T1.6 边界拒绝音「嘟-」 */
+                return true;
+            }
+            haptic_event(HAPTIC_MODE);
+            page_router_push(&g_wrongbook_page);   /* 状态已置，enter=首帧 */
+            return true;
+        default:
+            return true;
+        }
+    }
+    if (event != BUTTON_EVENT_SHORT_PRESS) return true;
+
+    /* 短按：上/下翻词（释义多页时先词内翻释义页），中=发音，
+     * SET=遮蔽/揭晓释义，RST=直达设置页（2026-08-27 音量等高频项
+     * 快速触达）；左=自评「忘记」Q1，右=自评「简单」Q5（FSRS 评分入
+     * learning_state，错词本内答对自动移出，序列清空自动退视图） */
     switch (id) {
     case NAV_UP:
         if (ui_mean_page_step(-1)) return true;  /* 释义多页：词内上一页 */
@@ -561,9 +583,6 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
         study_mode_handle_action(2);   /* confirm：遮蔽/揭晓释义 */
         return true;
     case NAV_RST:
-        /* RST 短按直达设置页（2026-08-27 用户需求：音量等高频项快速
-         * 触达；原「回当前模式首条」退役——低频功能，可由多次上键
-         * 等价达成；quiz/AI 对话等临时视图的 RST 语义在前置分支不受影响） */
         page_router_push(&g_settings_ui_page);  /* T1.4：enter=settings_ui_enter */
         return true;
     case NAV_LEFT:
@@ -586,14 +605,129 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
                 if (just_mastered) ui_stamp_play();
             }
         }
-        /* 墨封后序列收缩 + 自动跳转下词（避免动画后白屏） */
+        /* 墨封/自评后序列收缩 + 清空自动退视图（原 base 层清空退闪卡
+         * 由 render_top 自适应；栈化后模式归位=pop 栈页回上级） */
         study_mode_after_master();
+        if ((m == MODE_WRONGBOOK || m == MODE_MASTERED) &&
+            study_mode_current() != m)
+            return false;   /* 清空：退视图回上级 */
         page_router_render_top();
         return true;
     default:
         return true;
     }
 }
+
+/* ---- 学习视图栈页（栈串联重构 2026-09-08）：错词本/收藏/墨封录/
+ * 语音查词临时视图补齐 page_t 协议入栈（P4 收编）。owns_display=
+ * false 复用渲染族（quiz/chat 先例，top_owns_display 守卫放行）；
+ * on_button 与 base 同源（word_view_on_button；false=清空/退出 →
+ * dispatch 统一 pop+render_top，pop 时 exit 幂等清态回上级——
+ * 「从哪进退哪」）。enter 语义按调用方约定分两类：collection/
+ * mastered 由菜单/快捷键计数预检（非零必成功）后 push，enter 置
+ * 状态+首帧；wrongbook/voice 调用方先 enter_xxx（bool 预检反馈，
+ * 失败长震留原页），enter 仅首帧/reset ---- */
+
+static void wrongbook_render(void)
+{
+    ui_render_word(MODE_WRONGBOOK, study_mode_current_word_index());
+}
+
+static void wrongbook_enter(void)
+{
+    wrongbook_render();   /* 状态由调用方 enter_wrongbook 先置（预检） */
+}
+
+static void wrongbook_exit(void)
+{
+    study_mode_exit_wrongbook();
+}
+
+static bool wrongbook_on_button(nav_key_t id, button_event_t event)
+{
+    return word_view_on_button(MODE_WRONGBOOK, id, event);
+}
+
+const page_t g_wrongbook_page = { "wrongbook", wrongbook_render,
+                                  wrongbook_on_button, wrongbook_enter,
+                                  wrongbook_exit, false };
+
+static void collection_render(void)
+{
+    ui_render_word(MODE_COLLECTION, study_mode_current_word_index());
+}
+
+static void collection_enter(void)
+{
+    study_mode_enter_collection();   /* 调用方计数预检非零必成功 */
+    collection_render();             /* 首帧（ui_render_word 模式变化全刷） */
+}
+
+static void collection_exit(void)
+{
+    study_mode_exit_collection();
+}
+
+static bool collection_on_button(nav_key_t id, button_event_t event)
+{
+    return word_view_on_button(MODE_COLLECTION, id, event);
+}
+
+extern "C" const page_t g_collection_page = { "collection", collection_render,
+                                              collection_on_button,
+                                              collection_enter,
+                                              collection_exit, false };
+
+static void mastered_render(void)
+{
+    ui_render_word(MODE_MASTERED, study_mode_current_word_index());
+}
+
+static void mastered_enter(void)
+{
+    study_mode_enter_mastered();   /* act_collection 同构（预检必成功） */
+    mastered_render();
+}
+
+static void mastered_exit(void)
+{
+    study_mode_exit_mastered();
+}
+
+static bool mastered_on_button(nav_key_t id, button_event_t event)
+{
+    return word_view_on_button(MODE_MASTERED, id, event);
+}
+
+extern "C" const page_t g_mastered_page = { "mastered", mastered_render,
+                                            mastered_on_button,
+                                            mastered_enter, mastered_exit,
+                                            false };
+
+/* 语音查词：退出编排收敛于 exit 回调（voice_search.h 生命周期注释的
+ * 「main.cpp 编排层」职责栈化内聚；haptic 退出反馈保留在 on_button） */
+static bool voice_on_button(nav_key_t id, button_event_t event)
+{
+    if (voice_search_on_button(id, event)) return true;
+    haptic_event(HAPTIC_MODE);   /* 退出模式反馈（原 base 转发语义） */
+    return false;                /* dispatch 统一 pop+render_top 回上级 */
+}
+
+static void voice_enter(void)
+{
+    voice_search_reset();   /* 清态+起任务（调用方已预检 enter 成功） */
+    voice_search_render();  /* 首帧（三色屏零渲染直接 return） */
+}
+
+static void voice_exit(void)
+{
+    voice_search_request_exit();      /* 请求录音/上传任务收尾 */
+    study_mode_exit_voice_search();   /* 模式归位（清态幂等） */
+}
+
+extern "C" const page_t g_voice_page = { "voice", voice_search_render,
+                                         voice_on_button, voice_enter,
+                                         voice_exit, false };
 
 /* T1.4 base 页注册（P2 路由补完：on_button 经 dispatch 栈空转发）；
  * enter/exit 无（常驻） */
@@ -721,11 +855,13 @@ void setup()
 
     /* 4.5 Wi-Fi 配置：无凭据时自动开启 AP 配网门户
      *     （手机连 InkWord-Setup 热点后自动弹出配置页）；
-     *     软键盘配置 UI 仍可长按 C 进入 */
+     *     软键盘配置 UI 仍可长按 C 进入。栈串联重构（2026-09-08）：
+     *     portal 栈化收编（g_portal_page），任意键退出/配网成功自动
+     *     收尾均回待机页（原直调 lan_portal_enter 不入栈旁路退役） */
     wifi_config_ui_init();
     if (!wifi_has_saved_credentials()) {
         LOG_W("no saved WiFi, starting AP portal");
-        lan_portal_enter();
+        page_router_push(&g_portal_page);
     }
 
     /* 4.6 BLE 配网服务（App 扫描发现/配网；失败仅告警，
@@ -822,6 +958,13 @@ void loop()
         ui_force_full_refresh_next();
         page_router_render_top();
     }
+    /* 栈串联重构：portal 配网成功自动收尾回收（portal_monitor_task
+     * 任务上下文置 s_portal_auto_exit 标志，页栈单写者纪律回主循环
+     * pop+render_top；portal 已被用户按键退出时 pop_if NULL 零动作，
+     * wifi 页回收同款模式） */
+    if (lan_portal_take_auto_exit() &&
+        page_router_pop_if(&g_portal_page))
+        page_router_render_top();
     standby_tick();
     learning_state_maybe_save();  /* LR02 sparse 延迟保存（无脏零开销） */
     power_maybe_sleep();          /* P5：无操作超时且无禁睡条件则入睡（不返回） */

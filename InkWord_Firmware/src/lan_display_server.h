@@ -14,6 +14,8 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include "button_handler.h"   /* nav_key_t/button_event_t（page_t 依赖） */
+#include "page_router.h"      /* 栈串联重构：g_lan_page/g_portal_page 导出 */
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,6 +60,27 @@ void lan_portal_enter(void);
  *        非 portal 模式调用仅清除前台标志（幂等）。
  */
 void lan_portal_exit(void);
+
+/**
+ * @brief T1.4 页面协议实例（栈串联重构 2026-09-08）：LAN 接收页/
+ *        AP portal 原为 display_claim 外部独占（不入栈），退出逻辑
+ *        埋在 base 按键层（栈非空时不可达）；栈化后任意键退出走
+ *        dispatch 统一 pop+render_top 回上级。经 page_router_push
+ *        入栈（enter/exit 复用上方幂等生命周期函数）。
+ */
+extern const page_t g_lan_page;
+
+/** @brief AP portal 页面协议实例（g_lan_page 同构） */
+extern const page_t g_portal_page;
+
+/**
+ * @brief 取用 portal 自动退出标志（读清）：portal_monitor_task 检测
+ *        配网成功自动收尾时置位；主 loop 检查后回收 portal 栈页
+ *        （page_router_pop_if + render_top，wifi_config_ui s_active
+ *        主 loop 回收同款——页栈单写者纪律，任务上下文不动栈）。
+ * @return true = 本次检测到自动退出，调用方应回收栈页
+ */
+bool lan_portal_take_auto_exit(void);
 
 /**
  * @brief 消费一帧待刷的 LAN 直传帧（T0.3 主任务投递）。

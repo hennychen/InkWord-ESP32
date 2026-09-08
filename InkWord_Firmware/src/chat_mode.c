@@ -937,7 +937,8 @@ static bool chat_page_on_button(nav_key_t id, button_event_t event)
     haptic_event(HAPTIC_MODE);       /* 退出模式 50ms（进/出同档） */
     study_mode_exit_chat();          /* 内部 request_exit：任务静默收尾 */
     page_router_exit(&g_chat_page);  /* P2：pop+render_top 两连收敛；
-                                       * 模式变化自然全刷回闪卡 */
+                                       * 栈串联后回上级（菜单 CHATSEL 层/
+                                       * 学习页），模式归位全刷语义不变 */
     return true;
 }
 

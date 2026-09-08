@@ -17,6 +17,10 @@
  *     （P2 路由补完：原各页手写退出三连收敛于编排层；带业务编排的
  *     退出仍页内自理后返回 true，如 chat 的模式机归位）；
  *   - name 为页标识（日志/黄金帧页面 id 同源；无路由行为语义）。
+ *
+ * 栈串联制（2026-09-08 重构）：菜单保持入栈，子功能页入栈其上，
+ * 退出=pop 一层 render_top 自动恢复上级（「从哪进退哪」）；覆盖层
+ * 间不再「先 exit 后 enter」（互斥 overlay 时代纪律退役）。
  */
 #ifndef INKWORD_PAGE_ROUTER_H
 #define INKWORD_PAGE_ROUTER_H
@@ -51,6 +55,13 @@ const page_t *page_router_pop_if(const page_t *p);
 /** 页面侧主动退出编排：pop_if 成功则 render_top（原各页手写两连
  *  收敛；非栈顶时零动作）；返回是否实际弹出 */
 bool page_router_exit(const page_t *p);
+
+/** 清空覆盖栈直达 base（栈串联重构 2026-09-08）：逐层 pop（各层
+ *  exit 回调依次执行，自顶向下）；不调 render_top（渲染恢复时序
+ *  约定同 pop_if——调用方自理，如 browse 选词 seek 自渲染词卡）。
+ *  供「终结型动作」场景使用：菜单→目录→选词 seek 直达词卡，
+ *  不逐层返回菜单 */
+void page_router_pop_to_base(void);
 
 /** 栈顶页；栈空返回 base（未 init 返回 NULL） */
 const page_t *page_router_top(void);
