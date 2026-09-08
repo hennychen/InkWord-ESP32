@@ -1,0 +1,5 @@
+# 字库 Linux 生成链依赖（tools/gen_cjk_font.py，开源通用化 Phase 4）
+# swift 权威链（tools/gen_cjk_font.swift，macOS）零 Python 依赖。
+# 安装：pip3 install -r tools/requirements.txt
+freetype-py>=2.3      # FreeType 绑定：字形渲染 + cmap 覆盖检测
+fonttools>=4.38       # 无 fontconfig 环境的目录扫描字体管理（ttc 逐 face 解析）

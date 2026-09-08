@@ -1,11 +1,12 @@
 /**
  * @file cjk_font.h
- * @brief 中文点阵字库接口（四级 16/20/24/32px + 引文表；生成文件勿手改）
+ * @brief 中文点阵字库接口（四级 16/20/24/32px；生成文件勿手改）
  *
  * 字形数据 cjk_font_data.bin（EMBED_FILES 编入固件），码点升序二分查找。
  * 位图行主序 MSB-first，bit=1 着色，可直接 blit 到 epd_gfx_draw_bitmap。
  * level 档位：0=16px / 1=20px / 2=24px / 3=32px（32px 级 LARGE 档大屏，
  * 2026-09-03）；阅读器按级取形并做墨迹盒变宽渲染（reader_engine）。
+ * 引文表已拆出至 quotes_app.h（App 层，开源通用化 Phase 2 2026-10-24）。
  * 由 tools/gen_cjk_font.swift 生成。
  */
 #ifndef INKWORD_CJK_FONT_H
@@ -30,12 +31,5 @@ int cjk_glyph_cell_size(int level);
 
 /** 指定级每行字节数：2/3/3/4；level 越界返回 0 */
 int cjk_glyph_stride_size(int level);
-
-#define CHUANXILU_QUOTE_N 24                /**< 引文条数（=小时数） */
-/** 待机页逐时轮换引文（UTF-8，\n 分行，每行 <=8字） */
-extern const char *const k_chuanxilu_quotes[CHUANXILU_QUOTE_N];
-
-/** 引文出处（右下角署名，UTF-8 单行） */
-extern const char k_chuanxilu_attrib[];
 
 #endif /* INKWORD_CJK_FONT_H */

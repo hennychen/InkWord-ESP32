@@ -191,6 +191,30 @@ extern void test_exam_refused_when_clock_unsynced(void);
 extern void test_exam_month_rollover_math(void);
 extern void test_exam_leap_year_math(void);
 
+/* page_router 栈协议 + epd_panel desc 契约（开源通用化 Phase 1.5）
+ * 同 runner 挂载（page_router 依赖 esp_log stub 兼容；epd_panel 的
+ * g_panel_* 链接位由 test_epd_panel.c 内 stub desc 顶替） */
+extern void test_router_push_idempotent_top_repeat(void);
+extern void test_router_push_null_and_overflow(void);
+extern void test_router_pop_if_only_top_match(void);
+extern void test_router_pop_to_base_exits_each_layer(void);
+extern void test_router_top_falls_to_base_and_null(void);
+extern void test_router_display_claim_semantics(void);
+extern void test_router_top_owns_display_flag_semantics(void);
+extern void test_router_dispatch_null_on_button_swallows(void);
+extern void test_router_dispatch_false_pops_and_renders(void);
+extern void test_router_dispatch_true_consumed_keeps_stack(void);
+extern void test_router_dispatch_base_forward_and_no_base(void);
+extern void test_panel_desc_check_accepts_valid(void);
+extern void test_panel_desc_check_name_violations(void);
+extern void test_panel_desc_check_geometry_ranges(void);
+extern void test_panel_desc_check_frame_budget(void);
+extern void test_panel_desc_check_color_plane_pairs(void);
+extern void test_panel_desc_check_palette_and_timing(void);
+extern void test_panel_desc_check_ops_mandatory(void);
+extern void test_panel_registry_lookup_and_bounds(void);
+extern void test_panel_registry_stubs_contract_valid(void);
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -264,5 +288,26 @@ int main(void)
     RUN_TEST(test_layout_cached_pointer_stable);
     RUN_TEST(test_layout_profile_sanity_all_kinds);
     RUN_TEST(test_layout_ppi_auto_level);   /* PPI 自动层（2026-09-08） */
+    /* 开源通用化 Phase 1.5：路由栈协议 + 面板 desc 契约 */
+    RUN_TEST(test_router_push_idempotent_top_repeat);
+    RUN_TEST(test_router_push_null_and_overflow);
+    RUN_TEST(test_router_pop_if_only_top_match);
+    RUN_TEST(test_router_pop_to_base_exits_each_layer);
+    RUN_TEST(test_router_top_falls_to_base_and_null);
+    RUN_TEST(test_router_display_claim_semantics);
+    RUN_TEST(test_router_top_owns_display_flag_semantics);
+    RUN_TEST(test_router_dispatch_null_on_button_swallows);
+    RUN_TEST(test_router_dispatch_false_pops_and_renders);
+    RUN_TEST(test_router_dispatch_true_consumed_keeps_stack);
+    RUN_TEST(test_router_dispatch_base_forward_and_no_base);
+    RUN_TEST(test_panel_desc_check_accepts_valid);
+    RUN_TEST(test_panel_desc_check_name_violations);
+    RUN_TEST(test_panel_desc_check_geometry_ranges);
+    RUN_TEST(test_panel_desc_check_frame_budget);
+    RUN_TEST(test_panel_desc_check_color_plane_pairs);
+    RUN_TEST(test_panel_desc_check_palette_and_timing);
+    RUN_TEST(test_panel_desc_check_ops_mandatory);
+    RUN_TEST(test_panel_registry_lookup_and_bounds);
+    RUN_TEST(test_panel_registry_stubs_contract_valid);
     return UNITY_END();
 }

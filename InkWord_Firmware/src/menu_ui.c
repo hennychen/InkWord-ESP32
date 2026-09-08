@@ -41,6 +41,7 @@
  */
 #include "menu_ui.h"
 #include "page_router.h" /* T1.4：g_menu_ui_page/覆盖层栈（渲染恢复经 render_top） */
+#include "inkword_features.h" /* 开源通用化 Phase 1：裁剪轴宏（行项/act/badge #if 联动） */
 #include "debug_log.h"
 #include "epd_driver.h"
 #include "cjk_text.h"
@@ -239,10 +240,12 @@ static void badge_mode(char *buf, size_t n)
     snprintf(buf, n, "%s", mu_mode_label(study_mode_current()));
 }
 
+#if INKWORD_FEATURE_WIFI
 static void badge_wifi(char *buf, size_t n)
 {
     snprintf(buf, n, "%s", wifi_is_connected() ? "已连接" : "未连接");
 }
+#endif
 
 /* 词书徽标（v1.3 T3.1）：当前活跃卡组名（中文 wide，TINY 省略先例） */
 static void badge_deck(char *buf, size_t n)
@@ -252,6 +255,7 @@ static void badge_deck(char *buf, size_t n)
 
 /* 音频同步徽标：同步中「...」/未统计「?」/闲时「缺N/云总M」（纯 ASCII，
  * TINY 档可显）；缺失数读 audio_sync 缓存，任务结束时自动更新 */
+#if INKWORD_FEATURE_CLOUD
 static void badge_audio_sync(char *buf, size_t n)
 {
     if (audio_sync_is_running()) {
@@ -264,12 +268,15 @@ static void badge_audio_sync(char *buf, size_t n)
     else
         snprintf(buf, n, "%d/%d", miss, audio_sync_cloud_total());
 }
+#endif
 
 /* 音量徽标（2026-08-27）：当前档位纯 ASCII（TINY 档可显） */
+#if INKWORD_FEATURE_AUDIO
 static void badge_volume(char *buf, size_t n)
 {
     snprintf(buf, n, "%d", settings_volume());
 }
+#endif
 
 /* ============================================================
  * activate 动作（栈串联制 2026-09-08：菜单保持入栈，子功能页入栈
@@ -349,7 +356,9 @@ static void act_deck(void)
     draw_deck(false);
 }
 
-/* 前置声明：act_wifi TINY 档重定向引用（定义于下方） */
+/* 前置声明：act_wifi TINY 档重定向引用（定义于下方）；
+ * 配网族（wifi/portal）同用 WIFI 轴裁剪 */
+#if INKWORD_FEATURE_WIFI
 static void act_portal(void);
 
 static void act_wifi(void)
@@ -372,22 +381,27 @@ static void act_portal(void)
                                          * （lan_display_server 导出），
                                          * 任意键 pop 回菜单 */
 }
+#endif
 
+#if INKWORD_FEATURE_LAN
 static void act_lan(void)
 {
     page_router_push(&g_lan_page);      /* act_portal 同构 */
 }
+#endif
 
 /* AI 对话（P2B；A1 二级选择页）：先进模式页（自由/英中翻译/场景
  * 对话），确认后才组包进入；前置预检（Wi-Fi/Key/SD）在
  * study_mode_enter_chat 内，不满足长震回学习页；满足则进入对话
  * 临时视图（首帧全刷由 base_render 的 MODE_CHAT 分流承担） */
+#if INKWORD_FEATURE_AI
 static void act_chat(void)
 {
     s_page = MU_PAGE_CHATSEL;
     s_chatsel_sel = 0;
     draw_chatsel(false);
 }
+#endif
 
 /* 对话确认进入（A1）：按二级页选择组 chat_request_t（mode/scenario/
  * title；free 留空串=URL 不携 query，与老固件请求逐字节一致）；
@@ -433,6 +447,7 @@ static void draw_review(bool partial);
 /* 周报拉取一次性任务（A3）：按键上下文零 HTTP（chat_mode 触发位同哲学
  * 的一次性版本）；结果写静态区后在任务上下文渲染（chat_mode 任务内
  * set_state→ui_render_chat 先例），gen/页态双重校验丢弃过期渲染 */
+#if INKWORD_FEATURE_AI && INKWORD_FEATURE_CLOUD
 static void review_fetch_task(void *arg)
 {
     int gen = (int)(intptr_t)arg;
@@ -479,10 +494,12 @@ static void act_review(void)
         draw_review(false);
     }
 }
+#endif
 
 /* 音频同步：菜单内唯一非独占后台动作（不 exit 菜单，任务 6KB 栈串行
  * 下载，徽标转「...」，完成双短震反馈）。确认时现算缺失数（阻塞
  * ~1s@5000 词，墨水屏节奏可接受），全齐则不启动 */
+#if INKWORD_FEATURE_CLOUD
 static void act_audio_sync(void)
 {
     if (audio_sync_is_running()) {   /* 已在跑：边界拒绝 */
@@ -506,6 +523,7 @@ static void act_audio_sync(void)
     haptic_event(HAPTIC_MODE);
     draw_main(true);                 /* 徽标转「...」，任务后台跑 */
 }
+#endif
 
 /* 快速测验（v1.2 T2.3，MENU_DESIGN 二期位）：前置词库 ≥8 在
  * study_mode_enter_quiz 内，不满足长震回学习页；满足则经
@@ -564,6 +582,7 @@ static void act_browse(void)
 /* 语音查词（同设计 §B3）：前置 Wi-Fi/Key 在
  * study_mode_enter_voice_search 内（chat 预检先例），不满足长震回
  * 学习页；满足则状态机清态起任务 + 首帧（MODE_VOICE 分流） */
+#if INKWORD_FEATURE_AI
 static void act_voice_search(void)
 {
     if (!study_mode_enter_voice_search()) {
@@ -574,6 +593,7 @@ static void act_voice_search(void)
     page_router_push(&g_voice_page);  /* 栈串联：enter=reset+首帧，
                                        * 退出 pop 回菜单 */
 }
+#endif
 
 static void act_info(void)
 {
@@ -585,11 +605,13 @@ static void act_info(void)
 /* 音量调节页（2026-08-27）：菜单内即调即听（上/下 ±10 即时生效，
  * 中键试听当前词），不 exit 菜单；状态与设置页音量行共用
  * （settings_volume_set 单一入口：NVS + es8311） */
+#if INKWORD_FEATURE_AUDIO
 static void act_volume(void)
 {
     s_page = MU_PAGE_VOL;
     draw_vol(false);
 }
+#endif
 
 /* 设置（v1.2 T2.5，MENU_DESIGN 二期位）：菜单自退后进设置覆盖层
  * （同级语义，退出回学习页由 settings_ui 自理） */
@@ -610,28 +632,46 @@ static void act_keys(void)
  * 数组追加即扩展点，组头行 label 与按键说明页组头同风格方括号；
  * 2026-08-27 [系统] 组增「音量」置「设置」前：高频直达项前置；
  * 2026-08-28 [学习] 组增「教材目录/语音查词」置收藏后（使用频率
- * 前插，设计 §B3；图标复用词书/对话剪影） */
+ * 前插，设计 §B3；图标复用词书/对话剪影）；开源通用化 Phase 1：
+ * 被裁轴行项 #if 联动裁剪（offline 档菜单无死入口，
+ * 行裁则对应 act_x/badge_x 同裁防 unused 警告） */
 static const mu_item_t s_items[] = {
     { "[ 学习 ]",  true,  NULL,               NULL,             NULL },
     { "收藏列表",   false, menu_icon_collected, badge_collected,  act_collection },
     { "墨封当前词", false, menu_icon_master,    NULL,             act_master },
     { "墨封录",     false, menu_icon_master,   badge_mastered,   act_mastered_list },
     { "教材目录",   false, menu_icon_decks,    NULL,             act_browse },
+#if INKWORD_FEATURE_AI
     { "语音查词",   false, menu_icon_chat,     NULL,             act_voice_search },
+#endif
     { "模式选择",   false, menu_icon_modesel,  badge_mode,       act_modesel },
     { "词书选择",   false, menu_icon_decks,    badge_deck,       act_deck },
+#if INKWORD_FEATURE_AI
     { "AI 对话",    false, menu_icon_chat,     NULL,             act_chat },
+#endif
+#if INKWORD_FEATURE_AI && INKWORD_FEATURE_CLOUD
     { "对话周报",   false, menu_icon_info,     NULL,             act_review },
+#endif
     { "快速测验",   false, menu_icon_quiz,     NULL,             act_quiz },
     { "我的书架",   false, menu_icon_decks,    NULL,             act_bookshelf },
     { "课程表",     false, menu_icon_settings, NULL,             act_schedule },
+#if INKWORD_FEATURE_CLOUD || INKWORD_FEATURE_WIFI || INKWORD_FEATURE_LAN
     { "[ 同步 ]",  true,  NULL,               NULL,             NULL },
+#endif
+#if INKWORD_FEATURE_CLOUD
     { "音频同步",   false, menu_icon_audio,    badge_audio_sync, act_audio_sync },
+#endif
+#if INKWORD_FEATURE_WIFI
     { "Wi-Fi 配网", false, menu_icon_wifi,     badge_wifi,       act_wifi },
     { "AP 配网门户", false, menu_icon_ap,       NULL,            act_portal },
+#endif
+#if INKWORD_FEATURE_LAN
     { "LAN 接收页", false, menu_icon_lan,      NULL,            act_lan },
+#endif
     { "[ 系统 ]",  true,  NULL,               NULL,             NULL },
+#if INKWORD_FEATURE_AUDIO
     { "音量",       false, menu_icon_volume,   badge_volume,     act_volume },
+#endif
     { "设置",       false, menu_icon_settings, NULL,             act_settings },
     { "设备信息",   false, menu_icon_info,     NULL,             act_info },
     { "按键说明",   false, menu_icon_keys,     NULL,             act_keys },

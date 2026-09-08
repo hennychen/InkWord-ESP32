@@ -44,6 +44,8 @@
 
 #include "debug_log.h"
 #include "gpio_config.h"
+#include "inkword_features.h" /* 开源通用化 Phase 1：功能裁剪宏权威
+                                * （离线档五轴=0，段内 #if 包裹见各处） */
 #include "epd_driver.h"
 #include "audio_player.h"
 #include "es8311.h"        /* 2026-08-27 音量恢复：启动后 NVS 镜像同步进 codec 驱动状态 */
@@ -242,6 +244,7 @@ static void shortcut_exec(sk_action_t act)
         haptic_event(HAPTIC_MODE);
         page_router_push(&g_wrongbook_page);    /* 状态已置，enter=首帧 */
         break;
+#if INKWORD_FEATURE_AI
     case SK_ACT_VOICE:   /* =菜单 act_voice_search */
         if (!study_mode_enter_voice_search()) {
             haptic_event(HAPTIC_ERROR);   /* 无网/未配 Key：边界反馈 */
@@ -265,6 +268,7 @@ static void shortcut_exec(sk_action_t act)
         page_router_push(&g_chat_page);
         break;
     }
+#endif
     case SK_ACT_QUIZ:   /* =菜单 act_quiz */
         if (!study_mode_enter_quiz()) {
             haptic_event(HAPTIC_ERROR);   /* 词库不足：边界反馈 */
@@ -850,24 +854,32 @@ void setup()
 
     /* 4. WiFi 联网（失败不阻塞主流程）；同步凭据（base URL / 设备 key）
      *    从 NVS 恢复到 sync_client，首次注册留待联网后 background_task */
+#if INKWORD_FEATURE_WIFI
     wifi_manager_init();
+#endif
+#if INKWORD_FEATURE_CLOUD
     sync_credentials_load();
+#endif
 
     /* 4.5 Wi-Fi 配置：无凭据时自动开启 AP 配网门户
      *     （手机连 InkWord-Setup 热点后自动弹出配置页）；
      *     软键盘配置 UI 仍可长按 C 进入。栈串联重构（2026-09-08）：
      *     portal 栈化收编（g_portal_page），任意键退出/配网成功自动
      *     收尾均回待机页（原直调 lan_portal_enter 不入栈旁路退役） */
+#if INKWORD_FEATURE_WIFI
     wifi_config_ui_init();
+#endif
+#if INKWORD_FEATURE_WIFI && INKWORD_FEATURE_LAN
     if (!wifi_has_saved_credentials()) {
         LOG_W("no saved WiFi, starting AP portal");
         page_router_push(&g_portal_page);
     }
+#endif
 
     /* 4.6 BLE 配网服务（App 扫描发现/配网；失败仅告警，
      *     Portal 与软键盘配网路径不受影响）。
      *     默认禁用，根因见文件头 INKWORD_BLE_PROVISION 注释 */
-#if INKWORD_BLE_PROVISION
+#if INKWORD_BLE_PROVISION && INKWORD_FEATURE_WIFI
     ble_provision_init();
 #endif
 
@@ -946,9 +958,12 @@ void loop()
     button_event_t ev;
     if (button_wait(&id, &ev, 100))
         on_button(id, ev);
+#if INKWORD_FEATURE_LAN
     /* T0.3（修 C1 终态）：LAN 帧由主任务直刷（httpd 只收帧置就绪），
      * EPD 回归单写者；无待刷帧时零开销返回 */
     lan_display_drain_frame();
+#endif
+#if INKWORD_FEATURE_WIFI
     /* T2.2 wifi 页栈回收：exit_config 在 wifi 任务上下文置退出，
      * 页栈操作统一回主循环（先查 s_active 防误弹正常驻留页；强制
      * 全刷回词卡——wifi 期间任意帧含白屏过渡，全刷洗状态栏；
@@ -958,6 +973,8 @@ void loop()
         ui_force_full_refresh_next();
         page_router_render_top();
     }
+#endif
+#if INKWORD_FEATURE_WIFI && INKWORD_FEATURE_LAN
     /* 栈串联重构：portal 配网成功自动收尾回收（portal_monitor_task
      * 任务上下文置 s_portal_auto_exit 标志，页栈单写者纪律回主循环
      * pop+render_top；portal 已被用户按键退出时 pop_if NULL 零动作，
@@ -965,6 +982,7 @@ void loop()
     if (lan_portal_take_auto_exit() &&
         page_router_pop_if(&g_portal_page))
         page_router_render_top();
+#endif
     standby_tick();
     learning_state_maybe_save();  /* LR02 sparse 延迟保存（无脏零开销） */
     power_maybe_sleep();          /* P5：无操作超时且无禁睡条件则入睡（不返回） */

@@ -1,0 +1,19 @@
+# Core/App 分层守卫白名单（check_layering.py 读取）
+# 格式：<违规文件名>: <被 include 的头名>
+# 每行一条已知例外；条目失效（违规已消除）时脚本提示 NOTE，应及时删除。
+#
+# Phase 2 基线现状 9 条（2026-10-24，先 warn 不阻塞；重构方向见注）：
+# epd_driver 读 NVS 面板键、learning_state 课表联动与 NVS 键、haptic
+# 震动开关设置项 → 后续里程碑将 settings_keys 键常量按层拆分后消除；
+# power_manager 深睡前关停音频/LAN/待机页/Wi-Fi 的编排依赖 → 后续以
+# 注册制回调（sleep_notifier）反转依赖后消除。
+
+epd_driver.cpp: settings_keys.h
+haptic.c: settings_ui.h
+learning_state.c: schedule.h
+learning_state.c: settings_keys.h
+power_manager.c: audio_player.h
+power_manager.c: lan_display_server.h
+power_manager.c: standby_page.h
+power_manager.c: wifi_config_ui.h
+power_manager.c: wifi_manager.h

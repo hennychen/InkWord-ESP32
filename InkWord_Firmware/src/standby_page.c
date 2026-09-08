@@ -57,7 +57,8 @@
 #include "epd_driver.h"
 #include "refresh_scheduler.h"
 #include "weather_icons.h"   /* 仅 WX_ICON_COUNT：NVS 缓存合法性校验（不绘制） */
-#include "cjk_font.h"       /* 《传习录》引文楷体点阵 + 引文表 + 出处 */
+#include "cjk_font.h"       /* 引文楷体点阵（字形 lookup；Core） */
+#include "quotes_app.h"     /* 《传习录》引文表 + 出处（App 层，Phase 2 自 cjk_font 拆出） */
 #include "layout_profile.h" /* Phase 5：档位→字库级映射（引文大字场景） */
 #include "word_parser.h"
 #include "study_mode_machine.h"  /* 阅读模式书页接管屏幕时待机页退位 */

@@ -3,7 +3,9 @@
 //
 // 输入：tools/chuanxilu_quotes.txt（待机页引文，字符集一并收录）
 // 输出：src/cjk_font_data.bin（二进制字库：头 + 码点表 + 四级位图）
-//       src/cjk_font.c / src/cjk_font.h（lookup 实现 + 引文表，小文件）
+//       src/cjk_font.c / src/cjk_font.h（lookup 实现，小文件）
+//       src/quotes_app.c / src/quotes_app.h（引文表，App 层；开源通用化
+//       Phase 2 2026-10-24 自 cjk_font 拆出——Core 渲染层不含学科内容）
 //
 // 字符集（P3，2026-08-20）：引文 ∪ 出处 ∪ GB2312 一级 3755 字 ∪ 常用全角
 //       标点 ∪ 全角空格 U+3000 ∪ ASCII 0x20-0x7E。半角字符经墨迹盒变宽
@@ -579,7 +581,7 @@ let totalGlyphBytes = cps.count * levelOuts.reduce(0) { $0 + $1.stride * $1.cell
 var c = """
 /**
  * @file cjk_font.c
- * @brief 中文点阵字库 lookup + 《传习录》引文表（生成文件，勿手改）
+ * @brief 中文点阵字库 lookup（生成文件，勿手改；引文表已拆出 quotes_app.c）
  *
  * 字形数据在 cjk_font_data.bin（CMake EMBED_FILES 编入固件）：
  *   \(fontsDesc)，四级 \(levelCells)px，
@@ -611,15 +613,24 @@ static uint16_t bin_levels(void)   { const uint8_t *p = BIN_BASE + 6; return (ui
 static uint16_t glyph_cell(int lvl)  { const uint8_t *p = BIN_BASE + 12 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint16_t glyph_stride(int lvl){ const uint8_t *p = BIN_BASE + 12 + bin_levels() * 2 + lvl * 2; return (uint16_t)(p[0] | (p[1] << 8)); }
 
+/* cp 表起点 = 12 + levels*4（bin 头自描述，cp_table/level_base 唯一同源。
+ * 2026-09-03 四级化漏改事故存档：level_base 曾硬编码旧三级头 24，
+ * 四级 bin 下位图基址左移 4B —— 16/32px 级 stride 整除4B 恰整行仅
+ * 字形平移（视觉无感），20/24px 级 stride=3 行错乱，真机释义区
+ * 每字右侧破碎（2026-09-03 3.7" 真机定位，勿再写死偏移）。
+ * 模板同步修复（2026-10-24 开源通用化 Phase 4：事故修复曾只改了
+ * src/cjk_font.c 未同步本模板，重生成会复现四级错位事故） */
+static uint32_t cp_table_off(void) { return 12 + (uint32_t)bin_levels() * 4; }
+
 static const uint16_t *cp_table(void)
 {
-    return (const uint16_t *)(BIN_BASE + 12 + bin_levels() * 4);
+    return (const uint16_t *)(BIN_BASE + cp_table_off());
 }
 
 static const uint8_t *level_base(int lvl)
 {
     uint32_t n = glyph_n();
-    uint32_t off = 24 + 2 * n;
+    uint32_t off = cp_table_off() + 2 * n;
     off = (off + 3) & ~3u;
     for (int i = 0; i < lvl; i++)
         off += n * (uint32_t)glyph_stride(i) * (uint32_t)glyph_cell(i);
@@ -650,22 +661,39 @@ int cjk_glyph_cell_size(int level)   { return glyph_cell(level); }
 int cjk_glyph_stride_size(int level) { return glyph_stride(level); }
 
 """
-c += "const char *const k_chuanxilu_quotes[\(quotes.count)] = {\n"
-c += quotes.map { "    \"" + $0.joined(separator: "\\n") + "\"," }.joined(separator: "\n")
-c += "\n};\n\n"
-c += "/* 引文出处（右下角署名，与引文同字库 24px 级） */\n"
-c += "const char k_chuanxilu_attrib[] = \"\(ATTRIB)\";\n"
+// 开源通用化 Phase 2（2026-10-24）：引文表拆出 cjk_font.c → quotes_app.c
+// （App 层内容不驻留 Core 渲染层；数据搬家非渲染变化，字库 bin 字符集不变）
 try! c.write(to: URL(fileURLWithPath: "src/cjk_font.c"), atomically: true, encoding: .utf8)
+
+var q = """
+/**
+ * @file quotes_app.c
+ * @brief 《传习录》引文表数据（生成文件，勿手改）
+ *
+ * 开源通用化 Phase 2（2026-10-24）：自 cjk_font.c 迁出（数据搬家非
+ * 渲染变化）。由 tools/gen_cjk_font.swift 生成；改引文编辑
+ * tools/chuanxilu_quotes.txt 后重跑 swift tools/gen_cjk_font.swift。
+ */
+#include "quotes_app.h"
+
+"""
+q += "const char *const k_chuanxilu_quotes[\(quotes.count)] = {\n"
+q += quotes.map { "    \"" + $0.joined(separator: "\\n") + "\"," }.joined(separator: "\n")
+q += "\n};\n\n"
+q += "/* 引文出处（右下角署名，与引文同字库 24px 级） */\n"
+q += "const char k_chuanxilu_attrib[] = \"\(ATTRIB)\";\n"
+try! q.write(to: URL(fileURLWithPath: "src/quotes_app.c"), atomically: true, encoding: .utf8)
 
 let h = """
 /**
  * @file cjk_font.h
- * @brief 中文点阵字库接口（四级 16/20/24/32px + 引文表；生成文件勿手改）
+ * @brief 中文点阵字库接口（四级 16/20/24/32px；生成文件勿手改）
  *
  * 字形数据 cjk_font_data.bin（EMBED_FILES 编入固件），码点升序二分查找。
  * 位图行主序 MSB-first，bit=1 着色，可直接 blit 到 epd_gfx_draw_bitmap。
  * level 档位：0=16px / 1=20px / 2=24px / 3=32px（32px 级 LARGE 档大屏，
  * 2026-09-03）；阅读器按级取形并做墨迹盒变宽渲染（reader_engine）。
+ * 引文表已拆出至 quotes_app.h（App 层，开源通用化 Phase 2 2026-10-24）。
  * 由 tools/gen_cjk_font.swift 生成。
  */
 #ifndef INKWORD_CJK_FONT_H
@@ -691,6 +719,23 @@ int cjk_glyph_cell_size(int level);
 /** 指定级每行字节数：2/3/3/4；level 越界返回 0 */
 int cjk_glyph_stride_size(int level);
 
+#endif /* INKWORD_CJK_FONT_H */
+"""
+try! h.write(to: URL(fileURLWithPath: "src/cjk_font.h"), atomically: true, encoding: .utf8)
+
+let qh = """
+/**
+ * @file quotes_app.h
+ * @brief 待机页《传习录》引文表接口（App 层内容；生成文件勿手改）
+ *
+ * 开源通用化 Phase 2（2026-10-24）：App 内容自 Core 渲染层（cjk_font.h/c）
+ * 迁出——字库（Core）只管字形渲染，学科内容归 App。引文字符仍收录进
+ * 字库 bin（gen_cjk_font.swift 字符集输入不变）。
+ * 由 tools/gen_cjk_font.swift 生成。
+ */
+#ifndef INKWORD_QUOTES_APP_H
+#define INKWORD_QUOTES_APP_H
+
 #define CHUANXILU_QUOTE_N \(quotes.count)                /**< 引文条数（=小时数） */
 /** 待机页逐时轮换引文（UTF-8，\\n 分行，每行 <=\(MAX_COLS)字） */
 extern const char *const k_chuanxilu_quotes[CHUANXILU_QUOTE_N];
@@ -698,9 +743,9 @@ extern const char *const k_chuanxilu_quotes[CHUANXILU_QUOTE_N];
 /** 引文出处（右下角署名，UTF-8 单行） */
 extern const char k_chuanxilu_attrib[];
 
-#endif /* INKWORD_CJK_FONT_H */
+#endif /* INKWORD_QUOTES_APP_H */
 """
-try! h.write(to: URL(fileURLWithPath: "src/cjk_font.h"), atomically: true, encoding: .utf8)
+try! qh.write(to: URL(fileURLWithPath: "src/quotes_app.h"), atomically: true, encoding: .utf8)
 
 // ---------- 6. stderr 报告 + ASCII 预览 ----------
 say("// fonts=\(fontsDesc) glyphs=\(cps.count) (gb2312-1=\(gbCount)) quotes=\(quotes.count)")
