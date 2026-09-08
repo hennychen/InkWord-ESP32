@@ -54,9 +54,13 @@ extern void ui_force_full_refresh_next(void);
 #define UI_MEAN_LEVEL   (layout_profile_get()->kind <= LAYOUT_SMALL \
                          ? (settings_font_mode() >= 1 ? 1 \
                             : (layout_profile_get()->narrow_tiny ? 1 : 0)) \
-                         : (settings_font_mode() >= 1 ? 2 : 1))
+                         : (layout_profile_get()->mean_level >= 3 ? 3 \
+                            : layout_profile_get()->mean_level \
+                              + (settings_font_mode() >= 1 ? 1 : 0)))  /* 题干
+ * 正文级 2026-09-08：MID+ 默认读 mean_level（PPI 自动层 3.4mm 目标） */
 #define UI_BODY_MAX_W   (epd_gfx_width() - 2 * UI_MARGIN_X)
-#define UI_BODY_LH      (UI_TINY ? (UI_MEAN_LEVEL ? 26 : 20) : (UI_MEAN_LEVEL ? 24 : 20))
+#define UI_BODY_LH      (UI_TINY ? (UI_MEAN_LEVEL ? 26 : 20) \
+                         : (UI_MEAN_LEVEL >= 3 ? 36 : (UI_MEAN_LEVEL ? 24 : 20)))
 #define UI_FOOT_TOP     (epd_gfx_height() - 16)        /* 底部提示行基线 */
 #define RV_ITEM_H   (layout_profile_get()->item_h)  /* 对齐 menu_ui 列表行高（T1.5） */
 #define RV_HINT_H   (layout_profile_get()->rv_hint_h)  /* 底部提示行预留（T1.5） */

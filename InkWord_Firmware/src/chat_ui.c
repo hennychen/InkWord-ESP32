@@ -38,13 +38,17 @@ static const char *TAG = "CHAT_UI";   /* debug_log.h LOG 宏依赖 */
 #define UI_MEAN_LEVEL   (layout_profile_get()->kind <= LAYOUT_SMALL \
                          ? (settings_font_mode() >= 1 ? 1 \
                             : (layout_profile_get()->narrow_tiny ? 1 : 0)) \
-                         : (settings_font_mode() >= 1 ? 2 : 1))
+                         : (layout_profile_get()->mean_level >= 3 ? 3 \
+                            : layout_profile_get()->mean_level \
+                              + (settings_font_mode() >= 1 ? 1 : 0)))  /* 释义级
+ * 2026-09-08：MID+ 默认读 mean_level（PPI 自动层 3.4mm 目标） */
 #define UI_WORD_BASE    (UI_STATUS_H + (UI_TINY ? 24 \
                          : (UI_MEAN_LEVEL ? 36 : 32)))  /* 单词基线 */
 #define UI_PHON_TOP     (UI_WORD_BASE + (UI_TINY ? 6 : 9)) /* 音标行顶 */
 #define UI_AUX_LEVEL    (layout_profile_get()->narrow_tiny ? UI_MEAN_LEVEL : 0)  /* 辅助字级（T1.5 档位化） */
 #define UI_BODY_TOP     (UI_PHON_TOP + (UI_AUX_LEVEL ? 20 : 16) + (UI_TINY ? 4 : 11))
-#define UI_BODY_LH      (UI_TINY ? (UI_MEAN_LEVEL ? 26 : 20) : (UI_MEAN_LEVEL ? 24 : 20))
+#define UI_BODY_LH      (UI_TINY ? (UI_MEAN_LEVEL ? 26 : 20) \
+                         : (UI_MEAN_LEVEL >= 3 ? 36 : (UI_MEAN_LEVEL ? 24 : 20)))
 #define UI_BODY_MAX_W   (epd_gfx_width() - 2 * UI_MARGIN_X)
 
 static int ui_chat_isqrt(int v)

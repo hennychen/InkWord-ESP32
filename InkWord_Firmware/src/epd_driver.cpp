@@ -37,6 +37,8 @@
 #include "gpio_config.h"
 #include "epd_panel.h"
 #include "epd_geom.h"   /* T2.1：转置/窗口/调色板纯函数权威（native 真值表） */
+#include "layout_profile.h"  /* set_dpi：PPI 自动层注入（2026-09-08，
+                              * 首调 get 前时序保证=init 内早于 UI） */
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -452,7 +454,10 @@ int epd_driver_init(void)
           gw, gh, (unsigned)((gw * gh + 7) / 8), s_canvas_ac ? 2 : 1);
     /* dpi 诊断行（2026-09-03）：物理字高 mm = px÷dpi×25.4，新屏上机
      * 对照现役基线（3.7" 130PPI：16px≈3.1mm / 20px≈3.9mm / 24px≈4.7mm）
-     * 判「档内但视觉不符」的同档异 PPI 风险 */
+     * 判「档内但视觉不符」的同档异 PPI 风险。2026-09-08 起同步注入
+     * layout_profile PPI 自动层（主内容/释义字号按物理字高选级，
+     * set_dpi 在 init 内早于 UI 首调 get，时序保证） */
+    layout_profile_set_dpi(s_panel->dpi);
     LOG_I("Panel dpi=%u (16px=%.1fmm 20px=%.1fmm 24px=%.1fmm 32px=%.1fmm)",
           s_panel->dpi,
           16.0f * 25.4f / s_panel->dpi, 20.0f * 25.4f / s_panel->dpi,

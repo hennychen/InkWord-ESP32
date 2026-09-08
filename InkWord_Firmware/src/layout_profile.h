@@ -33,6 +33,8 @@
 #ifndef INKWORD_LAYOUT_PROFILE_H
 #define INKWORD_LAYOUT_PROFILE_H
 
+#include <stdint.h>    /* uint16_t（set_dpi；2026-09-08 PPI 自动层） */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -64,6 +66,10 @@ typedef struct {
                               * 见 layout_form_t 注释） */
     int quote_level;        /**< 大字场景字库级（引文/占位提示） */
     int reader_level;       /**< 阅读正文默认字库级（NVS miss 时） */
+    int mean_level;         /**< 词卡释义/题干正文字库级（2026-09-08
+                              * PPI 自动层目标 3.4mm；TINY/SMALL 信息
+                              * 密度场景 16px，MID 20px，LARGE 32px；
+                              * UI_MEAN_LEVEL 复制宏的档位化单一真相源） */
     /* ---- T1.5 几何参数（三元宏取值原样搬运；字段注释标注源宏，
      * 消费方 main/menu_ui/quiz_ui/chat_ui/review_ui/standby_page）---- */
     int status_h;           /**< 状态栏高度：UI_STATUS_H / MU_TITLE_H */
@@ -100,8 +106,16 @@ typedef struct {
                               * 16×4=64，原硬编码 10 全屏一律 10） */
 } layout_profile_t;
 
-/** 按运行期 gfx 短边分档（首调缓存；须在 epd_driver_init 之后调用） */
+/** 按运行期 gfx 短边分档（首调缓存；须在 epd_driver_init 之后调用）
+ *  —— PPI 自动层（2026-09-08）：set_dpi 注入后，主内容/释义字号按
+ *  「物理字高目标（3.7/3.4mm）+ 行宽容量（每行≥8 全角字）」双约束
+ *  自动选最近字库级，几何随之派生；四档现役屏全部复现表值（零变化
+ *  验证），新屏（如 7.5"@150PPI→24px）免手工校准 */
 const layout_profile_t *layout_profile_get(void);
+
+/** 注入面板 PPI（epd_driver_init 调一次；native-test 不调=0 退表值）。
+ *  须在首次 layout_profile_get 前（init 早于 UI 首调，时序保证） */
+void layout_profile_set_dpi(uint16_t dpi);
 
 /** 清档位缓存（native-test 专用：改桩 gfx 尺寸后重新分派） */
 void layout_profile_test_reset(void);

@@ -149,6 +149,7 @@ extern void test_layout_narrow_tiny(void);
 extern void test_layout_form_axis(void);
 extern void test_layout_cached_pointer_stable(void);
 extern void test_layout_profile_sanity_all_kinds(void);
+extern void test_layout_ppi_auto_level(void);   /* PPI 自动层（2026-09-08） */
 
 /* poem 默写数据通路（v1.4 T4.4）：同 runner 挂载 */
 extern void test_word_parser_poem_dictation_fields(void);
@@ -262,5 +263,6 @@ int main(void)
     RUN_TEST(test_layout_form_axis);
     RUN_TEST(test_layout_cached_pointer_stable);
     RUN_TEST(test_layout_profile_sanity_all_kinds);
+    RUN_TEST(test_layout_ppi_auto_level);   /* PPI 自动层（2026-09-08） */
     return UNITY_END();
 }

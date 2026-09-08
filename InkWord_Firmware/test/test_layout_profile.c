@@ -6,7 +6,8 @@
  * 依赖 epd_gfx_width/height 在本文件提供桩（stubs/epd_driver.h 声明）。
  * 档位首调缓存单次初始化，用例间经 layout_profile_test_reset() 清
  * 缓存重新分派。覆盖：短边阈值边界 / 旋转无关 / narrow_tiny 特判 /
- * 缓存指针稳定 / 四档字段健全性 / form 形态轴（P2）。
+ * 缓存指针稳定 / 四档字段健全性 / form 形态轴（P2）/
+ * PPI 自动层选级（2026-09-08）。
  */
 #include <stdio.h>
 #include <unity.h>
@@ -18,6 +19,15 @@
 int stub_gfx_w = 416, stub_gfx_h = 240;
 int epd_gfx_width(void)  { return stub_gfx_w; }
 int epd_gfx_height(void) { return stub_gfx_h; }
+
+/* cjk_font 桩：src/cjk_font.c 未链 native（字形 bin 经 objcopy EMBED，
+ * 宿主无嵌入符号）；自动层仅取 cell px——四级表查与 glyph_cell()
+ * 读 bin 头同值（16/20/24/32，非线性：24→32 跳 8） */
+int cjk_glyph_cell_size(int level)
+{
+    static const int cells[] = { 16, 20, 24, 32 };
+    return (level >= 0 && level < 4) ? cells[level] : 0;
+}
 
 /* 设尺寸 → 清缓存 → 取档（用例内一次性分派） */
 static const layout_profile_t *dispatch(int w, int h)
@@ -97,4 +107,47 @@ void test_layout_profile_sanity_all_kinds(void)
         TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, p->partial_wifi, label);
         TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, p->partial_menu, label);
     }
+}
+
+/* PPI 自动层（2026-09-08）：set_dpi 注入后主内容/释义按物理字高
+ * （3.7/3.4mm）+ 行宽容量（每行≥8 全角字）选最近字库级。用例尾部
+ * 恢复 dpi=0——test_reset 不清 dpi，防污染表值口径用例
+ * （Unity 顺序执行，防御未来重排） */
+void test_layout_ppi_auto_level(void)
+{
+    /* 4.26" 800x480 @219：主 32px(3.7mm)/释义 3.4mm→29px 就近级3；
+     * 几何派生复现表值（item/hint/info_lh 三字段） */
+    layout_profile_set_dpi(219);
+    const layout_profile_t *p = dispatch(800, 480);
+    TEST_ASSERT_EQUAL_INT(3, p->font_lvl_main);
+    TEST_ASSERT_EQUAL_INT(32, p->font_px_main);
+    TEST_ASSERT_EQUAL_INT(3, p->mean_level);
+    TEST_ASSERT_EQUAL_INT(52, p->item_h);   /* cell32 + pad[LARGE]20 */
+    TEST_ASSERT_EQUAL_INT(32, p->hint_h);   /* hint 级2: 24+8 */
+    TEST_ASSERT_EQUAL_INT(40, p->info_lh);  /* cell32 + 8 */
+
+    /* 7.5" 800x480 @150 外推：主 22px→级2(24px/4.1mm)、释义 20px→级1 */
+    layout_profile_set_dpi(150);
+    p = dispatch(800, 480);
+    TEST_ASSERT_EQUAL_INT(2, p->font_lvl_main);
+    TEST_ASSERT_EQUAL_INT(24, p->font_px_main);
+    TEST_ASSERT_EQUAL_INT(1, p->mean_level);
+
+    /* 现役复现（表值零变化）：MID 416x240@130 主/释义均级1 */
+    layout_profile_set_dpi(130);
+    p = dispatch(416, 240);
+    TEST_ASSERT_EQUAL_INT(1, p->font_lvl_main);
+    TEST_ASSERT_EQUAL_INT(1, p->mean_level);
+
+    /* SMALL 264x176@117 复现级1 */
+    layout_profile_set_dpi(117);
+    TEST_ASSERT_EQUAL_INT(1, dispatch(264, 176)->font_lvl_main);
+
+    /* 行宽容量约束主导：TINY 122 宽@135 物理字高 20px 钳 15px(122/8)→级0 */
+    layout_profile_set_dpi(135);
+    TEST_ASSERT_EQUAL_INT(0, dispatch(122, 250)->font_lvl_main);
+
+    /* dpi=0 退表值（native 不注入路径）：LARGE 表值级3 */
+    layout_profile_set_dpi(0);
+    TEST_ASSERT_EQUAL_INT(3, dispatch(800, 480)->font_lvl_main);
 }

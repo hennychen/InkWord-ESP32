@@ -60,11 +60,13 @@ typedef struct epd_panel_desc {
                                              * 奇数=(panel_h,panel_w)，偶数直通；
                                              * 运行期可经 epd_set_rotation 覆盖
                                              * （屏幕方向设置），desc 本身 const */
-    uint16_t            dpi;                /* 对角 PPI（诊断字段，2026-09-03：
-                                             * 不参与档位/布局计算；上机对照
-                                             * 「物理字高 mm = px÷dpi×25.4」
-                                             * 判同档异 PPI 视觉风险，如
-                                             * 4.2" 119 vs 3.4" 150 同为 MID） */
+    uint16_t            dpi;                /* 对角 PPI：2026-09-08 起注入
+                                             * layout_profile PPI 自动层（主内容/
+                                             * 释义字号按物理字高 3.7/3.4mm +
+                                             * 行宽容量双约束选级，见
+                                             * layout_profile.c level_for_mm）;
+                                             * 兼上机诊断「物理字高 mm =
+                                             * px÷dpi×25.4」判同档异 PPI 视觉风险 */
 
     /* —— 色彩 —— */
     epd_color_mode_t    color_mode;

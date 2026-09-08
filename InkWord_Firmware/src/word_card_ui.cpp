@@ -78,9 +78,13 @@ static const char *TAG = "WORD_UI";
 #define UI_MEAN_LEVEL   (layout_profile_get()->kind <= LAYOUT_SMALL \
                          ? (settings_font_mode() >= 1 ? 1 \
                             : (layout_profile_get()->narrow_tiny ? 1 : 0)) \
-                         : (settings_font_mode() >= 1 ? 2 : 1))  /* 正文字号级：
- * 档位默认 TINY/SMALL 16px / MID+ 20px；大字/特大档（set_font>=1）
- * 整体 +1 级（20/24px），行距与几何全部由本宏派生自适应。2026-08-27
+                         : (layout_profile_get()->mean_level >= 3 ? 3 \
+                            : layout_profile_get()->mean_level \
+                              + (settings_font_mode() >= 1 ? 1 : 0)))  /* 正文字号级：
+ * 档位默认 TINY/SMALL 16px；MID+ 默认读 mean_level（2026-09-08 PPI
+ * 自动层 3.4mm 目标：MID 20px / LARGE 32px / 7.5"@150 24px），
+ * 大字/特大档（set_font>=1）整体 +1 级、LARGE 封顶 3，
+ * 行距与几何全部由本宏派生自适应。2026-08-27
  * P1a 三档化：意图相对档位表达（set_rot 同哲学）——TINY 屏宽 122~
  * 128px 下 24px 每行仅 3~4 字 / SMALL 横屏 176 高正文行数趋零，
  * 特大档(2)在 TINY/SMALL 钳位至 20px（渲染等价大字，语义不漂移）。
@@ -92,7 +96,8 @@ static const char *TAG = "WORD_UI";
                          : (UI_MEAN_LEVEL ? 36 : 32)))  /* 单词基线（68/64/48） */
 #define UI_PHON_TOP     (UI_WORD_BASE + (UI_TINY ? 6 : 9))     /* 音标行 16px 点阵顶（77/73/54） */
 #define UI_BODY_TOP     (UI_PHON_TOP + (UI_AUX_LEVEL ? 20 : 16) + (UI_TINY ? 4 : 11)) /* 正文流首行顶：音标行高随辅助级 */
-#define UI_BODY_LH      (UI_TINY ? (UI_MEAN_LEVEL ? 26 : 20) : (UI_MEAN_LEVEL ? 24 : 20))  /* 正文行距：字级 +4（reader 惯例）；二十四轮（2026-08-31）TINY 档 20px 级膨胀加粗后 24→26：笔画变粗视觉更满，行间空隙 4→6px 防粘连（低对比度屏稀疏化），每页行数 6→5 */
+#define UI_BODY_LH      (UI_TINY ? (UI_MEAN_LEVEL ? 26 : 20) \
+                         : (UI_MEAN_LEVEL >= 3 ? 36 : (UI_MEAN_LEVEL ? 24 : 20)))  /* 正文行距：字级 +4（reader 惯例，LARGE 32px 级 2026-09-08 扩 36）；二十四轮（2026-08-31）TINY 档 20px 级膨胀加粗后 24→26：笔画变粗视觉更满，行间空隙 4→6px 防粘连（低对比度屏稀疏化），每页行数 6→5 */
 #define UI_AUX_LEVEL    (layout_profile_get()->narrow_tiny ? UI_MEAN_LEVEL : 0)
                                    /* 辅助小字级（音标/标签行）：
  * 2.13" 122 宽（135DPI）跟随正文级（20px），其余屏（含 2.9" 128

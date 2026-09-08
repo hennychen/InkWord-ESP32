@@ -17,6 +17,8 @@
 #include "debug_log.h"
 #include "epd_driver.h"     /* 测试课表渲染：绘图原语 */
 #include "cjk_text.h"       /* 测试课表渲染：CJK 点阵文本 */
+#include "layout_profile.h" /* PPI 自动层（2026-09-08）：字级/几何派生 */
+#include "cjk_font.h"       /* cjk_glyph_cell_size：字库级→cell px */
 
 #include "nvs.h"
 #include "settings_keys.h"   /* P2b：NVS 键权威表 */
@@ -319,14 +321,19 @@ void schedule_draw_display_table(void)
     /* 清屏白底 */
     epd_gfx_fill_screen(EPD_GFX_WHITE);
 
-    /* 无数据时显示占位提示 */
+    /* 无数据时显示占位提示（主提示 LARGE 升主内容级 32px，其余档
+     * 20px 现状零变化；副提示 y = 主提示底 + 8——MID 数值巧合与
+     * 原 sh/2+8 精确一致） */
     if (!schedule_display_has_data()) {
         const char *msg = "暂无课程表";
         const char *hint = "LAN Web 编辑器设置";
-        int tw = cjk_text_width(1, msg);
-        cjk_text_draw((sw - tw) / 2, sh / 2 - 20, 1, msg, EPD_GFX_BLACK);
+        int lvl = layout_profile_get()->font_lvl_main >= 3 ? 3 : 1;
+        int px = cjk_glyph_cell_size(lvl);
+        int tw = cjk_text_width(lvl, msg);
+        int y0 = sh / 2 - 20;
+        cjk_text_draw((sw - tw) / 2, y0, lvl, msg, EPD_GFX_BLACK);
         tw = cjk_text_width(0, hint);
-        cjk_text_draw((sw - tw) / 2, sh / 2 + 8, 0, hint, EPD_GFX_BLACK);
+        cjk_text_draw((sw - tw) / 2, y0 + px + 8, 0, hint, EPD_GFX_BLACK);
         epd_power_on();
         epd_gfx_flush();
         epd_power_off();
@@ -337,29 +344,32 @@ void schedule_draw_display_table(void)
     int rows = s_disp.rows;
     int cols = s_disp.cols;
 
-    /* ---- 布局参数 ---- */
-    const int title_h  = 36;    /* 标题栏高度（28px 字体） */
-    const int head_h   = 30;    /* 星期表头行高度（24px 字体） */
+    /* ---- 布局参数（2026-09-08 接 PPI 自动层）----
+     * 字级：标题全档顶级；正文/标签 LARGE（font_lvl_main>=3）随主
+     * 内容升 32/20px，其余档保持 24/16px（MID 真机基线零变化）；
+     * 几何 head_h/label_w/行高上限随 cell 派生。px_title 原 28 系
+     * 三级字库时代笔误（2026-09-03 四级化后 level 3 实为 32px，
+     * 漏改处——本轮修正垂直居中偏 4px） */
+    const layout_profile_t *lp = layout_profile_get();
+    const bool big = lp->font_lvl_main >= 3;   /* LARGE 档放大开关 */
+    const int title_h  = 36;    /* 标题栏高度（32px 字贴边 2px，全档现状） */
+    const int head_h   = big ? 38 : 30;   /* 表头行高 = body cell + 6 */
     const int sep_h    = 4;     /* 上午/下午分隔线高度 */
-    const int label_w  = 44;    /* 左侧节次标签列宽 */
-    /* 字体档位：标题 level=3(28px)，其余 level=2(24px) */
-    const int font_title = 3;   /* 28px */
-    const int font_body  = 2;   /* 24px */
-    const int px_title   = 28;  /* 标题字体像素 */
-    const int px_body    = 24;  /* 正文字体像素 */
-    /* 动态计算行高：适配不同行数 */
+    const int label_w  = big ? 60 : 44;   /* 节次标签列宽（20px 标签加宽） */
+    const int font_title = 3;   /* 32px（全档顶级） */
+    const int font_body  = big ? 3 : 2;   /* LARGE 32px / 其余 24px */
+    const int font_label = big ? 1 : 0;   /* LARGE 20px / 其余 16px */
+    const int px_title   = cjk_glyph_cell_size(font_title);
+    const int px_body    = cjk_glyph_cell_size(font_body);
+    const int px_label   = cjk_glyph_cell_size(font_label);
+    /* 动态计算行高：适配不同行数；上限 = body cell + 8（MID 32 现状，
+     * LARGE 40——32px 课名不顶格） */
     int content_h = sh - title_h - head_h;
-    int row_h, actual_sep = sep_h;
-    /* 判断是否有上午/下午分隔（行数 > 4 时启用分隔） */
+    int row_h;
     bool has_split = (rows > 4);
-    if (has_split) {
-        content_h -= sep_h;
-        row_h = content_h / rows;
-        if (row_h > 32) row_h = 32;  /* 上限 */
-    } else {
-        row_h = content_h / rows;
-        if (row_h > 32) row_h = 32;
-    }
+    if (has_split) content_h -= sep_h;
+    row_h = content_h / rows;
+    if (row_h > px_body + 8) row_h = px_body + 8;
     const int day_w = (sw - label_w) / cols;
 
     /* Y 坐标 */
@@ -374,7 +384,6 @@ void schedule_draw_display_table(void)
         y_sep = 0;
         y_pm  = y_am;
     }
-    int total_h = y_am + rows * row_h + (has_split ? sep_h : 0);
 
     /* ---- 标题栏（红底白字） ---- */
     epd_gfx_fill_rect(0, 0, sw, title_h, EPD_GFX_ACCENT);
@@ -406,12 +415,12 @@ void schedule_draw_display_table(void)
             ry = y_am + r * row_h;
         }
 
-        /* 节次标签 */
+        /* 节次标签（PPI 派生 font_label：LARGE 20px / 其余 16px 紧凑） */
         {
             const char *sl = s_disp.slots[r][0] ? s_disp.slots[r] : "";
-            int tw = cjk_text_width(0, sl);   /* 标签保持 16px 紧凑 */
-            cjk_text_draw(label_w - tw - 2, ry + (row_h - 16) / 2,
-                          0, sl, EPD_GFX_BLACK);
+            int tw = cjk_text_width(font_label, sl);
+            cjk_text_draw(label_w - tw - 2, ry + (row_h - px_label) / 2,
+                          font_label, sl, EPD_GFX_BLACK);
         }
 
         /* 课程内容 */
@@ -461,7 +470,8 @@ void schedule_draw_display_table(void)
     epd_power_on();
     epd_gfx_flush();
     epd_power_off();
-    LOG_I("display table rendered: %dx%d", rows, cols);
+    LOG_I("display table rendered: %dx%d body=%dpx label=%dpx",
+          rows, cols, px_body, px_label);
 }
 
 /* 保留旧测试入口（兼容） */

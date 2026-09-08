@@ -22,9 +22,10 @@
  *   TINY 122x250|128x296 项高 28 可见 8|9、提示栏省略、CJK 徽标省略、
  *   INFO 页裁至 4 行短值项（IP/PSRAM 长值 122px 宽放不下，bring-up 再调）。
  *   按键说明页同理：值列宽 TINY 档不足，bring-up 后改单列两行/键。
- *   宫格几何（§12.2 实施修订）：列数 avail/90 鉗 2~4（MID 横 4 列、
+ *   宫格几何（§12.2 实施修订）：列数格宽下限鉀 2~4 列（MID 横 4 列、
  *   MID 竖与 SMALL 2 列——设计稿 SMALL 3 列 88px 格宽放不下 80px
- *   5 字标签，实施改 2 列）、格高 56、标签 16px 全档统一（图标主视觉）。
+ *   5 字标签，实施改 2 列）、格高/标签级 2026-09-08 PPI 接入：标签
+ *   随 hint 级（LARGE 24px / 其余 16px 零变化），几何随 cell 派生。
  *
  * 字号按档位派生（2026-08-23 真机反馈 16px 偏小）：主内容（列表/标题/
  * 模式页/INFO/按键说明）MID/SMALL 用 20px 点阵、TINY 16px；ASCII 徽标
@@ -43,6 +44,8 @@
 #include "debug_log.h"
 #include "epd_driver.h"
 #include "cjk_text.h"
+#include "cjk_font.h"    /* cjk_glyph_cell_size（MU_HINT_LVL 垂直居中，
+                          * 2026-09-08 字号派生升级引入） */
 #include "layout_profile.h"
 #include "refresh_scheduler.h"
 #include "haptic.h"
@@ -92,6 +95,11 @@ extern const char *fw_version(void);
 #define MU_FONT_H   (layout_profile_get()->font_px_main)   /* 主内容字号（T1.5） */
 #define MU_FONT_LVL (layout_profile_get()->font_lvl_main) /* cjk_text level（T1.5） */
 #define MU_FONT_ASC (layout_profile_get()->ascii_size_main) /* ASCII 徽标 FreeSans size（T1.5） */
+#define MU_HINT_LVL   (layout_profile_get()->font_lvl_main > 0 \
+                        ? layout_profile_get()->font_lvl_main - 1 : 0)
+                        /* 提示/详情栏字号级：主内容级 -1（2026-09-08
+                         * LARGE 定校主内容升 3 后提示栏 16→24px 随升；
+                         * 其余档 1-1=0 视觉零变化；TINY 提示栏省略不受影响）*/
 #define MU_HINT_H   (layout_profile_get()->hint_h)         /* TINY 省略提示栏（T1.5） */
 #define MU_LIST_TOP (MU_TITLE_H + 2)
 #define MU_LIST_H   (epd_gfx_height() - MU_TITLE_H - MU_HINT_H)
@@ -147,11 +155,10 @@ static int       s_info_page = 0; /* 设备信息页页码（学习概况/设备
 static int       s_chatsel_sel = 0;  /* AI 对话二级页选中（A1：0 自由/1 翻译/2 场景） */
 static int       s_scenario_sel = 0; /* 场景列表选中（s_scenarios 下标） */
 
-/* v1.6 课程表设置页状态 */
+/* v1.6 课程表设置页状态（s_sched_line/s_sched_deck 两游标随三级页
+ * 实现方案调整废弃，2026-09-08 清理） */
 static int       s_sched_day   = 0;  /* 当前编辑星期几（0=周一~6=周日） */
 static int       s_sched_slot  = 0;  /* 当前编辑槽位（0~3） */
-static int       s_sched_line  = 0;  /* 三级页当前行（0=卡组/1=目标/2=考试） */
-static int       s_sched_deck  = 0;  /* 卡组选择游标 */
 
 /* 对话周报页（A3）：拉取一次性任务写入，按键上下文只读；gen 代际计数
  * 防任务渲染串页（退出/重进后旧任务结果丢弃） */
@@ -726,8 +733,9 @@ static void draw_hint(void)
     epd_gfx_draw_hline(MU_MARGIN_X, epd_gfx_height() - MU_HINT_H,
                        epd_gfx_width() - 2 * MU_MARGIN_X, EPD_GFX_BLACK);
     cjk_text_draw(MU_MARGIN_X,
-                  epd_gfx_height() - MU_HINT_H + (MU_HINT_H - 16) / 2,
-                  0, s_hint_override ? s_hint_override
+                  epd_gfx_height() - MU_HINT_H +
+                      (MU_HINT_H - cjk_glyph_cell_size(MU_HINT_LVL)) / 2,
+                  MU_HINT_LVL, s_hint_override ? s_hint_override
                                      : "上/下 选择  中 确认  SET 返回",
                   EPD_GFX_BLACK);
 }
@@ -766,8 +774,12 @@ static void draw_main_body(void)
 
 /* ---- v1.4 宫格视图（§12；TINY 不开放，menu_view_toggle 拒绝）---- */
 
-#define MU_GRID_HDR_H   24   /* 组头行高（16px 小字 + 上下 padding） */
-#define MU_GRID_CELL_H  56   /* 格高：pad8 + 图标20 + 间隙4 + 标签16 + pad8 */
+#define MU_GRID_HDR_H   (8 + cjk_glyph_cell_size(MU_HINT_LVL))   /* 组头行高：
+ * hint 级小字 + 上下 padding（MID/SMALL 24 零变化；LARGE 2026-09-08
+ * PPI 接入随 hint 级 16→24px 升 32） */
+#define MU_GRID_CELL_H  (20 + MENU_ICON_SZ + cjk_glyph_cell_size(MU_HINT_LVL))  /* 格高：
+ * pad8 + 图标20 + 间隙4 + 标签 cell + pad8（MID 56 零变化；LARGE 64，
+ * 标签 16→24px 随 hint 级，图标位图固有 20px 不缩放） */
 #define MU_GRID_MAX_ROWS 12  /* 行表容量上限：3 列下 3 组头+8 格行=11 行 */
 
 typedef struct {
@@ -776,13 +788,14 @@ typedef struct {
     bool is_header;  /* 组头行（独占一行，不可停驻） */
 } mu_grow_t;
 
-/* 列数派生（§12.2 实施修订）：avail/90 鉀 2~4——90px 下限保证 16px
- * 5 字标签（80px）+padding 不截断；MID 横 4 列（92~96px/格）、
- * MID 竖与 SMALL 2 列（104~116px/格，设计稿 3 列 88px 放不下 80px
- * 标签）；LARGE 同式 4 列。全档标签 16px level 0（图标主视觉） */
+/* 列数派生（§12.2 实施修订 + 2026-09-08 PPI 接入）：格宽下限 =
+ * hint 级 5 字标签 + padding——MID/SMALL 90（16px×5+10，视觉零
+ * 变化）/ LARGE 130（24px×5+10，800 宽 4 列格宽 192 仍富余）；
+ * 鉀 2~4（MID 横 4 列、MID 竖与 SMALL 2 列，LARGE 同式 4 列） */
 static int grid_cols(void)
 {
-    int cols = MU_ITEM_W / 90;
+    int min_w = cjk_glyph_cell_size(MU_HINT_LVL) * 5 + 10;
+    int cols = MU_ITEM_W / min_w;
     if (cols < 2) cols = 2;
     if (cols > 4) cols = 4;
     return cols;
@@ -837,13 +850,15 @@ static void draw_cell(int idx, int cell_x, int row_y, int cell_w)
         epd_gfx_draw_bitmap(cell_x + (cell_w - MENU_ICON_SZ) / 2,
                             row_y + 8, MENU_ICON_SZ, MENU_ICON_SZ,
                             it->icon, fg);
-        int tw = cjk_text_width(0, it->label);
+        int tw = cjk_text_width(MU_HINT_LVL, it->label);
         cjk_text_draw(cell_x + (cell_w - tw) / 2,
-                      row_y + 8 + MENU_ICON_SZ + 4, 0, it->label, fg);
+                      row_y + 8 + MENU_ICON_SZ + 4, MU_HINT_LVL,
+                      it->label, fg);
     } else {
-        int tw = cjk_text_width(0, it->label);
+        int tw = cjk_text_width(MU_HINT_LVL, it->label);
         cjk_text_draw(cell_x + (cell_w - tw) / 2,
-                      row_y + (MU_GRID_CELL_H - 16) / 2, 0, it->label, fg);
+                      row_y + (MU_GRID_CELL_H - cjk_glyph_cell_size(MU_HINT_LVL)) / 2,
+                      MU_HINT_LVL, it->label, fg);
     }
 }
 
@@ -871,8 +886,9 @@ static void draw_grid_detail(void)
         text = line;
     }
     cjk_text_draw(MU_MARGIN_X,
-                  epd_gfx_height() - MU_HINT_H + (MU_HINT_H - 16) / 2,
-                  0, text, EPD_GFX_BLACK);
+                  epd_gfx_height() - MU_HINT_H +
+                      (MU_HINT_H - cjk_glyph_cell_size(MU_HINT_LVL)) / 2,
+                  MU_HINT_LVL, text, EPD_GFX_BLACK);
 }
 
 /* 宫格主体：像素级滑动窗口（选中行驱动，行高不均）+ 可见行绘制；
@@ -903,8 +919,10 @@ static void draw_grid_body(void)
         if (y + rh > 0 && y < MU_LIST_H) {   /* 窗口裁剪 */
             int ry = MU_LIST_TOP + y;
             if (rows[r].is_header) {
-                cjk_text_draw(MU_MARGIN_X + 4, ry + (MU_GRID_HDR_H - 16) / 2,
-                              0, s_items[rows[r].first].label, EPD_GFX_BLACK);
+                cjk_text_draw(MU_MARGIN_X + 4,
+                              ry + (MU_GRID_HDR_H - cjk_glyph_cell_size(MU_HINT_LVL)) / 2,
+                              MU_HINT_LVL, s_items[rows[r].first].label,
+                              EPD_GFX_BLACK);
             } else {
                 for (int c = 0; c < rows[r].count; c++)
                     draw_cell(rows[r].first + c,

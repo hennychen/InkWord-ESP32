@@ -25,6 +25,9 @@
 #include "epd_driver.h"
 #include "epd_panel.h"    /* P1 运行期选屏：注册表枚举（面板型号行） */
 #include "cjk_text.h"
+#include "cjk_font.h"    /* cjk_glyph_cell_size（draw_row 垂直居中：
+                          * 2026-09-08 LARGE 级3 32px 上机，原线性公式
+                          * 16+lvl*4 给 28 偏 4px——四级非线性 24→32 跳 8） */
 #include "layout_profile.h"   /* 2026-08-25：档位判定（原 h<200 启发式误判竖屏） */
 #include "es8311.h"      /* 2026-08-27 音量：setter 内即时 apply codec */
 #include "debug_log.h"
@@ -339,7 +342,7 @@ static void draw_row(int row, const char *label, const char *value,
      * FreeSans 基线），行内垂直居中 = 顶 + (行高-cell 高)/2。原基线
      * 式 lh*3/4 把字压低 14/17px：选中行字溢出反选框（白字落框外
      * 白底不可见）、邻行墨迹与框重叠——2.9" 真机 2026-08-28 反馈 */
-    int base = y + (lh - (16 + font_lvl * 4)) / 2;
+    int base = y + (lh - cjk_glyph_cell_size(font_lvl)) / 2;
 
     cjk_text_draw(margin + 4, base, font_lvl, label, fg);
 
@@ -358,8 +361,12 @@ static void draw_page(bool full)
      * 同款先例），SMALL/MID/LARGE 输出与原启发式精确一致（视觉零变化） */
     bool compact = layout_profile_get()->kind <= LAYOUT_SMALL;  /* TINY/SMALL */
     int status_h = layout_profile_get()->status_h;  /* T1.5 档位参数表（值同原 compact 三元：TINY/SMALL=24） */
-    int font_lvl = compact ? 0 : 1;         /* 行文字 16/20px */
-    int lh = compact ? 28 : 44;             /* 复习词表同款行高 */
+    int font_lvl = compact ? 0
+                  : layout_profile_get()->font_lvl_main;  /* 行文字：
+        TINY/SMALL 16px；MID+ 跟主内容级（2026-09-08 PPI 自动层：
+        MID 20px / LARGE 32px，menu_ui MU_FONT_LVL 同源） */
+    int lh = compact ? 28 : (font_lvl >= 3 ? 56 : 44);  /* 复习词表
+        同款行高；LARGE 32px 级 2026-09-08 扩 56（字级+24 惯例） */
     /* 滚动窗口（2026-08-27）：可用高度装不下全部行时（MID 240 高横屏
      * 7×44=308>184、SMALL/TINY 横屏同溢），改选中行驱动滚动；全显
      * 档位保持居中版式（视觉零变化铁律）。2026-08-26 曾直接改 7 行

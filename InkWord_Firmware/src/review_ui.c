@@ -30,7 +30,10 @@
 #define UI_MEAN_LEVEL   (layout_profile_get()->kind <= LAYOUT_SMALL \
                          ? (settings_font_mode() >= 1 ? 1 \
                             : (layout_profile_get()->narrow_tiny ? 1 : 0)) \
-                         : (settings_font_mode() >= 1 ? 2 : 1))
+                         : (layout_profile_get()->mean_level >= 3 ? 3 \
+                            : layout_profile_get()->mean_level \
+                              + (settings_font_mode() >= 1 ? 1 : 0)))  /* 词表/
+ * 释义级 2026-09-08：MID+ 默认读 mean_level（PPI 自动层 3.4mm 目标） */
 #define UI_AUX_LEVEL    (layout_profile_get()->narrow_tiny ? UI_MEAN_LEVEL : 0)  /* 辅助字级（T1.5 档位化） */
 #define UI_FOOT_BASE    (epd_gfx_height() - 16)        /* 底部标签基线：底边距 16 */
 #define UI_FOOT_TOP     (UI_FOOT_BASE - (UI_AUX_LEVEL ? 22 : 18)) /* tag 点阵顶 */
