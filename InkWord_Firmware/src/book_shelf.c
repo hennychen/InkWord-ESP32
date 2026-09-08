@@ -7,6 +7,12 @@
  * 列表 UI 作为覆盖层经 page_router_push 入栈，上/下选择、中键加载、
  * RST 退出。几何按 layout_profile 档位派生（与 menu_ui 同范式）。
  *
+ * 2026-09-07 修复（用户反馈）：① 空书架预检前置到 menu_ui/shortcut
+ * 入口（没有书单长震+提示不进入，不再按键即落单词页）；② 中文文本
+ * （标题/空态提示）改走 cjk_text 点阵（原 FreeSans 无 CJK 字形，
+ * 屏上仅残 ASCII 碎片）；③ 页内空态防御仅 RST/SET 退出（SD 热拔出
+ * 极端场景可达）。
+ *
  * 刷新策略：进入/加载全刷；光标移动局刷列表区（与 menu_ui 同口径）。
  * 并发模型：按键回调同步处理+绘制（主 loop 上下文，无并发）。
  */
@@ -245,22 +251,28 @@ static void draw_page(bool partial)
     /* 清内容区（状态栏以下） */
     epd_gfx_fill_rect(0, BS_STATUS_H, w, h - BS_STATUS_H, EPD_GFX_WHITE);
 
-    /* 标题栏 */
+    /* 标题栏（2026-09-07 修复：原 epd_gfx_draw_text 走 FreeSans 无
+     * CJK 字形，中文全部丢失——改 CJK 点阵，顶左语义垂直居中） */
     epd_gfx_fill_rect(0, 0, w, BS_STATUS_H, EPD_GFX_BLACK);
-    epd_gfx_draw_text(BS_MARGIN_X, BS_STATUS_H - 6, "我的书架",
-                      EPD_GFX_WHITE, 2);
+    cjk_text_draw(BS_MARGIN_X,
+                  (BS_STATUS_H - cjk_glyph_cell_size(BS_FONT_LVL)) / 2,
+                  BS_FONT_LVL, "我的书架", EPD_GFX_WHITE);
 
     if (s_count == 0) {
-        /* 空态提示 */
-        static const char *msg = "SD卡books目录无书籍";
-        int tw, th;
-        epd_gfx_text_bounds(msg, 1, &tw, &th);
-        epd_gfx_draw_text((w - tw) / 2, BS_STATUS_H + 40, msg,
-                          EPD_GFX_BLACK, 1);
-        static const char *hint = "请放入.txt/.md/.html文件";
-        epd_gfx_text_bounds(hint, 1, &tw, &th);
-        epd_gfx_draw_text((w - tw) / 2, BS_STATUS_H + 60, hint,
-                          EPD_GFX_BLACK, 1);
+        /* 空态提示（2026-09-07 修复两处：① 原 epd_gfx_draw_text 走
+         * FreeSans 无 CJK 字形，中文丢失后屏上仅残 "SD books" ASCII
+         * 碎片；② 文案对齐用户语言「没有书单」——主提示大字居中
+         * （quote_level 档位大字场景级），副提示断行绘制（TINY 122px
+         * 宽自动折行不溢出）） */
+        static const char *l1 = "没有书单";
+        static const char *l2 = "SD卡books目录无书籍 · 请放入.txt/.md/.html文件";
+        int ql = layout_profile_get()->quote_level;
+        int y0 = BS_STATUS_H + 40;
+        cjk_text_draw((w - cjk_text_width(ql, l1)) / 2, y0, ql,
+                      l1, EPD_GFX_BLACK);
+        cjk_text_draw_wrap(BS_MARGIN_X, y0 + cjk_glyph_cell_size(ql) + 12,
+                           w - 2 * BS_MARGIN_X, 0, 20, 3,
+                           l2, EPD_GFX_BLACK);
     } else {
         /* 列表项 */
         int vis = BS_VISIBLE;
@@ -308,14 +320,16 @@ static void draw_page(bool partial)
         }
     }
 
-    /* 底部提示栏 */
+    /* 底部提示栏（2026-09-08 LARGE 定校随升：9→18pt 对齐 24px 提示栏；
+     * 其余档保持 9pt 视觉零变化） */
     if (BS_HINT_H > 0) {
         int hy = h - BS_HINT_H;
+        int asc = BS_FONT_LVL >= 3 ? 3 : 1;
         epd_gfx_fill_rect(0, hy, w, BS_HINT_H, EPD_GFX_WHITE);
         epd_gfx_draw_hline(0, hy, w, EPD_GFX_BLACK);
-        epd_gfx_draw_text(BS_MARGIN_X, hy + BS_HINT_H - 4,
+        epd_gfx_draw_text(BS_MARGIN_X, hy + BS_HINT_H - (asc > 1 ? 6 : 4),
                           "UP/DN:sel  MID:load  RST:back",
-                          EPD_GFX_BLACK, 1);
+                          EPD_GFX_BLACK, asc);
     }
 
     if (partial)
@@ -344,8 +358,12 @@ static bool bs_on_button(nav_key_t id, button_event_t event)
     if (event != BUTTON_EVENT_SHORT_PRESS) return true;
 
     if (s_count == 0) {
-        /* 空态：任意键退出 */
-        return false;   /* false = 请求退出 */
+        /* 空态防御（2026-09-07 用户反馈修复：原任意键退出后 render_top
+         * 直落单词页令人困惑；预检接入后本分支仅 SD 热拔出可达）：
+         * 操作键长震保持提示页，仅 RST/SET 返回语义退出 */
+        if (id == NAV_RST || id == NAV_SET) return false;
+        haptic_event(HAPTIC_ERROR);   /* 没有书单：边界反馈 */
+        return true;
     }
 
     int vis = BS_VISIBLE;
