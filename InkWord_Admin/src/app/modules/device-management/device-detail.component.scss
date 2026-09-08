@@ -100,6 +100,39 @@
   }
 }
 
+/* 阅读记录（阅读器后端 2026-09） */
+.reading-card {
+  margin-bottom: 24px;
+
+  mat-card-header {
+    margin-bottom: 8px;
+  }
+
+  mat-card-title {
+    font-size: 1rem;
+  }
+}
+
+.reading-table {
+  width: 100%;
+
+  td,
+  th {
+    padding: 6px 12px;
+    font-size: 0.85rem;
+  }
+}
+
+.progress-cell {
+  min-width: 120px;
+
+  .progress-text {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-left: 6px;
+  }
+}
+
 /* 命令面板 */
 .command-panel {
   h3 {

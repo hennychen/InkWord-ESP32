@@ -17,6 +17,7 @@ import { AdminDeckInfo } from '../../core/models/models';
  * 选目标卡组（版式决定 prompt 模板与素材形态）+ 粘贴素材（课文/知识点
  * 清单）+ 条数上限 → Hangfire 异步生成占位待审条目（Version=0 不下发），
  * AI 审核台通过后 Version++ 增量下发（设备零改动红线）。
+ * P3 2026-09：入口自词库页迁入卡组管理页（AI 生成本属卡组域运营）。
  */
 @Component({
   selector: 'app-deck-generate-dialog',

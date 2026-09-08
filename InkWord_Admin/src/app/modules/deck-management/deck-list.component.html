@@ -1,0 +1,131 @@
+<div class="page-header">
+  <h2>卡组管理</h2>
+  <div class="header-actions">
+    <button
+      mat-raised-button
+      (click)="openGenerate()"
+      matTooltip="T5.4：课文/知识点素材批量生成卡组条目，审校通过后才下发设备"
+    >
+      <mat-icon>auto_awesome</mat-icon>
+      AI 生成卡组
+    </button>
+    <button mat-raised-button (click)="refresh()" matTooltip="刷新列表与科目计数">
+      <mat-icon>refresh</mat-icon>
+      刷新
+    </button>
+  </div>
+</div>
+
+<!-- 科目 chip 侧栏过滤（含每科目卡组计数） -->
+<div class="subject-bar">
+  <button
+    mat-stroked-button
+    class="subject-chip"
+    [class.active]="subjectFilter === ''"
+    (click)="filterBy('')"
+  >
+    全部
+  </button>
+  @for (s of subjects(); track s.id) {
+    <button
+      mat-stroked-button
+      class="subject-chip"
+      [class.active]="subjectFilter === s.code"
+      (click)="filterBy(s.code)"
+    >
+      {{ s.name }}
+      <span class="count">{{ s.deckCount }}</span>
+    </button>
+  }
+</div>
+
+<!-- Deck 列表 -->
+<div class="table-container">
+  @if (loading()) {
+    <div class="loading-row">
+      <mat-progress-spinner diameter="40" mode="indeterminate"></mat-progress-spinner>
+    </div>
+  } @else if (dataSource.data.length === 0) {
+    <div class="empty-row">
+      <p>暂无卡组——设备端 / App 创建的卡组会同步出现在这里（含官方与学习者建组）</p>
+    </div>
+  } @else {
+    <table mat-table [dataSource]="dataSource">
+      <ng-container matColumnDef="code">
+        <th mat-header-cell *matHeaderCellDef>Code</th>
+        <td mat-cell *matCellDef="let d" class="mono">{{ d.code }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="name">
+        <th mat-header-cell *matHeaderCellDef>名称</th>
+        <td mat-cell *matCellDef="let d" class="name-cell">{{ d.name }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="subject">
+        <th mat-header-cell *matHeaderCellDef>科目</th>
+        <td mat-cell *matCellDef="let d">{{ d.subjectName || '—' }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="payloadType">
+        <th mat-header-cell *matHeaderCellDef>版式</th>
+        <td mat-cell *matCellDef="let d">
+          <span class="payload-badge">{{ payloadLabel(d.payloadType) }}</span>
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="itemCount">
+        <th mat-header-cell *matHeaderCellDef>条目数</th>
+        <td mat-cell *matCellDef="let d">{{ d.itemCount }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="maxVersion">
+        <th mat-header-cell *matHeaderCellDef matTooltip="条目最高 Version（未归档口径，设备增量同步游标参照）">版本</th>
+        <td mat-cell *matCellDef="let d">v{{ d.maxVersion }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="shared">
+        <th mat-header-cell *matHeaderCellDef>共享</th>
+        <td mat-cell *matCellDef="let d">
+          @if (d.isShared) {
+            <span class="shared-badge">已共享</span>
+          } @else {
+            <span class="muted">私有</span>
+          }
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="owner">
+        <th mat-header-cell *matHeaderCellDef>Owner</th>
+        <td mat-cell *matCellDef="let d">{{ d.ownerName || '官方' }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="updatedAt">
+        <th mat-header-cell *matHeaderCellDef>更新时间</th>
+        <td mat-cell *matCellDef="let d">{{ d.updatedAt ? (d.updatedAt | date: 'MM-dd HH:mm') : '—' }}</td>
+      </ng-container>
+
+      <ng-container matColumnDef="actions">
+        <th mat-header-cell *matHeaderCellDef>操作</th>
+        <td mat-cell *matCellDef="let d">
+          <button
+            mat-icon-button
+            matTooltip="条目管理（分页 / 行内编辑 / 新增 / 删除）"
+            (click)="openItems(d)"
+          >
+            <mat-icon>list_alt</mat-icon>
+          </button>
+          <button
+            mat-icon-button
+            matTooltip="字符集核对（生僻字覆盖，喂字库子集流程）"
+            (click)="openCharset(d)"
+          >
+            <mat-icon>spellcheck</mat-icon>
+          </button>
+        </td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+      <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+    </table>
+  }
+</div>

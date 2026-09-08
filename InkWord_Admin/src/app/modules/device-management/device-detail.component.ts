@@ -4,9 +4,11 @@ import { MAT_DIALOG_DATA, MatDialogRef, MatDialogModule } from '@angular/materia
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatCardModule } from '@angular/material/card';
+import { MatTableModule } from '@angular/material/table';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { DeviceApiService } from '../../core/api/device-api.service';
-import { Device, DeviceCommandDto } from '../../core/models/models';
+import { Device, DeviceCommandDto, DeviceBookReadingItem } from '../../core/models/models';
 
 /**
  * 设备远程命令面板 (A-10)：
@@ -22,6 +24,8 @@ import { Device, DeviceCommandDto } from '../../core/models/models';
     MatButtonModule,
     MatIconModule,
     MatCardModule,
+    MatTableModule,
+    MatProgressBarModule,
   ],
   templateUrl: './device-detail.component.html',
   styleUrl: './device-detail.component.scss',
@@ -33,6 +37,16 @@ export class DeviceDetailComponent {
   readonly device = inject<Device>(MAT_DIALOG_DATA);
 
   readonly sending = signal(false);
+
+  /** 阅读记录（阅读器后端 2026-09：按最近阅读倒序；无数据为空） */
+  readonly readingBooks = signal<DeviceBookReadingItem[]>([]);
+  readonly readingColumns = ['title', 'progress', 'page', 'minutes', 'lastReadAt'];
+
+  constructor() {
+    this.deviceApi.deviceReading(this.device.id).subscribe({
+      next: (res) => this.readingBooks.set(res.data?.books ?? []),
+    });
+  }
 
   /** 模拟电量曲线数据（实际可从后端获取历史记录） */
   readonly batteryHistory = [

@@ -1,5 +1,9 @@
 using System.Security.Claims;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using InkWord.API.DTOs;
 using InkWord.Core.Common;
+using InkWord.Core.Repositories;
 using InkWord.Infrastructure.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -25,8 +29,13 @@ namespace InkWord.API.Controllers;
 public class MyDeviceController : ControllerBase
 {
     private readonly IUnitOfWork _uow;
+    private readonly IBookRepository _bookRepo;
 
-    public MyDeviceController(IUnitOfWork uow) => _uow = uow;
+    public MyDeviceController(IUnitOfWork uow, IBookRepository bookRepo)
+    {
+        _uow = uow;
+        _bookRepo = bookRepo;
+    }
 
     public record BindReq(string Mac);
     public record DeviceDto(Guid Id, string Name, string Mac, string FirmwareVersion,
@@ -34,6 +43,10 @@ public class MyDeviceController : ControllerBase
     public record AggregateDto(Guid WordId, Guid DeviceId, double Stability,
         double Difficulty, DateTime? NextReview, bool IsCollected, bool IsMastered,
         DateTime LastStudiedAt);
+
+    /// <summary>聚合响应（P2 学习报告）：items 为主 LWS 归并行，
+    /// masteredCount 为跨设备去重墨封词数（App 报告页头部统计）</summary>
+    public record AggregateResp(List<AggregateDto> Items, int MasteredCount);
 
     /// <summary>LWS 归并行（查询投影形态；sealed record 供归并直测）</summary>
     public sealed record LwsRow(Guid WordId, Guid DeviceId, double Stability,
@@ -123,7 +136,7 @@ public class MyDeviceController : ControllerBase
             .Select(d => d.Id)
             .ToListAsync(ct);
         if (deviceIds.Count == 0)
-            return Ok(ApiResponse<List<AggregateDto>>.Ok([]));
+            return Ok(ApiResponse<AggregateResp>.Ok(new AggregateResp([], 0)));
 
         var rows = await _uow.Db.LearningRecords.AsNoTracking()
             .Where(lr => deviceIds.Contains(lr.DeviceId))
@@ -138,10 +151,104 @@ public class MyDeviceController : ControllerBase
             .Select(r => new AggregateDto(r.WordId, r.DeviceId, r.Stability,
                 r.Difficulty, r.NextReview, r.IsCollected, r.IsMastered, r.LastStudiedAt))
             .ToList();
-        return Ok(ApiResponse<List<AggregateDto>>.Ok(dto));
+
+        // 墨封数（P2 学习报告）：跨设备按 WordId 去重（同词多设备
+        // mastered 只计一次；不套 take 截断，报告头部需全量口径）
+        var masteredCount = await _uow.Db.LearningRecords.AsNoTracking()
+            .Where(lr => deviceIds.Contains(lr.DeviceId) && lr.IsMastered)
+            .Select(lr => lr.WordId).Distinct().CountAsync(ct);
+
+        return Ok(ApiResponse<AggregateResp>.Ok(new AggregateResp(dto, masteredCount)));
+    }
+
+    // ---- P2 学习报告（2026-09）：周报 / 阅读 / 云端书库 ----
+
+    /// <summary>AI 对话周报（App 学习报告页）：归属校验后按周倒序取
+    /// 最新 limit 条（默认 1）；review 为 PayloadJson 解析对象（非法
+    /// JSON 兕底原文字符串，同设备端 ToPayload 口径）；无记录 404。</summary>
+    [HttpGet("devices/{id}/chat-review")]
+    public async Task<IActionResult> ChatReview(Guid id, [FromQuery] int limit, CancellationToken ct)
+    {
+        if (!await OwnsDevice(id, ct))
+            return NotFound(ApiResponse.Fail(404, "设备不在你的账户"));
+
+        limit = ClampReviewLimit(limit);
+        var reviews = await _uow.Db.ChatReviews.AsNoTracking()
+            .Where(r => r.DeviceId == id)
+            .OrderByDescending(r => r.WeekStart)
+            .Take(limit)
+            .ToListAsync(ct);
+        if (reviews.Count == 0)
+            return NotFound(ApiResponse.Fail(404, "no review yet"));
+
+        var items = reviews
+            .Select(r => ReviewPayload(r.WeekStart, r.TurnCount, r.PayloadJson))
+            .ToList();
+        return Ok(ApiResponse<object>.Ok(new { items }));
+    }
+
+    /// <summary>周报载荷（public static 供测试直测）：review 解为 JSON
+    /// 对象嵌入（App 端免二次转义）；非法 JSON / null 字面量均兜底
+    /// 原文字符串（JsonNode.Parse 对非法输入抛异常而非返 null）</summary>
+    public static object ReviewPayload(DateTime weekStart, int turnCount, string payloadJson)
+    {
+        object review;
+        try
+        {
+            review = JsonNode.Parse(payloadJson) ?? (object)payloadJson;
+        }
+        catch (JsonException)
+        {
+            review = payloadJson;
+        }
+        return new { weekStart, turnCount, review };
+    }
+
+    /// <summary>周报 limit 钳制：默认 1，上限半年 26 周（public static 供直测）</summary>
+    public static int ClampReviewLimit(int limit) =>
+        limit <= 0 || limit > 26 ? 1 : limit;
+
+    /// <summary>设备阅读记录（App 学习报告页）：ReadingProgress join
+    /// Books 按 LastReadAt 倒序，映射同管理端 DeviceBookReadingItem。</summary>
+    [HttpGet("devices/{id}/reading")]
+    public async Task<IActionResult> Reading(Guid id, CancellationToken ct)
+    {
+        if (!await OwnsDevice(id, ct))
+            return NotFound(ApiResponse.Fail(404, "设备不在你的账户"));
+
+        var books = await _uow.Db.ReadingProgresses.AsNoTracking()
+            .Where(p => p.DeviceId == id)
+            .Join(_uow.Db.Books.AsNoTracking(), p => p.BookId, b => b.Id,
+                  (p, b) => new DeviceBookReadingItem(
+                      b.BookKey, b.Title, p.CurrentPage, p.TotalPages,
+                      p.TotalPages > 0 ? (p.CurrentPage * 100 / p.TotalPages) : 0,
+                      p.LastReadAt, p.TotalReadMinutes))
+            .OrderByDescending(x => x.LastReadAt)
+            .ToListAsync(ct);
+
+        return Ok(ApiResponse<DeviceReadingDetailResp>.Ok(
+            new DeviceReadingDetailResp(books)));
+    }
+
+    /// <summary>云端书库（App 只读浏览）：与设备端 books 同 Published
+    /// 口径（GetPublishedAsync 单源）；下载引导走设备端「我的书架→云端
+    /// 书架」自拉，App 零新推送协议。</summary>
+    [HttpGet("books")]
+    public async Task<IActionResult> Books(CancellationToken ct)
+    {
+        var books = await _bookRepo.GetPublishedAsync(ct);
+        var dtos = books.Select(b => new BookDto(
+            b.BookKey, b.Title, b.Author, b.Language, b.Tags,
+            b.FileSize, b.Format, b.Description, b.DownloadCount)).ToList();
+        return Ok(ApiResponse<List<BookDto>>.Ok(dtos));
     }
 
     // ---- 内部 ----
+
+    /// <summary>归属校验（404 防存在性探测，bind 先例）</summary>
+    private async Task<bool> OwnsDevice(Guid id, CancellationToken ct) =>
+        await _uow.Db.Devices.AsNoTracking()
+            .AnyAsync(d => d.Id == id && d.UserId == AccountId, ct);
 
     /// <summary>LWS 归并：按 WordId 取 LastStudiedAt 新者整行胜出，
     /// 结果按最近学习降序截 take（public 供测试直测）。</summary>

@@ -131,4 +131,14 @@ public class AccountTests
         Assert.Equal("", w.Phonetic);
         Assert.Equal("", w.Example);
     }
+
+    // ---- 条目 Version 递增（P3 管理端条目 CRUD 与 me 端同源公共方法） ----
+
+    [Theory]
+    [InlineData(5, 100, 101)]   // 全局 max 更高 → 接全局 max 递增（设备增量同步契约：新 Version 须高于任一设备已拉游标）
+    [InlineData(100, 5, 101)]   // 自身更高（异常防回退）→ 自身 +1
+    [InlineData(50, 50, 51)]    // 相等 → +1
+    [InlineData(0, 0, 1)]       // 冷启动首条 → 1
+    public void NextVersion_TakesMaxOfCurrentAndGlobal(int current, int globalMax, int expected)
+        => Assert.Equal(expected, MyDeckController.NextVersion(current, globalMax));
 }

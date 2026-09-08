@@ -3,11 +3,13 @@ import { CommonModule } from '@angular/common';
 import { MatCardModule } from '@angular/material/card';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
+import { MatTableModule } from '@angular/material/table';
 import { NgxEchartsDirective } from 'ngx-echarts';
 import type { EChartsOption } from 'echarts';
 import { DashboardApiService } from '../../core/api/dashboard-api.service';
 import {
   DashboardStats, SrsDistribution, DailyActiveData, SrsComparisonResp, TodayStats,
+  ReadingStatsResp,
 } from '../../core/models/models';
 
 /**
@@ -26,6 +28,7 @@ import {
     MatCardModule,
     MatProgressSpinnerModule,
     MatIconModule,
+    MatTableModule,
     NgxEchartsDirective,
   ],
   templateUrl: './dashboard.component.html',
@@ -42,6 +45,10 @@ export class DashboardComponent implements OnInit {
   readonly srsComparison = signal<SrsComparisonResp | null>(null);
   /** 今日学习统计（v1.3 T3.2：LearningRecord 按日聚合） */
   readonly todayStats = signal<TodayStats | null>(null);
+  /** 阅读统计（阅读器后端 2026-09：今日读者/时长/热门书/近 7 天趋势） */
+  readonly readingStats = signal<ReadingStatsResp | null>(null);
+  /** 热门书籍表列 */
+  readonly popularColumns = ['rank', 'title', 'readers', 'progress'];
 
   /** 今日正确率（%）：答对 /（答对 + 答错），无人次时为 0 */
   readonly correctRate = computed(() => {
@@ -86,6 +93,43 @@ export class DashboardComponent implements OnInit {
         data: data.map(d => ({ name: d.level, value: d.count })),
         emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.5)' } },
       }],
+    };
+  });
+
+  /** 阅读趋势折线图（近 7 天阅读分钟数 + 读者数，复用 lineChartOption 范式） */
+  readonly readingChartOption = computed<EChartsOption>(() => {
+    const data = this.readingStats()?.dailyReading ?? [];
+    return {
+      tooltip: { trigger: 'axis' },
+      legend: { bottom: 0 },
+      xAxis: {
+        type: 'category',
+        data: data.map(d => d.date.slice(5)),
+        axisLabel: { rotate: 30 },
+      },
+      yAxis: [
+        { type: 'value', name: '分钟' },
+        { type: 'value', name: '读者' },
+      ],
+      series: [
+        {
+          name: '阅读分钟',
+          type: 'line',
+          smooth: true,
+          data: data.map(d => d.minutes),
+          areaStyle: { opacity: 0.15 },
+          itemStyle: { color: '#1a1a1a' },
+        },
+        {
+          name: '活跃读者',
+          type: 'line',
+          smooth: true,
+          yAxisIndex: 1,
+          data: data.map(d => d.readers),
+          itemStyle: { color: '#78909c' },
+        },
+      ],
+      grid: { left: '5%', right: '5%', bottom: '12%', containLabel: true },
     };
   });
 
@@ -146,6 +190,11 @@ export class DashboardComponent implements OnInit {
     // 加载今日学习统计（v1.3 T3.2）
     this.dashboardApi.getTodayStats().subscribe({
       next: (res) => this.todayStats.set(res.data ?? null),
+    });
+
+    // 加载阅读统计（阅读器后端 2026-09；无阅读数据时区域留空）
+    this.dashboardApi.getReadingStats().subscribe({
+      next: (res) => this.readingStats.set(res.data ?? null),
     });
   }
 }

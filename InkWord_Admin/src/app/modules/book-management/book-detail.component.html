@@ -1,0 +1,80 @@
+<h2 mat-dialog-title>书籍详情</h2>
+
+<mat-dialog-content>
+  @if (loading()) {
+    <div class="detail-loading">
+      <mat-spinner diameter="36"></mat-spinner>
+    </div>
+  } @else {
+    @if (detail(); as d) {
+    <!-- 阅读统计 -->
+    <div class="stats-grid">
+      <div class="stat">
+        <span class="stat-value">{{ d.readerCount }}</span>
+        <span class="stat-label">读者数</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value">{{ d.avgProgressPct }}%</span>
+        <span class="stat-label">平均进度</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value">{{ d.downloadCount }}</span>
+        <span class="stat-label">下载次数</span>
+      </div>
+    </div>
+
+    <!-- 文件信息 -->
+    <div class="file-meta">
+      <span>BookKey: {{ d.bookKey }}</span>
+      <span>格式: {{ d.format.toUpperCase() }} · {{ fileSizeLabel(d.fileSize) }}</span>
+      <span>上传: {{ d.createdAt ? (d.createdAt | date: 'yyyy-MM-dd') : '—' }}</span>
+      <span [class.published]="d.published" [class.draft]="!d.published">
+        {{ d.published ? '已发布' : '草稿' }}
+      </span>
+    </div>
+
+    <!-- 元数据编辑 -->
+    <form [formGroup]="form" class="edit-form">
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>书名 *</mat-label>
+        <input matInput formControlName="title" />
+        @if (form.controls.title.hasError('required') && form.controls.title.touched) {
+          <mat-error>请输入书名</mat-error>
+        }
+      </mat-form-field>
+
+      <div class="form-row">
+        <mat-form-field appearance="outline">
+          <mat-label>作者</mat-label>
+          <input matInput formControlName="author" />
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>语言</mat-label>
+          <mat-select formControlName="language">
+            <mat-option value="zh">中文（zh）</mat-option>
+            <mat-option value="en">英文（en）</mat-option>
+          </mat-select>
+        </mat-form-field>
+      </div>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>标签</mat-label>
+        <input matInput formControlName="tags" />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>简介</mat-label>
+        <textarea matInput formControlName="description" rows="3"></textarea>
+      </mat-form-field>
+    </form>
+    }
+  }
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()">取消</button>
+  <button mat-raised-button color="primary" (click)="save()" [disabled]="saving() || loading()">
+    {{ saving() ? '保存中...' : '保存' }}
+  </button>
+</mat-dialog-actions>

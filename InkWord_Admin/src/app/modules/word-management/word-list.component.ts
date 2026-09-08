@@ -19,7 +19,6 @@ import { Word } from '../../core/models/models';
 import { WordEditComponent } from './word-edit.component';
 import { WordImportComponent } from './word-import.component';
 import { AiGenerateDialogComponent } from './ai-generate-dialog.component';
-import { DeckGenerateDialogComponent } from './deck-generate-dialog.component';
 
 /**
  * 词库列表页 (A-06)：
@@ -219,11 +218,6 @@ export class WordListComponent implements OnInit, AfterViewInit {
   /** AI 批量生成触发（M1 路径 B：入 Hangfire 队列，结果去 AI 审核台比对） */
   openAiGenerate(): void {
     this.dialog.open(AiGenerateDialogComponent, { width: '520px' });
-  }
-
-  /** T5.4 AI 卡组生成：素材→占位待审条目（审核台通过后 Version++ 下发） */
-  openDeckGenerate(): void {
-    this.dialog.open(DeckGenerateDialogComponent, { width: '560px' });
   }
 
   /** 跳转 AI 审核台（待审建议比对） */

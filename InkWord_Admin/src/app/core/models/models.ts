@@ -216,6 +216,172 @@ export interface AdminDeckInfo {
   itemCount: number;
 }
 
+// ── Book（阅读器后端，2026-09）─────────────────────
+/** 书籍列表行（AdminBookController List 匿名投影，camelCase） */
+export interface BookListItem {
+  id: string;
+  bookKey: string;
+  title: string;
+  author?: string;
+  language: string;
+  tags?: string;
+  /** 字节数 */
+  fileSize: number;
+  format: string;
+  published: boolean;
+  downloadCount: number;
+  createdAt?: string;
+}
+
+/** 书籍详情（含阅读统计 readerCount / avgProgressPct） */
+export interface BookDetail extends BookListItem {
+  description?: string;
+  readerCount: number;
+  avgProgressPct: number;
+}
+
+/** 上传元数据（multipart 表单字段，同后端 BookCreateDto） */
+export interface BookCreateDto {
+  title: string;
+  author?: string;
+  language: string;
+  tags?: string;
+  description?: string;
+}
+
+/** 元数据更新（同后端 BookUpdateDto：null = 不修改） */
+export interface BookUpdateDto {
+  title?: string;
+  author?: string;
+  language?: string;
+  tags?: string;
+  description?: string;
+  published?: boolean;
+}
+
+/** 列表查询参数 */
+export interface BookQuery {
+  page: number;
+  size: number;
+  keyword?: string;
+  language?: string;
+  published?: boolean;
+}
+
+// ── 阅读统计（AdminDashboardController，2026-09）──────────
+export interface ReadingStatsResp {
+  totalBooks: number;
+  activeReadersToday: number;
+  totalReadMinutesToday: number;
+  popularBooks: PopularBookItem[];
+  dailyReading: DailyReadingItem[];
+}
+
+export interface PopularBookItem {
+  bookKey: string;
+  title: string;
+  readers: number;
+  avgProgressPct: number;
+}
+
+export interface DailyReadingItem {
+  date: string;
+  minutes: number;
+  readers: number;
+}
+
+/** 单设备阅读记录行（device-reading 端点） */
+export interface DeviceBookReadingItem {
+  bookKey: string;
+  title: string;
+  currentPage: number;
+  totalPages: number;
+  progressPct: number;
+  lastReadAt: string;
+  totalReadMinutes: number;
+}
+
+export interface DeviceReadingResp {
+  books: DeviceBookReadingItem[];
+}
+
+// ── Deck/Subject（P3 卡组管理，2026-09）─────────────
+/** 科目行（AdminSubjectController：含每科目卡组计数） */
+export interface AdminSubjectItem {
+  id: string;
+  code: string;
+  name: string;
+  sortOrder: number;
+  deckCount: number;
+}
+
+/** 卡组列表行（AdminDeckController List 增强：含科目/Owner/条目计数/最高版本） */
+export interface DeckListItem {
+  id: string;
+  code: string;
+  name: string;
+  payloadType: string;
+  subjectId?: string | null;
+  subjectCode: string;
+  subjectName: string;
+  itemCount: number;
+  /** 条目最高 Version（未归档口径，设备增量同步游标参照） */
+  maxVersion: number;
+  isShared: boolean;
+  ownerName: string;
+  updatedAt?: string;
+}
+
+/** 卡组详情（含学习覆盖：learnerCount 学过设备数 / studiedItems 被学条目数） */
+export interface DeckDetail {
+  id: string;
+  code: string;
+  name: string;
+  payloadType: string;
+  description?: string | null;
+  isShared: boolean;
+  sharedAt?: string | null;
+  createdAt?: string;
+  subjectCode: string;
+  subjectName: string;
+  ownerId?: string | null;
+  ownerName?: string | null;
+  itemCount: number;
+  maxVersion: number;
+  learnerCount: number;
+  studiedItems: number;
+}
+
+/** 卡组条目行（Items 分页；含归档行删除痕迹） */
+export interface DeckItem {
+  id: string;
+  version: number;
+  text: string;
+  front: string;
+  back: string;
+  phonetic?: string | null;
+  meaning?: string | null;
+  example?: string | null;
+  archived: boolean;
+}
+
+/** 条目分页响应（{ items, total, page, size } 信封内层） */
+export interface DeckItemsResp {
+  items: DeckItem[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+/** 条目写请求（同后端 AdminItemReq：FillWord 同源映射，
+ * Front/Back 双写 Text/Meaning，通用列 front/back/phonetic/example） */
+export interface DeckItemReq {
+  front: string;
+  back: string;
+  phonetic?: string;
+  example?: string;
+}
+
 // ── SRS 算法对比（M3 路径 A）─────────────────────
 export interface SrsComparisonItem {
   algorithm: string;

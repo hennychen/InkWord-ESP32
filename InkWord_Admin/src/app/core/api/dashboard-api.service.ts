@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 import { environment } from '../../../environments/environment';
 import {
   DashboardStats, SrsDistribution, DailyActiveData, WrongTopResp,
-  SrsComparisonResp, TodayStats, ApiResponse,
+  SrsComparisonResp, TodayStats, ReadingStatsResp, ApiResponse,
 } from '../models/models';
 
 /**
@@ -48,5 +48,10 @@ export class DashboardApiService {
   /** SM-2 vs FSRS 到期分布对比（M3 路径 A：影子运行切换决策依据） */
   getSrsComparison(): Observable<ApiResponse<SrsComparisonResp>> {
     return this.http.get<ApiResponse<SrsComparisonResp>>(`${this.base}/srs-comparison`);
+  }
+
+  /** 阅读统计（阅读器后端：今日活跃读者/阅读时长/热门书籍/近 7 天趋势） */
+  getReadingStats(): Observable<ApiResponse<ReadingStatsResp>> {
+    return this.http.get<ApiResponse<ReadingStatsResp>>(`${this.base}/reading-stats`);
   }
 }

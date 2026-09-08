@@ -105,6 +105,110 @@ class CloudAggregate {
   final DateTime? lastStudiedAt;
 }
 
+/// LWS 聚合响应（P2 学习报告）：items 归并行 +
+/// masteredCount 跨设备去重墨封词数（报告页头部统计）
+class CloudAggregateSummary {
+  const CloudAggregateSummary({
+    required this.items,
+    required this.masteredCount,
+  });
+
+  final List<CloudAggregate> items;
+  final int masteredCount;
+}
+
+/// AI 对话周报一条（GET /api/me/devices/{id}/chat-review，P2 学习报告）。
+/// 后端 review 为五段 JSON 对象（summary/topics/highlights/suggestion/
+/// reviewWords），非法 JSON 兜底原文字符串进 summary。
+class ChatReviewData {
+  const ChatReviewData({
+    required this.weekStart,
+    required this.turnCount,
+    this.summary = '',
+    this.suggestion = '',
+    this.topics = const [],
+    this.highlights = const [],
+    this.reviewWords = const [],
+  });
+
+  final DateTime? weekStart; // 周起始（周一 00:00 UTC）
+  final int turnCount;
+  final String summary;
+  final String suggestion;
+  final List<String> topics;
+  final List<String> highlights;
+  final List<String> reviewWords;
+
+  factory ChatReviewData.fromMap(Map<String, dynamic> m) {
+    final weekStart = DateTime.tryParse(m['weekStart'] as String? ?? '');
+    final turnCount = (m['turnCount'] as num?)?.toInt() ?? 0;
+    final r = m['review'];
+    if (r is Map<String, dynamic>) {
+      return ChatReviewData(
+        weekStart: weekStart,
+        turnCount: turnCount,
+        summary: r['summary'] as String? ?? '',
+        suggestion: r['suggestion'] as String? ?? '',
+        topics: [for (final t in (r['topics'] as List? ?? [])) t.toString()],
+        highlights: [
+          for (final h in (r['highlights'] as List? ?? [])) h.toString(),
+        ],
+        reviewWords: [
+          for (final w in (r['reviewWords'] as List? ?? [])) w.toString(),
+        ],
+      );
+    }
+    // 非法 JSON 兜底：review 原文字符串进 summary（属 404 空态外的降级）
+    return ChatReviewData(
+      weekStart: weekStart,
+      turnCount: turnCount,
+      summary: r?.toString() ?? '',
+    );
+  }
+}
+
+/// 单设备阅读记录行（GET /api/me/devices/{id}/reading，P2 学习报告）
+class DeviceReading {
+  const DeviceReading({
+    required this.bookKey,
+    required this.title,
+    required this.currentPage,
+    required this.totalPages,
+    required this.progressPct,
+    required this.totalReadMinutes,
+    this.lastReadAt,
+  });
+
+  final String bookKey;
+  final String title;
+  final int currentPage;
+  final int totalPages;
+  final int progressPct; // 0-100
+  final int totalReadMinutes; // 累计阅读分钟
+  final DateTime? lastReadAt;
+}
+
+/// 云端书库条目（GET /api/me/books，与设备端 books 同 Published 口径）
+class CloudBook {
+  const CloudBook({
+    required this.bookKey,
+    required this.title,
+    this.author = '',
+    this.language = 'zh',
+    this.fileSize = 0,
+    this.format = 'txt',
+    this.downloadCount = 0,
+  });
+
+  final String bookKey;
+  final String title;
+  final String author;
+  final String language;
+  final int fileSize; // 字节
+  final String format; // txt / md / html
+  final int downloadCount;
+}
+
 class CloudClient {
   CloudClient({required this.baseUrl, this.token});
 
@@ -434,22 +538,95 @@ class CloudClient {
       ..headers.addAll(_headers),
   );
 
-  Future<List<CloudAggregate>> aggregateProgress({int take = 500}) async {
+  /// LWS 聚合（P2 起响应含 masteredCount：跨设备去重墨封词数）。
+  /// 旧后端/零设备早退分支可能回旧形态 List —— 按旧形态兼容做客户端兜底。
+  Future<CloudAggregateSummary> aggregateProgress({int take = 500}) async {
     final data = await _send(
       http.Request('GET', _u('/api/me/progress/aggregate?take=$take'))
         ..headers.addAll(_headers),
     );
+    // 兼容旧 List 形态（零设备空态）：视为空聚合而非类型错误
+    if (data is List) {
+      return const CloudAggregateSummary(items: [], masteredCount: 0);
+    }
+    final m = (data as Map).cast<String, dynamic>();
+    return CloudAggregateSummary(
+      masteredCount: (m['masteredCount'] as num?)?.toInt() ?? 0,
+      items: [
+        for (final e in (m['items'] as List? ?? []))
+          CloudAggregate(
+            wordId: e['wordId'] as String,
+            deviceId: e['deviceId'] as String,
+            stability: (e['stability'] as num?)?.toDouble() ?? 0,
+            difficulty: (e['difficulty'] as num?)?.toDouble() ?? 0,
+            isCollected: e['isCollected'] as bool? ?? false,
+            lastStudiedAt: e['lastStudiedAt'] == null
+                ? null
+                : DateTime.tryParse(e['lastStudiedAt'] as String),
+          ),
+      ],
+    );
+  }
+
+  // ---- P2 学习报告（2026-09）：周报 / 阅读 / 云端书库 ----
+
+  /// AI 对话周报：按周倒序取最新 limit 条（默认 1，历史周切换分页拉）；
+  /// 无周报（Job 未跑/无对话记录）抛 CloudException 404，调用方空态展示
+  Future<List<ChatReviewData>> fetchChatReview(
+    String deviceId, {
+    int limit = 1,
+  }) async {
+    final data = await _send(
+      http.Request(
+        'GET',
+        _u('/api/me/devices/$deviceId/chat-review?limit=$limit'),
+      )..headers.addAll(_headers),
+    );
+    final m = (data as Map).cast<String, dynamic>();
+    return [
+      for (final e in (m['items'] as List? ?? []))
+        ChatReviewData.fromMap((e as Map).cast<String, dynamic>()),
+    ];
+  }
+
+  /// 设备阅读记录：ReadingProgress 按 LastReadAt 倒序
+  Future<List<DeviceReading>> fetchDeviceReading(String deviceId) async {
+    final data = await _send(
+      http.Request('GET', _u('/api/me/devices/$deviceId/reading'))
+        ..headers.addAll(_headers),
+    );
+    final m = (data as Map).cast<String, dynamic>();
+    return [
+      for (final e in (m['books'] as List? ?? []))
+        DeviceReading(
+          bookKey: e['bookKey'] as String? ?? '',
+          title: e['title'] as String? ?? '',
+          currentPage: (e['currentPage'] as num?)?.toInt() ?? 0,
+          totalPages: (e['totalPages'] as num?)?.toInt() ?? 0,
+          progressPct: (e['progressPct'] as num?)?.toInt() ?? 0,
+          totalReadMinutes: (e['totalReadMinutes'] as num?)?.toInt() ?? 0,
+          lastReadAt: e['lastReadAt'] == null
+              ? null
+              : DateTime.tryParse(e['lastReadAt'] as String),
+        ),
+    ];
+  }
+
+  /// 云端书库（只读浏览）：下载引导走设备端「我的书架→云端书架」
+  Future<List<CloudBook>> cloudBooks() async {
+    final data = await _send(
+      http.Request('GET', _u('/api/me/books'))..headers.addAll(_headers),
+    );
     return [
       for (final e in (data as List? ?? []))
-        CloudAggregate(
-          wordId: e['wordId'] as String,
-          deviceId: e['deviceId'] as String,
-          stability: (e['stability'] as num?)?.toDouble() ?? 0,
-          difficulty: (e['difficulty'] as num?)?.toDouble() ?? 0,
-          isCollected: e['isCollected'] as bool? ?? false,
-          lastStudiedAt: e['lastStudiedAt'] == null
-              ? null
-              : DateTime.tryParse(e['lastStudiedAt'] as String),
+        CloudBook(
+          bookKey: e['bookKey'] as String,
+          title: e['title'] as String? ?? '',
+          author: e['author'] as String? ?? '',
+          language: e['language'] as String? ?? 'zh',
+          fileSize: (e['fileSize'] as num?)?.toInt() ?? 0,
+          format: e['format'] as String? ?? 'txt',
+          downloadCount: (e['downloadCount'] as num?)?.toInt() ?? 0,
         ),
     ];
   }

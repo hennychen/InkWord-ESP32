@@ -1,0 +1,70 @@
+<h2 mat-dialog-title>上传书籍</h2>
+
+<mat-dialog-content>
+  <!-- 文件选择：TXT/MD/HTML ≤10MB -->
+  <div class="file-field">
+    <button mat-stroked-button type="button" (click)="fileInput.click()">
+      <mat-icon>upload_file</mat-icon>
+      {{ file() ? '重新选择' : '选择文件' }}
+    </button>
+    <input
+      #fileInput
+      type="file"
+      accept=".txt,.md,.html,.htm"
+      (change)="onFileSelected($event)"
+      hidden
+    />
+    @if (file(); as f) {
+      <span class="file-info">{{ f.name }}（{{ fileSizeLabel(f.size) }}）</span>
+    } @else {
+      <span class="file-hint">TXT / MD / HTML，≤10MB</span>
+    }
+  </div>
+  @if (fileError()) {
+    <div class="file-error">{{ fileError() }}</div>
+  }
+
+  <form [formGroup]="form" class="upload-form">
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>书名 *</mat-label>
+      <input matInput formControlName="title" placeholder="如 朝花夕拾" />
+      @if (form.controls.title.hasError('required') && form.controls.title.touched) {
+        <mat-error>请输入书名</mat-error>
+      }
+    </mat-form-field>
+
+    <div class="form-row">
+      <mat-form-field appearance="outline">
+        <mat-label>作者</mat-label>
+        <input matInput formControlName="author" placeholder="如 鲁迅" />
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>语言</mat-label>
+        <mat-select formControlName="language">
+          <mat-option value="zh">中文（zh）</mat-option>
+          <mat-option value="en">英文（en）</mat-option>
+        </mat-select>
+      </mat-form-field>
+    </div>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>标签</mat-label>
+      <input matInput formControlName="tags" placeholder="如 六年级必读" />
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>简介</mat-label>
+      <textarea matInput formControlName="description" rows="3" placeholder="书籍简介（设备端书架可见）"></textarea>
+    </mat-form-field>
+  </form>
+
+  <p class="upload-hint">上传后为草稿态，需在列表中手动发布，设备端「云端书架」才会展示。</p>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()">取消</button>
+  <button mat-raised-button color="primary" (click)="upload()" [disabled]="saving()">
+    {{ saving() ? '上传中...' : '上传' }}
+  </button>
+</mat-dialog-actions>

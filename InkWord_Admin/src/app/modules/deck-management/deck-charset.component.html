@@ -1,0 +1,37 @@
+<h2 mat-dialog-title>
+  <mat-icon>spellcheck</mat-icon>
+  字符集 — {{ deck.name }}（{{ deck.code }}）
+</h2>
+
+<mat-dialog-content class="charset-content">
+  @if (loading()) {
+    <div class="loading-row">
+      <mat-progress-spinner diameter="36" mode="indeterminate"></mat-progress-spinner>
+    </div>
+  } @else if (failed()) {
+    <p class="hint">加载失败，请稍后重试</p>
+  } @else {
+    <p class="hint">
+      本卡组全部条目可渲染内容（词面/音标/释义/例句/词根/变形/来源/年级/标签）的
+      去重字符共 {{ chars().length }} 个。下载后喂
+      <code>tools/gen_cjk_font.swift --subset</code>
+      与主集做差集生成子集字库 <code>deck_{{ deck.code }}.bin</code>，
+      拷入 SD 卡 <code>/fonts/</code> 供固件级联查找（生僻字刚需）。
+    </p>
+    <div class="char-stream">{{ chars() }}</div>
+  }
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  @if (!loading() && !failed()) {
+    <button mat-button (click)="copy()">
+      <mat-icon>content_copy</mat-icon>
+      复制
+    </button>
+    <button mat-button (click)="download()">
+      <mat-icon>download</mat-icon>
+      下载 .txt
+    </button>
+  }
+  <button mat-button (click)="close()">关闭</button>
+</mat-dialog-actions>

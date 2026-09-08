@@ -47,6 +47,18 @@ export const routes: Routes = [
         title: '词库管理 — InkWord',
       },
       {
+        path: 'decks',
+        loadComponent: () =>
+          import('./modules/deck-management/deck-list.component').then((m) => m.DeckListComponent),
+        title: '卡组管理 — InkWord',
+      },
+      {
+        path: 'books',
+        loadComponent: () =>
+          import('./modules/book-management/book-list.component').then((m) => m.BookListComponent),
+        title: '书籍管理 — InkWord',
+      },
+      {
         path: 'devices',
         loadComponent: () =>
           import('./modules/device-management/device-list.component').then(

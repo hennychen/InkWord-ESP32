@@ -85,6 +85,54 @@
   color: #888;
 }
 
+/* 阅读分析区（阅读器后端 2026-09） */
+.reading-section {
+  margin-bottom: 24px;
+}
+
+.reading-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 48px;
+  padding: 12px 8px 16px;
+
+  .metric {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .metric-value {
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: #1a1a1a;
+  }
+
+  .metric-label {
+    font-size: 0.85rem;
+    color: #888;
+  }
+}
+
+.reading-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.popular-table {
+  width: 100%;
+
+  td,
+  th {
+    padding: 6px 12px;
+    font-size: 0.9rem;
+  }
+}
+
 /* 图表区 */
 .charts-grid {
   display: grid;

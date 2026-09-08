@@ -46,6 +46,8 @@ export class MainLayoutComponent {
     { label: '数据看板', icon: 'dashboard', route: '/dashboard' },
     { label: '错词排行', icon: 'error_outline', route: '/wrong-top' },
     { label: '词库管理', icon: 'menu_book', route: '/words' },
+    { label: '卡组管理', icon: 'style', route: '/decks' },
+    { label: '书籍管理', icon: 'auto_stories', route: '/books' },
     { label: '设备管理', icon: 'devices', route: '/devices' },
     { label: 'OTA 升级', icon: 'system_update', route: '/ota' },
   ];

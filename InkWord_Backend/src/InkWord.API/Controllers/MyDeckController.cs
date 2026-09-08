@@ -15,7 +15,7 @@ namespace InkWord.API.Controllers;
 /// 与官方库隔离（uq(Text,Tag)），Front/Back 双写、Version 全局递增——设备
 /// 增量同步通道天然可用；App 端主推送通道是 LAN 直传（uploadDeck 全量
 /// 覆盖 SD decks/&lt;id&gt;/words.json，设备零感知归属）。
-/// 删除语义：Archived=true + Version++（GetIncrementalAsync 排除归档，
+/// 删除语义：Archived=true + Version 接 max 递增（GetIncrementalAsync 排除归档，
 /// 设备侧不再拉到；已落 SD 的 LAN 拷贝独立，由 App 重推覆盖）。
 ///
 /// UGC 分享（v2.0 #3 生态首增量）：share 开关 → decks/shared 发现页
@@ -369,7 +369,9 @@ public class MyDeckController : ControllerBase
         return Ok(ApiResponse<object>.Ok(new { added = req.Items.Count }));
     }
 
-    /// <summary>改条目（Version++ 供设备增量同步）</summary>
+    /// <summary>改条目（Version 接全局 max 递增供设备增量同步；
+    /// 单条写路径与批量 AddItems 同源语义——全局 max 被管理端 CRUD/AI 审核
+    /// 推高后，裸 Version++ 会产出 ≤ 设备已拉游标的版本而漏发）</summary>
     [HttpPut("decks/{id}/items/{wordId}")]
     public async Task<IActionResult> UpdateItem(
         Guid id, Guid wordId, [FromBody] UpdateItemReq req, CancellationToken ct)
@@ -382,12 +384,13 @@ public class MyDeckController : ControllerBase
         if (w == null) return NotFound(ApiResponse.Fail(404, "条目不存在"));
 
         FillWord(w, req.Front, req.Back, req.Phonetic, req.Example);
-        w.Version++;
+        w.Version = NextVersion(w.Version, await _uow.Db.Words.AsNoTracking()
+            .MaxAsync(x => (int?)x.Version, ct) ?? 0);
         await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { w.Id }));
     }
 
-    /// <summary>删条目（归档 + Version++）</summary>
+    /// <summary>删条目（归档 + Version 接全局 max 递增，同改条目写路径）</summary>
     [HttpDelete("decks/{id}/items/{wordId}")]
     public async Task<IActionResult> DeleteItem(Guid id, Guid wordId, CancellationToken ct)
     {
@@ -399,7 +402,8 @@ public class MyDeckController : ControllerBase
         if (w == null) return NotFound(ApiResponse.Fail(404, "条目不存在"));
 
         w.Archived = true;
-        w.Version++;
+        w.Version = NextVersion(w.Version, await _uow.Db.Words.AsNoTracking()
+            .MaxAsync(x => (int?)x.Version, ct) ?? 0);
         await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { w.Id }));
     }
@@ -452,4 +456,13 @@ public class MyDeckController : ControllerBase
         w.Phonetic = phonetic ?? "";
         w.Example = example ?? "";
     }
+
+    /// <summary>Version 接全局 max 递增（设备增量同步下发契约：新 Version
+    /// 必须高于任一设备可能已拉取的全局最大游标；P3 管理端条目 CRUD 与
+    /// me 端写路径同源共用，禁复制）。public static 供测试直测。
+    /// 已知竞态：调用方「读 max → 写」非原子（同 Admin/me 既有模式，
+    /// Words.Version 非唯一索引），并发写可铸出相同 Version；深度修复需
+    /// 事务锁重读 max 或数据库序列发号，留集成验证补齐。</summary>
+    public static int NextVersion(int currentVersion, int globalMax) =>
+        Math.Max(currentVersion, globalMax) + 1;
 }

@@ -1,0 +1,48 @@
+.file-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+
+  .file-info {
+    color: var(--text-secondary);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 260px;
+  }
+
+  .file-hint {
+    color: var(--text-secondary);
+    font-size: 13px;
+  }
+}
+
+.file-error {
+  color: var(--color-danger);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.upload-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+
+  .form-row {
+    display: flex;
+    gap: 16px;
+
+    mat-form-field {
+      flex: 1;
+    }
+  }
+}
+
+.upload-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin: 8px 0 0;
+}

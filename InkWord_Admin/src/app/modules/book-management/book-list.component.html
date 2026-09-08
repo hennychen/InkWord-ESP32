@@ -1,0 +1,134 @@
+<div class="page-header">
+  <h2>书籍管理</h2>
+  <div class="header-actions">
+    <button mat-raised-button color="primary" (click)="openUpload()" matTooltip="上传 TXT/MD/HTML（≤10MB），上传后需手动发布">
+      <mat-icon>upload_file</mat-icon>
+      上传书籍
+    </button>
+  </div>
+</div>
+
+<!-- 搜索与过滤栏 -->
+<div class="filter-bar">
+  <mat-form-field appearance="outline" class="search-field">
+    <mat-label>搜索书名 / BookKey</mat-label>
+    <mat-icon matPrefix>search</mat-icon>
+    <input
+      matInput
+      [value]="keyword"
+      (input)="onSearch($any($event.target).value)"
+      placeholder="输入关键字..."
+    />
+  </mat-form-field>
+
+  <mat-form-field appearance="outline" class="select-field">
+    <mat-label>语言</mat-label>
+    <mat-select [value]="languageFilter" (selectionChange)="onLanguageChange($event.value)">
+      <mat-option value="">全部</mat-option>
+      <mat-option value="zh">中文（zh）</mat-option>
+      <mat-option value="en">英文（en）</mat-option>
+    </mat-select>
+  </mat-form-field>
+
+  <mat-form-field appearance="outline" class="select-field">
+    <mat-label>发布状态</mat-label>
+    <mat-select [value]="publishedFilter" (selectionChange)="onPublishedChange($event.value)">
+      <mat-option value="">全部</mat-option>
+      <mat-option value="published">已发布</mat-option>
+      <mat-option value="draft">草稿</mat-option>
+    </mat-select>
+  </mat-form-field>
+</div>
+
+<!-- Loading -->
+@if (loading()) {
+  <div class="loading-row">
+    <mat-progress-spinner diameter="40" mode="indeterminate"></mat-progress-spinner>
+  </div>
+}
+
+<!-- 数据表格 -->
+<div class="table-container">
+  <table mat-table [dataSource]="dataSource" class="book-table">
+    <!-- 书名列 -->
+    <ng-container matColumnDef="title">
+      <th mat-header-cell *matHeaderCellDef>书名</th>
+      <td mat-cell *matCellDef="let book">
+        <div class="title-cell">
+          <span class="book-title">{{ book.title }}</span>
+          @if (book.author) {
+            <span class="book-author">{{ book.author }}</span>
+          }
+        </div>
+      </td>
+    </ng-container>
+
+    <!-- BookKey 列 -->
+    <ng-container matColumnDef="bookKey">
+      <th mat-header-cell *matHeaderCellDef>BookKey</th>
+      <td mat-cell *matCellDef="let book" class="mono-cell">{{ book.bookKey }}</td>
+    </ng-container>
+
+    <!-- 语言列 -->
+    <ng-container matColumnDef="language">
+      <th mat-header-cell *matHeaderCellDef>语言</th>
+      <td mat-cell *matCellDef="let book">{{ book.language }}</td>
+    </ng-container>
+
+    <!-- 大小列 -->
+    <ng-container matColumnDef="fileSize">
+      <th mat-header-cell *matHeaderCellDef>大小</th>
+      <td mat-cell *matCellDef="let book">{{ fileSizeLabel(book.fileSize) }}</td>
+    </ng-container>
+
+    <!-- 下载次数列 -->
+    <ng-container matColumnDef="downloadCount">
+      <th mat-header-cell *matHeaderCellDef>下载次数</th>
+      <td mat-cell *matCellDef="let book">{{ book.downloadCount }}</td>
+    </ng-container>
+
+    <!-- 发布态列 -->
+    <ng-container matColumnDef="published">
+      <th mat-header-cell *matHeaderCellDef>状态</th>
+      <td mat-cell *matCellDef="let book">
+        <span class="publish-badge" [class.published]="book.published" [class.draft]="!book.published">
+          {{ book.published ? '已发布' : '草稿' }}
+        </span>
+      </td>
+    </ng-container>
+
+    <!-- 操作列 -->
+    <ng-container matColumnDef="actions">
+      <th mat-header-cell *matHeaderCellDef>操作</th>
+      <td mat-cell *matCellDef="let book">
+        <button mat-icon-button (click)="openDetail(book)" matTooltip="详情 / 编辑元数据">
+          <mat-icon>info</mat-icon>
+        </button>
+        <button
+          mat-icon-button
+          (click)="togglePublish(book)"
+          [matTooltip]="book.published ? '取消发布' : '发布'"
+        >
+          <mat-icon>{{ book.published ? 'cloud_done' : 'publish' }}</mat-icon>
+        </button>
+        <button mat-icon-button color="warn" (click)="delete(book)" matTooltip="删除">
+          <mat-icon>delete</mat-icon>
+        </button>
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+  </table>
+
+  <!-- 分页（pageIndex 绑定：URL 恢复页码后指示同步） -->
+  <mat-paginator
+    [length]="total"
+    [pageIndex]="currentPage"
+    [pageSize]="pageSize"
+    [pageSizeOptions]="[10, 20, 50, 100]"
+    (page)="onPageChange($event)"
+    showFirstLastButtons
+  >
+  </mat-paginator>
+</div>

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using InkWord.API.DTOs;
 using InkWord.API.Filters;
@@ -452,13 +453,21 @@ public async Task<IActionResult> VoiceSearch(
     }
 
     /// <summary>周报下发载荷：review 解为 JSON 对象嵌入（设备免二次转义），
-    /// 非法 JSON 兜底原文字符串</summary>
-    private static object ToPayload(DateTime weekStart, int turnCount, string payloadJson) => new
+    /// 非法 JSON / null 字面量兜底原文字符串（JsonNode.Parse 对非法
+    /// 输入抛 JsonException 而非返 null，2026-09 与 me 端点同源修复）</summary>
+    private static object ToPayload(DateTime weekStart, int turnCount, string payloadJson)
     {
-        weekStart,
-        turnCount,
-        review = JsonNode.Parse(payloadJson) ?? (object)payloadJson,
-    };
+        object review;
+        try
+        {
+            review = JsonNode.Parse(payloadJson) ?? (object)payloadJson;
+        }
+        catch (JsonException)
+        {
+            review = payloadJson;
+        }
+        return new { weekStart, turnCount, review };
+    }
 
     /// <summary>ApiKey 生成（public：MyDeviceController 绑定换发同源 + 测试直测，HashPassword 先例）</summary>
     public static string GenerateApiKey()

@@ -1,0 +1,174 @@
+<h2 mat-dialog-title>
+  条目管理 — {{ deck.name }}（{{ deck.code }}）
+</h2>
+
+<mat-dialog-content class="items-content">
+  <!-- 详情统计条（学习覆盖） -->
+  @if (detail(); as d) {
+    <div class="stats-bar">
+      <span class="chip">{{ payloadLabel() }}</span>
+      <span class="chip">科目：{{ d.subjectName || '—' }}</span>
+      <span class="chip">Owner：{{ d.ownerName || '官方' }}</span>
+      <span class="chip">条目 {{ d.itemCount }}</span>
+      <span class="chip">最高版本 v{{ d.maxVersion }}</span>
+      <span class="chip" matTooltip="学过本组条目的设备数 / 被学习过的条目数（LearningRecord 关联统计）">
+        学习覆盖 {{ d.learnerCount }} 设备 · {{ d.studiedItems }} 条
+      </span>
+    </div>
+    @if (d.description) {
+      <p class="desc">{{ d.description }}</p>
+    }
+  }
+
+  <div class="toolbar">
+    <button mat-raised-button color="primary" (click)="startAdd()" [disabled]="adding()">
+      <mat-icon>add</mat-icon>
+      新增条目
+    </button>
+    <span class="hint">写操作即时 Version 接全局 max 递增 → 设备增量同步下发</span>
+  </div>
+
+  <!-- 新增内联表单 -->
+  @if (adding()) {
+    <div class="add-form">
+      <mat-form-field appearance="outline" class="f-front">
+        <mat-label>{{ frontLabel() }}</mat-label>
+        <input matInput [(ngModel)]="draft.front" maxlength="128">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="f-back">
+        <mat-label>{{ backLabel() }}</mat-label>
+        <input matInput [(ngModel)]="draft.back">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="f-phonetic">
+        <mat-label>音标</mat-label>
+        <input matInput [(ngModel)]="draft.phonetic">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="f-example">
+        <mat-label>{{ exampleLabel() }}</mat-label>
+        <input matInput [(ngModel)]="draft.example">
+      </mat-form-field>
+      <div class="add-actions">
+        <button mat-icon-button matTooltip="保存" (click)="saveAdd()" [disabled]="saving()">
+          <mat-icon>save</mat-icon>
+        </button>
+        <button mat-icon-button matTooltip="取消" (click)="cancelAdd()" [disabled]="saving()">
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+    </div>
+  }
+
+  <div class="table-wrap">
+    <table mat-table [dataSource]="dataSource">
+      <ng-container matColumnDef="version">
+        <th mat-header-cell *matHeaderCellDef>版本</th>
+        <td mat-cell *matCellDef="let it">
+          @if (editingId() === it.id) {
+            <em class="editing-mark">编辑中</em>
+          } @else {
+            v{{ it.version }}
+          }
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="front">
+        <th mat-header-cell *matHeaderCellDef>{{ frontLabel() }}</th>
+        <td mat-cell *matCellDef="let it">
+          @if (editingId() === it.id) {
+            <input matInput class="cell-input" [(ngModel)]="draft.front" maxlength="128">
+          } @else {
+            <span class="front-text" [class.archived-text]="it.archived">{{ it.front }}</span>
+          }
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="back">
+        <th mat-header-cell *matHeaderCellDef>{{ backLabel() }}</th>
+        <td mat-cell *matCellDef="let it">
+          @if (editingId() === it.id) {
+            <input matInput class="cell-input" [(ngModel)]="draft.back">
+          } @else {
+            {{ it.back }}
+          }
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="phonetic">
+        <th mat-header-cell *matHeaderCellDef>音标</th>
+        <td mat-cell *matCellDef="let it">
+          @if (editingId() === it.id) {
+            <input matInput class="cell-input" [(ngModel)]="draft.phonetic">
+          } @else {
+            {{ it.phonetic || '—' }}
+          }
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="state">
+        <th mat-header-cell *matHeaderCellDef>状态</th>
+        <td mat-cell *matCellDef="let it">
+          @if (it.archived) {
+            <span class="archived-badge">已删除</span>
+          } @else {
+            <span class="ok-badge">在用</span>
+          }
+        </td>
+      </ng-container>
+
+      <ng-container matColumnDef="actions">
+        <th mat-header-cell *matHeaderCellDef>操作</th>
+        <td mat-cell *matCellDef="let it">
+          @if (editingId() === it.id) {
+            <button mat-icon-button matTooltip="保存" (click)="saveEdit(it)" [disabled]="saving()">
+              <mat-icon>save</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="取消" (click)="cancelEdit()" [disabled]="saving()">
+              <mat-icon>close</mat-icon>
+            </button>
+          } @else {
+            <button
+              mat-icon-button
+              matTooltip="行内编辑（Front/Back 双写，Version 递增下发）"
+              (click)="startEdit(it)"
+              [disabled]="it.archived"
+            >
+              <mat-icon>edit</mat-icon>
+            </button>
+            <button
+              mat-icon-button
+              matTooltip="删除（归档；已同步设备不感知，需 App LAN 重推或重新导出词库覆盖）"
+              (click)="remove(it)"
+              [disabled]="it.archived"
+            >
+              <mat-icon>delete</mat-icon>
+            </button>
+          }
+        </td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+      <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+    </table>
+
+    @if (loadingItems()) {
+      <div class="loading-row">
+        <mat-progress-spinner diameter="36" mode="indeterminate"></mat-progress-spinner>
+      </div>
+    } @else if (dataSource.data.length === 0) {
+      <p class="empty-hint">暂无条目——点上方「新增条目」或用 AI 生成</p>
+    }
+  </div>
+
+  <mat-paginator
+    [length]="total"
+    [pageIndex]="page - 1"
+    [pageSize]="size"
+    [pageSizeOptions]="[10, 20, 50]"
+    (page)="onPage($event)"
+    showFirstLastButtons
+  ></mat-paginator>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()">关闭</button>
+</mat-dialog-actions>

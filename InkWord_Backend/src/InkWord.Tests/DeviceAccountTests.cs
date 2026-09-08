@@ -1,3 +1,4 @@
+using System.Text.Json;
 using InkWord.API.Controllers;
 
 namespace InkWord.Tests;
@@ -89,4 +90,55 @@ public class DeviceAccountTests
         Assert.Matches("^[0-9a-f]{48}$", a);
         Assert.NotEqual(a, b);
     }
+
+    // ---- P2 学习报告（2026-09）：周报载荷 / limit 钳制 ----
+    // 归属 404 / 空周报 404 / 阅读列表映射 / me books Published 过滤
+    // 等写库语义沿绑定先例留集成/真机验证（无 EF 测试基建）。
+
+    [Fact]
+    public void ReviewPayload_ValidJson_FiveSectionsEmbedded()
+    {
+        const string payload = "{\"summary\":\"本周专注几何\",\"topics\":[\"全等三角形\"]," +
+            "\"highlights\":[\"能独立证明 SSS\"],\"suggestion\":\"增加错题重练\"," +
+            "\"reviewWords\":[\"congruent\"]}";
+
+        var json = JsonSerializer.SerializeToElement(
+            MyDeviceController.ReviewPayload(new DateTime(2026, 9, 7, 0, 0, 0, DateTimeKind.Utc), 12, payload));
+
+        Assert.Equal(12, json.GetProperty("turnCount").GetInt32());
+        var review = json.GetProperty("review");
+        Assert.Equal("本周专注几何", review.GetProperty("summary").GetString());
+        Assert.Equal("增加错题重练", review.GetProperty("suggestion").GetString());
+        Assert.Equal("congruent", review.GetProperty("reviewWords")[0]!.GetString());
+    }
+
+    [Fact]
+    public void ReviewPayload_InvalidJson_FallsBackToRawString()
+    {
+        var json = JsonSerializer.SerializeToElement(
+            MyDeviceController.ReviewPayload(DateTime.UtcNow, 3, "not-json{{{"));
+
+        Assert.Equal("not-json{{{", json.GetProperty("review").GetString());
+    }
+
+    [Fact]
+    public void ReviewPayload_NullLiteral_FallsBackToRawString()
+    {
+        // JsonNode.Parse("null") 返回 null：验证 ?? 兜底不下发空 review
+        var json = JsonSerializer.SerializeToElement(
+            MyDeviceController.ReviewPayload(DateTime.UtcNow, 3, "null"));
+
+        Assert.Equal("null", json.GetProperty("review").GetString());
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(-3, 1)]
+    [InlineData(27, 1)]
+    [InlineData(100, 1)]
+    [InlineData(1, 1)]
+    [InlineData(5, 5)]
+    [InlineData(26, 26)]
+    public void ClampReviewLimit_DefaultsAndCaps(int input, int expected)
+        => Assert.Equal(expected, MyDeviceController.ClampReviewLimit(input));
 }
