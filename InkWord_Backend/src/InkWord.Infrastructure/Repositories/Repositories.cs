@@ -39,6 +39,10 @@ public class WordRepository : RepositoryBase<Word>, IWordRepository
 
     public async Task<int> GetMaxVersionAsync(CancellationToken ct = default)
         => await DbContext.Words.AsNoTracking().MaxAsync(w => (int?)w.Version, ct) ?? 0;
+
+    /// <summary>A5 竞态根治：委托给 VersionSequencer（应用层锁 + 事务内重读 max）。</summary>
+    public Task<int> GetNextVersionAsync(int currentVersion, CancellationToken ct = default)
+        => VersionSequencer.GetNextAsync(DbContext, currentVersion, ct);
 }
 
 public class DeviceRepository : RepositoryBase<Device>, IDeviceRepository

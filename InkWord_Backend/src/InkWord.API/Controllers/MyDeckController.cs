@@ -384,8 +384,7 @@ public class MyDeckController : ControllerBase
         if (w == null) return NotFound(ApiResponse.Fail(404, "条目不存在"));
 
         FillWord(w, req.Front, req.Back, req.Phonetic, req.Example);
-        w.Version = NextVersion(w.Version, await _uow.Db.Words.AsNoTracking()
-            .MaxAsync(x => (int?)x.Version, ct) ?? 0);
+        w.Version = await _uow.GetNextVersionAsync(w.Version, ct); // A5 竞态根治
         await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { w.Id }));
     }
@@ -402,8 +401,7 @@ public class MyDeckController : ControllerBase
         if (w == null) return NotFound(ApiResponse.Fail(404, "条目不存在"));
 
         w.Archived = true;
-        w.Version = NextVersion(w.Version, await _uow.Db.Words.AsNoTracking()
-            .MaxAsync(x => (int?)x.Version, ct) ?? 0);
+        w.Version = await _uow.GetNextVersionAsync(w.Version, ct); // A5 竞态根治
         await _uow.Db.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { w.Id }));
     }
@@ -459,10 +457,10 @@ public class MyDeckController : ControllerBase
 
     /// <summary>Version 接全局 max 递增（设备增量同步下发契约：新 Version
     /// 必须高于任一设备可能已拉取的全局最大游标；P3 管理端条目 CRUD 与
-    /// me 端写路径同源共用，禁复制）。public static 供测试直测。
-    /// 已知竞态：调用方「读 max → 写」非原子（同 Admin/me 既有模式，
-    /// Words.Version 非唯一索引），并发写可铸出相同 Version；深度修复需
-    /// 事务锁重读 max 或数据库序列发号，留集成验证补齐。</summary>
+    /// me 端写路径同源共用，禁复制）。
+    /// A5 竞态根治（2026-09-08）：实际发号已迁移至 VersionSequencer（应用层锁 +
+    /// 事务内重读 max，保证原子性），本方法保留供测试直测与批内连续递增场景
+    ///（如 AddItems/ImportCsv 批内 ++v，初始值由 GetNextVersionAsync 原子读）。</summary>
     public static int NextVersion(int currentVersion, int globalMax) =>
         Math.Max(currentVersion, globalMax) + 1;
 }

@@ -13,4 +13,7 @@ public interface IUnitOfWork : IDisposable
     AppDbContext Db { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
+
+    /// <summary>A5 竞态根治：获取下一个版本号（事务内重读 max，保证原子性）</summary>
+    Task<int> GetNextVersionAsync(int currentVersion, CancellationToken ct = default);
 }

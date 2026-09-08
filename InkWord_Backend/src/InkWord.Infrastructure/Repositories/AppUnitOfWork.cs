@@ -14,5 +14,9 @@ public sealed class AppUnitOfWork : IUnitOfWork
     public Task<int> SaveChangesAsync(CancellationToken ct = default)
         => Db.SaveChangesAsync(ct);
 
+    /// <summary>A5 竞态根治：委托给 VersionSequencer（应用层锁 + 事务内重读 max）。</summary>
+    public Task<int> GetNextVersionAsync(int currentVersion, CancellationToken ct = default)
+        => VersionSequencer.GetNextAsync(Db, currentVersion, ct);
+
     public void Dispose() => Db.Dispose();
 }

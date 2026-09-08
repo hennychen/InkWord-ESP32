@@ -242,7 +242,7 @@ public class AdminDeckController : ControllerBase
 
         var w = new Word
         {
-            Version = MyDeckController.NextVersion(0, await _wordRepo.GetMaxVersionAsync(ct)),
+            Version = await _wordRepo.GetNextVersionAsync(0, ct), // A5 竞态根治
             Tag = deck.Code,
             SubjectId = deck.SubjectId,
             DeckId = deck.Id,
@@ -274,8 +274,7 @@ public class AdminDeckController : ControllerBase
                 $"条目 '{text}' 已存在于卡组 '{deck.Code}'"));
 
         MyDeckController.FillWord(w, req.Front, req.Back, req.Phonetic, req.Example);
-        w.Version = MyDeckController.NextVersion(
-            w.Version, await _wordRepo.GetMaxVersionAsync(ct));
+        w.Version = await _wordRepo.GetNextVersionAsync(w.Version, ct); // A5 竞态根治
         await _wordRepo.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { w.Id, w.Version }));
     }
@@ -293,8 +292,7 @@ public class AdminDeckController : ControllerBase
         if (w == null) return NotFound(ApiResponse.Fail(404, "条目不存在"));
 
         w.Archived = true;
-        w.Version = MyDeckController.NextVersion(
-            w.Version, await _wordRepo.GetMaxVersionAsync(ct));
+        w.Version = await _wordRepo.GetNextVersionAsync(w.Version, ct); // A5 竞态根治
         await _wordRepo.SaveChangesAsync(ct);
         return Ok(ApiResponse<object>.Ok(new { w.Id }));
     }

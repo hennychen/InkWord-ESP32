@@ -85,7 +85,7 @@ public class AdminWordController : ControllerBase
         word.Grade = dto.Grade ?? "";
         word.Difficulty = dto.Difficulty;
         word.ChangeType = 1;
-        word.Version = Math.Max(word.Version, await _wordRepo.GetMaxVersionAsync(ct)) + 1;
+        word.Version = await _wordRepo.GetNextVersionAsync(word.Version, ct); // A5 竞态根治
         word.Front = dto.Text;             // v2 卡面镜像随写同步（T4.1）
         word.Back = dto.Meaning ?? "";
 
@@ -131,7 +131,7 @@ public class AdminWordController : ControllerBase
             return BadRequest(ApiResponse.Fail(400, "empty file"));
 
         var ok = 0; var fail = 0; var errors = new List<string>();
-        var maxVer = await _wordRepo.GetMaxVersionAsync(ct);
+        var maxVer = await _wordRepo.GetNextVersionAsync(0, ct) - 1; // A5 竞态根治：原子读初始 max
 
         using var stream = file.OpenReadStream();
         using var reader = new StreamReader(stream, Encoding.UTF8);
@@ -325,7 +325,7 @@ public class AdminWordController : ControllerBase
 
         // 增量下发通道（照抄 Update 逻辑）：版本取全局最大 +1，变更类型 = 修改
         word.ChangeType = 1;
-        word.Version = Math.Max(word.Version, await _wordRepo.GetMaxVersionAsync(ct)) + 1;
+        word.Version = await _wordRepo.GetNextVersionAsync(word.Version, ct); // A5 竞态根治
         word.AiStatus = 2;
         word.AiSuggestion = null;
 

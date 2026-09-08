@@ -12,6 +12,11 @@ public interface IWordRepository : IRepository<Word>
 
     /// <summary>当前最大词库版本号</summary>
     Task<int> GetMaxVersionAsync(CancellationToken ct = default);
+
+    /// <summary>获取下一个版本号（A5 竞态根治：事务内重读 max，保证原子性）</summary>
+    /// <param name="currentVersion">当前版本号（新条目传 0）</param>
+    /// <returns>下一个版本号（= max(currentVersion, globalMax) + 1）</returns>
+    Task<int> GetNextVersionAsync(int currentVersion, CancellationToken ct = default);
 }
 
 public interface IDeviceRepository : IRepository<Device>
