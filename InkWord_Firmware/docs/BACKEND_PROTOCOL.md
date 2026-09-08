@@ -4,6 +4,11 @@
 参照（开源通用化 Phase 3，2026-10-24）。每节标注固件侧权威源码位置；
 实现自建后端时以代码为准，本文与代码不一致属文档缺陷。
 
+§1-§11 为设备消费端点（`X-Device-Key` 认证）；§12-§14 为 App 消费
+（`api/me` 家族，Bearer learner JWT）；§15 为管理端运营 API 简表
+（Bearer Admin/Operator）。自建后端可仅实现设备端点（离线档/最小部署），
+App/管理端端点按需选配。
+
 离线单机档（`env:inkword-s3-offline`）不依赖任何本协议端点，见
 README「离线单机模式」节。
 
@@ -354,3 +359,67 @@ chat / chat/abort / voice-search / weather / chat-review`。
 设备联网后监听 LAN HTTP 服务（词书直传 / 屏幕镜像 / Wi-Fi 配置 /
 课程表编辑），端点清单见 `src/lan_display_server.cpp` 头注释
 （T2.3 协议 v2）；与本文档的云端协议相互独立。
+
+---
+
+## 12. App 轻账户与设备绑定（v2.0 #2，2026-08-25）
+
+> 认证：`Authorization: Bearer <JWT>`（role=learner）；响应同 §1.4 信封。
+> 权威源码：`InkWord_Backend .../Controllers/MyDeviceController.cs`、
+> `AccountController.cs`；App 消费端 `InkWord_App/lib/services/cloud_client.dart`。
+
+| 端点 | 说明 |
+|:--|:--|
+| `POST /api/auth/register` | 用户名 2-64 / 密码 ≥6，冲突 409 |
+| `POST /api/auth/login` | → `{token, username}` |
+| `GET /api/me/devices` | 绑定设备清单：`{id,name,mac,firmwareVersion,batteryLevel,online,lastHeartbeat,recordCount}[]` |
+| `POST /api/me/devices/bind` | 体 `{"mac":"12 位大写 hex"}`；凭 LAN stats 上报的 mac 定位。幂等：已绑本账户直接成功（防 App 重试风暴踢设备）；绑他人 409；未注册 404 |
+| `POST /api/me/devices/{id}/unbind` | 解绑**不换发 ApiKey**——设备零感知回无主态 |
+
+## 13. App 学习报告（P2，2026-09-08）
+
+> 权威源码：`MyDeviceController.cs`；App 消费 `stats_page.dart`。
+
+| 端点 | 响应 |
+|:--|:--|
+| `GET /api/me/progress/aggregate?take=500` | `{items:[{wordId,deviceId,stability,difficulty,isCollected,lastStudiedAt}],masteredCount}`。LWS 聚合**整行胜出**（LastStudiedAt 新者胜，FSRS 状态不可拆分合并）；`masteredCount`=跨设备 WordId 去重墨封数；零设备回 `{items:[],masteredCount:0}` |
+| `GET /api/me/devices/{id}/chat-review?limit=N` | limit 默认 1 上限 26；`[{weekStart,turnCount,review}]`。review 为五段 JSON 字符串：`summary/topics[]/highlights[]/suggestion/reviewWords[]`（非法 JSON 兜底原文字符串进 summary）；非本人设备 404 防探测 |
+| `GET /api/me/devices/{id}/reading` | `[{bookKey,title,currentPage,totalPages,progressPct,totalReadMinutes,lastReadAt}]`（按 LastReadAt 倒序） |
+| `GET /api/me/books` | 已发布书单（与 §7.3 设备端同 `GetPublishedAsync` 单源口径）：`[{bookKey,title,author,language,fileSize,format,downloadCount}]` |
+
+## 14. App 卡组编辑器与 UGC（v1.5 T5.3 / v2.0 #3）
+
+> 权威源码：`MyDeckController.cs`；条目写路径 Version 语义同 §3.1
+> （接全局 max 递增，设备增量同步通道天然复用）。
+> **删除语义（与管理端一致）**：条目删除 = `Archived=true + Version 接 max`——
+> `GetIncrementalAsync` 排除归档行，**已同步设备不感知**（需 App LAN 重推
+> 或重新导出词库覆盖）；Deck 删除 = 软删（`IsDeleted`）。
+
+| 端点 | 说明 |
+|:--|:--|
+| `GET /api/me/subjects` | `[{code,name}]` |
+| `GET /api/me/decks` | 我的卡组：`{id,code(≤7 字符,设备 deck id 同源),name,payloadType(word/qa/poem-card),description,subjectCode,itemCount,isShared,ownerName}[]` |
+| `POST /api/me/decks` | 体 `{name,subjectCode,payloadType}`；Code=`u`+Guid 6 位冲突重试 |
+| `PUT /api/me/decks/{id}` / `DELETE /api/me/decks/{id}` | 改名/软删 |
+| `GET /api/me/decks/{id}/items` | 条目清单（含 `archived` 归档行） |
+| `POST /api/me/decks/{id}/items` | 批量新增（App CSV 导入路径，Front/Back 双写 T4.1 契约） |
+| `PUT` / `DELETE /api/me/decks/{id}/items/{wordId}` | 单条改/删（语义见上方删除语义块） |
+| `POST /api/me/decks/{id}/share` | 分享开关（公开到发现页） |
+| `GET /api/me/decks/shared` | 发现页：SharedAt 倒序 + 名称/科目过滤 + 分页（`+1` 探测） |
+| `POST /api/me/decks/{id}/fork` | 深拷贝导入（内容全量拷 + 归属重定向；他人未分享 404 防探测；副本独立，关分享不回收） |
+
+## 15. 管理端运营 API（api/admin，简表）
+
+> 认证：Bearer Admin/Operator（learner token 被 Roles 白名单拒）。
+> 消费者唯一（Angular 管理端），请求/响应详情见 `InkWord_Backend` 控制器
+> 与 `InkWord_Admin/src/app/core/api/`；此处仅登记端点面供部署参照。
+
+| 端点 | 说明 |
+|:--|:--|
+| `GET /api/admin/subjects` | 科目清单含每科目 deckCount（P3） |
+| `GET/POST /api/admin/books`、`POST .../upload`、`PUT/DELETE .../{id}`、`POST .../{id}/publish` | 书库运营：TXT/MD/HTML ≤10MB，发布开关（P1） |
+| `GET /api/admin/decks?subject=` | 卡组清单：itemCount/**maxVersion**（设备增量游标参照）/owner/shared（P3） |
+| `GET /api/admin/decks/{id}` | 详情：learnerCount/studiedItems 学习覆盖统计 |
+| `GET/POST/PUT/DELETE /api/admin/decks/{id}/items...` | 条目分页 CRUD（复用 `FillWord`/`NextVersion` 同源；`uq(Text,Tag)` 冲突 409） |
+| `GET /api/admin/decks/{code}/charset` | T4.5 卡组字符集（纯文本，喂 gen_cjk_font 字库子集） |
+| `POST /api/admin/decks/{id}/ai-generate` | AI 批量生成入队（审校通过前 Version=0 对设备双不可见） |
