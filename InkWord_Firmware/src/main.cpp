@@ -930,8 +930,9 @@ void setup()
     }
     boot_stamp("first-frame");
 
-    /* v1.6 课程表：渲染显示课表（NVS 无数据则显示占位提示） */
-    schedule_draw_display_table();
+    /* v1.6 课程表：入栈显示（按任意键进入学习模式；修复原直接渲染
+     * 覆盖学习模式导致按键无响应问题） */
+    page_router_push(&g_schedule_page);
 
     /* 8. 启动后台任务（心跳/LAN/天气/OTA；sync_session 内聚任务细节） */
     sync_background_task_start();

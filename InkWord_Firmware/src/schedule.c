@@ -19,6 +19,8 @@
 #include "cjk_text.h"       /* 测试课表渲染：CJK 点阵文本 */
 #include "layout_profile.h" /* PPI 自动层（2026-09-08）：字级/几何派生 */
 #include "cjk_font.h"       /* cjk_glyph_cell_size：字库级→cell px */
+#include "page_router.h"    /* 页面路由（课程表入栈） */
+#include "haptic.h"         /* 按键反馈 */
 
 #include "nvs.h"
 #include "settings_keys.h"   /* P2b：NVS 键权威表 */
@@ -479,3 +481,33 @@ void schedule_draw_test_table(void)
 {
     schedule_draw_display_table();
 }
+
+/* ============================================================
+ * 课程表页面路由（v1.6 修复：按任意键进入学习模式）
+ * ============================================================ */
+
+/* 课程表页面按键处理：按任意键弹出进入学习模式 */
+static bool schedule_page_on_button(nav_key_t id, button_event_t event)
+{
+    (void)id;
+    (void)event;
+    /* 任意按键退出课程表，进入学习模式 */
+    haptic_event(HAPTIC_KEYPRESS);
+    return false;   /* false = 请求退出编排 */
+}
+
+/* 课程表页面入栈回调：渲染课程表首帧 */
+static void schedule_page_enter(void)
+{
+    schedule_draw_display_table();
+}
+
+/* 课程表页面定义（page_router 协议） */
+const page_t g_schedule_page = {
+    .name = "schedule",
+    .render = schedule_draw_display_table,
+    .on_button = schedule_page_on_button,
+    .enter = schedule_page_enter,
+    .exit = NULL,
+    .owns_display = true,   /* 课程表独占整屏 */
+};

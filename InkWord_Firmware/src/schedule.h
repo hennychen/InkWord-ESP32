@@ -130,6 +130,12 @@ void schedule_display_save(void);
 /** 显示课表是否有数据 */
 bool schedule_display_has_data(void);
 
+/* ---- 页面路由（v1.6 修复：课程表入栈，按任意键进入学习模式）---- */
+
+/** 课程表页面定义（page_router 协议；main.cpp setup 入栈） */
+struct page;
+extern const struct page g_schedule_page;
+
 #ifdef __cplusplus
 }
 #endif
