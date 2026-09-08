@@ -18,14 +18,20 @@ public class WordRepository : RepositoryBase<Word>, IWordRepository
 
     public async Task<IReadOnlyList<Word>> GetIncrementalAsync(int localVersion, int count, CancellationToken ct = default)
     {
-        // 自 localVersion 以来的变更，排除已归档，按 Version 升序分页。
+        // 自 localVersion 以来的变更，按 Version 升序分页。
         // 注意：不能按 Difficulty 排序 —— 设备分页游标是 version（取本批最大
         // version 作下批起点），难度序会使 Take 窗口与游标错位而跳词
         // （2026-08-23 实测 2407 词分 2 批拉取丢 347 词后修正）。
         // 附带效应：words.json 导出顺序 = Version 序（种子导入序），
         // 只要存量词条 Version 不变导出顺序即稳定，设备学习状态不受影响。
+        //
+        // 协议 v3（2026-09-08 删除通道）：不再排除归档行——归档 = 删除，
+        // 删除时 Version 接全局 max 递增，墓碑行随增量自然下发
+        // （SyncWords 投影为 ChangeType=2 + 内容空，仅保留 text/tag 身份键）。
+        // 历史归档（Version ≤ 设备游标）不下发——v3 前的删除设备侧不可见，
+        // 需重新导出词库或 LAN 重推覆盖（存量语义边界，协议文档 §3.1）。
         return await DbContext.Words.AsNoTracking()
-            .Where(w => w.Version > localVersion && !w.Archived)
+            .Where(w => w.Version > localVersion)
             .OrderBy(w => w.Version)
             .Take(count)
             .ToListAsync(ct);

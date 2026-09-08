@@ -115,6 +115,18 @@ public class DeviceController : ControllerBase
             var subject = w.SubjectId.HasValue && subCodes.TryGetValue(w.SubjectId.Value, out var sc)
                 ? sc
                 : deck != null ? subCodes.GetValueOrDefault(deck.SubjectId, "en") : "en";
+            // 协议 v3 删除通道：归档行下墓碑（ChangeType=2，内容字段全空，
+            // 仅保留 text/tag/version 身份键 + deck 归属；设备按 (text,tag)
+            // 定位并删除本地词条——旧固件/未接线消费者忽略未知 changeType
+            // 天然安全，cJSON 按名取值同 T4.1 向后兼容结论）
+            if (w.Archived)
+                return new WordDto(
+                    w.Text, "", "", "", "", w.Tag,
+                    0, w.Version, 2,
+                    subject,
+                    deck?.Code ?? "junior",
+                    deck?.PayloadType ?? "word-card",
+                    "", "", "");
             return new WordDto(
                 w.Text, w.Phonetic, w.Meaning, w.Example, w.Audio, w.Tag,
                 w.Difficulty, w.Version, w.ChangeType,

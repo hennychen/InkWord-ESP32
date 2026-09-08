@@ -113,14 +113,23 @@ MAC 幂等：同 MAC 重复注册返回**既有记录**的 apiKey（换钥自愈
 
 ## 3. 词库与学习同步
 
-### 3.1 拉词库 `GET /api/device/sync/words?version={N}`
+### 3.1 拉词库（增量）`GET /api/device/sync/words?version={N}&count={M}`
 
-- `version`：设备本地词库版本号（整数）；
-- 200 响应：**词库 JSON 全量**（word_parser 解析格式），响应头
-  `X-Word-Version: {newVersion}` 携带新版本号；无新版时 body 可空、
-  头返回当前版本；
-- 头缺失时固件按「有数据 = N+1，无数据 = N」兜底；
-- 权威源码：sync_client.c `sync_pull_words`。
+- `version`：设备本地词库版本号（增量游标，取本批最大 version 作下批
+  起点）；`count`：分页大小（默认 500，上限 2000）；
+- 200 响应：`{newVersion, words:[...]}`，响应头 `X-Word-Version: {newVersion}`；
+  按 Version 升序，无新版时 words 空数组；
+- **协议 v3（2026-09-08 删除通道）**：`changeType` 0=新增 / 1=更新 /
+  **2=删除墓碑**——墓碑仅携 `text`/`tag`/`version` 身份键与 deck 归属，
+  内容字段（phonetic/meaning/.../front/back/payloadJson）全空，设备按
+  `(text,tag)` 定位删除本地词条。归档行在删除时 Version 接全局 max
+  递增，墓碑随增量自然下发；**v3 之前的历史归档不下发**（存量删除需
+  重新导出词库或 LAN 重推覆盖）；
+- 旧消费者忽略未知 `changeType` 值天然安全（cJSON 按名取值，同 T4.1
+  向后兼容结论）；
+- 权威源码：后端 `WordRepository.GetIncrementalAsync` + `DeviceController.SyncWords`；
+  固件侧 `sync_client.c sync_pull_words`（增量消费接线为固件待办工程：
+  词池热更新 + FSRS 幽灵清理 + SD 持久化，见验收矩阵附录）。
 
 ### 3.2 学习进度 `POST /api/device/sync/progress`
 
@@ -391,9 +400,11 @@ chat / chat/abort / voice-search / weather / chat-review`。
 
 > 权威源码：`MyDeckController.cs`；条目写路径 Version 语义同 §3.1
 > （接全局 max 递增，设备增量同步通道天然复用）。
-> **删除语义（与管理端一致）**：条目删除 = `Archived=true + Version 接 max`——
-> `GetIncrementalAsync` 排除归档行，**已同步设备不感知**（需 App LAN 重推
-> 或重新导出词库覆盖）；Deck 删除 = 软删（`IsDeleted`）。
+> **删除语义（协议 v3，2026-09-08）**：条目删除 = `Archived=true + Version 接 max`——
+> 墓碑行随 §3.1 增量自然下发（`ChangeType=2`，内容字段全空，仅保留
+> text/tag/version 身份键 + deck 归属），设备按 `(text,tag)` 定位删除本地
+> 词条；v3 之前的历史归档不下发（存量删除需重新导出词库或 LAN 重推覆盖）；
+> 旧固件/未接线消费者忽略未知 changeType 天然安全。Deck 删除 = 软删（`IsDeleted`）。
 
 | 端点 | 说明 |
 |:--|:--|

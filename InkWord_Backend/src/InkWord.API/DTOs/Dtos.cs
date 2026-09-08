@@ -9,7 +9,9 @@ public record SyncReq(int LocalVersion, int Count);
 
 /// <summary>设备词库条目（旧 11 字段为主集；v2 全科地基字段为可选参数，
 /// 调用方填实值 —— 旧固件 cJSON 按名取值，未知/多余键天然忽略，
-/// 兼容性由 native 用例固化）</summary>
+/// 兼容性由 native 用例固化）。
+/// ChangeType：0=新增 1=更新 2=删除墓碑（协议 v3 2026-09-08——墓碑仅携
+/// text/tag/version 身份键 + deck 归属，内容字段空，设备按 (text,tag) 删除）</summary>
 public record WordDto(string Text, string Phonetic, string Meaning, string Example,
                       string Audio, string Tag, int Difficulty, int Version, int ChangeType,
                       string? Subject = null, string? DeckId = null, string? PayloadType = null,
