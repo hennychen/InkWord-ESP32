@@ -930,9 +930,8 @@ void setup()
     }
     boot_stamp("first-frame");
 
-    /* v1.6 课程表：入栈显示（按任意键进入学习模式；修复原直接渲染
-     * 覆盖学习模式导致按键无响应问题） */
-    page_router_push(&g_schedule_page);
+    /* v1.6 课程表：不再启动时强制显示（恢复原有启动流程，直接进入学习模式）。
+     * 课程表可通过菜单进入（菜单 → 课程表设置）。 */
 
     /* 8. 启动后台任务（心跳/LAN/天气/OTA；sync_session 内聚任务细节） */
     sync_background_task_start();
