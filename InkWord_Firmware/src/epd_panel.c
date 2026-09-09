@@ -49,6 +49,10 @@ extern const epd_panel_desc_t g_panel_gdeq031t10;
 /* panels/panel_hink_e0213a31.cpp（2.13" 122x250 BW 竖屏，HINK-E0213A31-A0，
  * LAYOUT_TINY 档；SSD1680，GxEPD2 B74 序列，2026-09-05 新增） */
 extern const epd_panel_desc_t g_panel_hink_e0213a31;
+/* panels/panel_e213a57_ssd1680.cpp（2.13" 122x250 BWR 三色，E213A57N203Q90，
+ * 26P→24P FPC；SSD1680，HINK-A31 init + PSR 0x27 三色 + 双平面，
+ * 2026-09-09 bring-up） */
+extern const epd_panel_desc_t g_panel_e213a57;
 /* panels/panel_gdeq0426t82_ssd1677.cpp（4.26" 800x480 BW，GDEQ0426T82，
  * SSD1677，17P FPC；LAYOUT_LARGE 档首例，2026-09-06 新增，demo 序列
  * 已接入，bring-up 待真机） */
@@ -64,6 +68,7 @@ static const epd_panel_desc_t *const s_registry[] = {
     &g_panel_e042a13bw,
     &g_panel_gdeq031t10,
     &g_panel_hink_e0213a31,
+    &g_panel_e213a57,
     &g_panel_gdeq0426t82,
 };
 
