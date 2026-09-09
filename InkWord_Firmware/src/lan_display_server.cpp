@@ -636,7 +636,16 @@ static esp_err_t deck_upload_post_handler(httpd_req_t *req)
     char id[DECK_ID_MAX + 1] = "", name[40] = "", cnt[12] = "";
     char dtype[20] = "";                    /* v1.5 T5.3：版式透传 */
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        httpd_query_key_value(query, "id", id, sizeof(id));
+        /* id 超长静默截断防御（2026-09-09）：截断后长度恰好过
+         * deck_id_valid，落盘目录与调用方预期不一致（pron_test →
+         * pron_te 实例）——返回 TRUNC 直接拒绝 */
+        if (httpd_query_key_value(query, "id", id, sizeof(id)) ==
+            ESP_ERR_HTTPD_RESULT_TRUNC) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_sendstr(req, "id too long (max 7 chars)");
+            return ESP_OK;
+        }
         httpd_query_key_value(query, "name", name, sizeof(name));
         httpd_query_key_value(query, "count", cnt, sizeof(cnt));
         httpd_query_key_value(query, "type", dtype, sizeof(dtype));
@@ -765,12 +774,17 @@ static esp_err_t deck_active_post_handler(httpd_req_t *req)
     if (!id) id = "";                        /* 缺省 = 切回默认词库 */
 
     deck_manager_scan();
-    int idx = 0;                              /* "" 恒在 [0] */
-    for (int i = 0; i < deck_manager_count(); i++) {
-        if (strcmp(deck_manager_at(i)->id, id) == 0) {
-            idx = i;
-            break;
-        }
+    /* 空 id 切默认（[0] 恒在）；非空 id 必须显式命中，未找到报 404——
+     * 静默回退默认会擦掉用户已激活卡组（deck_flow_switch(0) 走
+     * nvs_erase_key），曾致 LAN 切书后 active 莫名回 default */
+    int idx = (id[0] == '\0') ? 0 : deck_manager_find_index(id);
+    if (idx < 0) {
+        LOG_W("deck active: id '%s' not in manifest", id);
+        cJSON_Delete(j);
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "deck id not found");
+        return ESP_OK;
     }
     cJSON_Delete(j);
 

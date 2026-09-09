@@ -24,6 +24,19 @@ void word_loader_init(void);
  *  返回词条数（<0 全失败；内嵌兜底常在 rodata，末级必达） */
 int load_words_with_catalog(void);
 
+/** 最近一次装载命中层级（切书编排 vs 兑底区分判据）：切书时
+ *  active deck 文件解析失败但兑底词库非空（返回 >0）曾被误判
+ *  "切换成功"，NVS/学习状态污染到坏 deck 键——编排方以此枚举
+ *  校验目标 deck 真正装载 */
+typedef enum {
+    WSRC_NONE = 0,   /**< 尚未装载 */
+    WSRC_DECK,       /**< 活跃卡组文件命中 */
+    WSRC_SD,         /**< SD 根 words.json 兑底 */
+    WSRC_EMBED,      /**< 出厂内嵌兑底（末级必达） */
+} word_loader_src_t;
+
+word_loader_src_t word_loader_last_source(void);
+
 #ifdef __cplusplus
 }
 #endif

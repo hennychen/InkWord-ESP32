@@ -65,7 +65,10 @@ void review_ui_reset_detail(void) { s_review_detail = false; }
  * RST 设置直达） */
 bool review_ui_on_button(nav_key_t id, button_event_t event)
 {
-    (void)event;   /* 调用上下文已限定短按 */
+    /* 栈串联回归修正配套：长按不再被 base 层预滤（2026-09-09），
+     * 本函数只处理短按；长按放行通用词卡路由（菜单/收藏等出厂六键
+     * 在 word_view_on_button，避免长按误触详情/自评出队） */
+    if (event != BUTTON_EVENT_SHORT_PRESS) return false;
 
     if (!s_review_detail) {
         switch (id) {

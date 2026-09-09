@@ -45,6 +45,9 @@ static const char *TAG = "WLOAD";
  * 书缓冲同策略 MALLOC_CAP_SPIRAM，setup 内 storage_init 后分配） */
 static WordEntry *s_word_pool = NULL;
 static int        s_word_cap = 0;   /* 实际分配容量（降级后 < MAX_WORDS） */
+static word_loader_src_t s_last_src = WSRC_NONE;  /* 切书编排校验用 */
+
+word_loader_src_t word_loader_last_source(void) { return s_last_src; }
 
 /* 活跃词库装载（v1.3 T3.1，setup 与 deck_flow_switch 共用链路）：
  * 活跃卡组文件 → SD words.json → 内嵌兜底 三级递降；任一级成功
@@ -62,6 +65,7 @@ static int load_active_words(void)
         int n = word_parser_load(deck_file, s_word_pool, s_word_cap);
         if (n > 0) {
             LOG_I("deck DB loaded: %d entries (%s)", n, deck_file);
+            s_last_src = WSRC_DECK;
             return n;
         }
         LOG_E("deck load failed: %s, fallback", deck_file);
@@ -72,6 +76,7 @@ static int load_active_words(void)
         int n = word_parser_load(word_file, s_word_pool, s_word_cap);
         if (n > 0) {
             LOG_I("word DB loaded: %d entries", n);
+            s_last_src = WSRC_SD;
             return n;
         }
     }
@@ -83,6 +88,7 @@ static int load_active_words(void)
      * 评分/收藏不上报），在线同步/导出路径下发的词库才携带 */
     extern const uint8_t _binary_src_default_words_json_start[];
     extern const uint8_t _binary_src_default_words_json_end[];
+    s_last_src = WSRC_EMBED;
     return word_parser_load_mem(
         (const char *)_binary_src_default_words_json_start,
         (size_t)(_binary_src_default_words_json_end -
@@ -122,6 +128,16 @@ void word_loader_init(void)
     if (s_word_pool) {
         int n = load_words_with_catalog();
         LOG_I("word DB ready: %d entries", n);
+        /* boot 自愈（2026-09-09）：NVS 记录的 active deck 文件加载
+         * 失败兑底时（坏 JSON/半落盘等），切书编排的回退不经过本
+         * 路径——主动回默认并擦 NVS 键，防每次开机重复失败装载
+         * 且词书列表/学习状态长期悬挂在坏 deck 键上 */
+        if (deck_manager_active_file() &&
+            word_loader_last_source() != WSRC_DECK) {
+            LOG_W("active deck failed to load, reset to default");
+            deck_manager_switch(0);
+            load_words_with_catalog();
+        }
     } else {
         LOG_W("word pool alloc failed, no word DB");
     }

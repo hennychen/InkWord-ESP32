@@ -144,8 +144,13 @@ extern "C" bool deck_flow_switch(int idx)
      * last_slot>=0 尚未置位，不会误标 manual_override） */
     schedule_on_manual_switch();
 
-    if (load_words_with_catalog() <= 0) {  /* 重载失败回退默认链路重装 */
-        deck_manager_switch(0);
+    if (load_words_with_catalog() <= 0 ||
+        /* 文件型卡组（默认[0]无文件，兑底即正路）必须真正命中 deck
+         * 文件；兑底词库非空（>0）但目标未命中（坏 JSON/半落盘）
+         * 曾被误判成功：NVS/学习状态污染到坏 deck 键（2026-09-09
+         * 修复，判据见 word_loader_last_source） */
+        (d->file[0] && word_loader_last_source() != WSRC_DECK)) {
+        deck_manager_switch(0);               /* 回退默认链路重装 */
         load_words_with_catalog();
         return false;                   /* 调用方长震反馈 */
     }
@@ -437,7 +442,10 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
         }
     }
 
-    if (event != BUTTON_EVENT_SHORT_PRESS) return true;
+    /* 栈串联重构（2026-09-08）回归修正：旧结构此处滤非短按事件
+     * （长按已在上方处理完）；重构后出厂长按六键收编尾部
+     * word_view_on_button，本行不得再拦长按（曾致 base 层长按中键
+     * 菜单/SET 收藏等全部静默失效，临时视图栈页不受影响） */
 
     /* 阅读模式短按路由（P3 + 阅读器增强 2026-09-05）：
      * 上/下=翻页，左/右=字号缩放，中=阅读菜单，SET=书签切换，

@@ -40,7 +40,7 @@ static const char *TAG = "MIC";
 #define MIC_SAMPLE_RATE     16000
 #define MIC_MIN_MS          1000          /* max_ms 钳位下限 */
 #define MIC_MAX_MS          10000         /* 钳位上限（320KB PSRAM 纪律） */
-#define MIC_CHUNK_SAMPLES   (256)         /* 单块样本（32bit → DMA 1KB） */
+#define MIC_CHUNK_SAMPLES   (512)         /* 单块样本（16bit → DMA 1KB） */
 #define MIC_I2S_TIMEOUT_MS  (200)
 
 /* VAD（块粒度：256 样本 = 16ms） */
@@ -50,9 +50,12 @@ static const char *TAG = "MIC";
 #define VAD_TAIL_MS         (800)         /* 尾端连续静音提前断 */
 #define VAD_START_MS        (600)         /* 起始保护（按键/环境噪声） */
 
-/* 单次采集静态缓冲（单任务串行使用；免占任务栈） */
-static int32_t s_raw[MIC_CHUNK_SAMPLES];
-static int32_t s_zeros[MIC_CHUNK_SAMPLES];
+/* 单次采集静态缓冲（单任务串行使用；免占任务栈）
+ * 2026-09-09 P0-1：32bit→16bit 槽。16bit 帧 BCLK=32fs，SCLK 作 mclk 源
+ * ×8 后恰为 256fs（与播放同构）；32bit 槽下 ×8 会倍频至 512fs，
+ * codec 内部分频失配 → SDOUT 速率错 2 倍 */
+static int16_t s_raw[MIC_CHUNK_SAMPLES];
+static int16_t s_zeros[MIC_CHUNK_SAMPLES];
 
 /* ---- 44B 标准 WAV 头（RIFF/PCM 16bit/mono/16kHz） ---- */
 typedef struct __attribute__((packed)) {
@@ -89,7 +92,8 @@ static void wav44_build(uint8_t *buf, uint32_t data_bytes)
     h->data_size = data_bytes;
 }
 
-/* 重配 I2S0 全双工（调用前置 audio_suspend(true) 打断播放任务） */
+/* 重配 I2S0 全双工（调用前置 audio_suspend(true) 打断播放任务）
+ * 16bit/16k：与播放制式同构，ES8311 ADC SDP 16bit（REG0A=0x0C）对位 */
 static int i2s_install_duplex(void)
 {
     /* audio_player 的 TX-only 驱动可能仍安装（suspend 不卸载），先卸 */
@@ -98,7 +102,7 @@ static int i2s_install_duplex(void)
     i2s_config_t cfg = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX),
         .sample_rate = MIC_SAMPLE_RATE,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,  /* L/R=GND 固定左 */
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
@@ -136,6 +140,9 @@ static int record_pcm(int16_t *pcm, volatile bool *cancel,
     bool ever_voiced = false;
     double peak_db = -99.0;
     if (out_peak_db) *out_peak_db = -99.0;
+    /* bring-up 诊断（P0-1）：非零计数+首块峰值定位悬空 DIN vs ADC 无输出 */
+    int dbg_blk = 0, dbg_nz = 0;
+    int32_t dbg_hi = 0;
 
     while (total < max_samples) {
         if (cancel && *cancel) return -2;
@@ -149,21 +156,30 @@ static int record_pcm(int16_t *pcm, volatile bool *cancel,
         if (i2s_read(MIC_I2S_PORT, s_raw, sizeof(s_raw), &br,
                      pdMS_TO_TICKS(MIC_I2S_TIMEOUT_MS)) != ESP_OK || br == 0)
             return -1;
-        int n = (int)(br / sizeof(int32_t));
+        int n = (int)(br / sizeof(int16_t));
 
-        /* 全双工纪律：读多少样本向 TX 写多少静音零（32bit 槽等量） */
+        /* 全双工纪律：读多少样本向 TX 写多少静音零（16bit 槽等量） */
         size_t bw = 0;
-        i2s_write(MIC_I2S_PORT, s_zeros, (size_t)n * sizeof(int32_t),
+        i2s_write(MIC_I2S_PORT, s_zeros, (size_t)n * sizeof(int16_t),
                   &bw, pdMS_TO_TICKS(MIC_I2S_TIMEOUT_MS));
 
         if (total + n > max_samples) n = max_samples - total;
         int base = total;
         uint64_t acc = 0;
         for (int i = 0; i < n; i++) {
-            pcm[base + i] = (int16_t)(s_raw[i] >> 16);  /* ES8311 16bit 数据居 32bit 槽高位 */
-            int32_t v = pcm[base + i];
+            int16_t v = s_raw[i];
+            if (dbg_blk < 3) {
+                int16_t a = v < 0 ? -v : v;
+                if (a > dbg_hi) dbg_hi = a;
+                if (i < 4)
+                    LOG_I("MICDBG blk%d [%d]=0x%04X (%d)",
+                          dbg_blk, i, (uint16_t)v, v);
+            }
+            if (v != 0) dbg_nz++;
+            pcm[base + i] = v;
             acc += (uint64_t)((int64_t)v * v);
         }
+        dbg_blk++;
         total += n;
 
         /* VAD：块 RMS 能量（dBFS） */
@@ -181,12 +197,16 @@ static int record_pcm(int16_t *pcm, volatile bool *cancel,
             if (silent_ms >= VAD_TAIL_MS) {
                 *out_samples = total;
                 if (out_peak_db) *out_peak_db = peak_db;
+                LOG_W("MICDBG: nz=%d/%d peak=%ld",
+                      dbg_nz, total, (long)dbg_hi);
                 return ever_voiced ? 0 : -3;
             }
         }
     }
     *out_samples = total;
     if (out_peak_db) *out_peak_db = peak_db;
+    LOG_W("MICDBG: nz=%d/%d peak=%ld",
+          dbg_nz, total, (long)dbg_hi);
     return ever_voiced ? 0 : -3;
 }
 
@@ -216,6 +236,9 @@ int mic_recorder_record(uint8_t **out_wav, size_t *out_len,
 
     int rc = i2s_install_duplex();
     if (rc == 0) {
+        /* codec 分频切 16k（SCLK 源下 16bit 帧×8=256fs 与播放同构）；
+         * 播放侧 44.1k 系数由 audio_bus_reconfigure 结束后恢复 */
+        es8311_set_sample_rate(MIC_SAMPLE_RATE);
         /* ES8311 ADC 起录：PGA 增益档 3（18dB，板载麦/外接麦均适用） */
         es8311_adc_start(3);
         int samples = 0;

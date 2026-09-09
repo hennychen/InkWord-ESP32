@@ -860,13 +860,46 @@ void ui_render_pron(pron_state_t st, int total, const char *engine)
 
     char buf[32];
     switch (st) {
-    case PRON_STATE_RECORDING:
-        epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Speak now",
-                          EPD_GFX_BLACK,
-                          ui_fit_font("Speak now", 4, UI_BODY_MAX_W));
+    case PRON_STATE_RECORDING: {
+        /* 2026-09-09 用户反馈：清屏后仅留 "Speak now" 提示，用户不
+         * 知该读什么——回显当前词+音标（复用词卡同款布局/字号/
+         * 斜杠包裹），提示行改为明确指令；mic 阻塞采集，静态帧
+         * 无倒计时 */
+        const WordEntry *cw =
+            word_parser_get(study_mode_current_word_index());
+        if (cw) {
+            if (cjk_text_has_wide(cw->text)) {
+                int lvl = UI_POEM_LEVEL;
+                while (lvl > 0 &&
+                       cjk_text_width(lvl, cw->text) > UI_BODY_MAX_W)
+                    lvl--;
+                cjk_text_draw_wrap(UI_MARGIN_X,
+                                   UI_WORD_BASE - (16 + lvl * 4),
+                                   UI_BODY_MAX_W, lvl, 16 + lvl * 4, 1,
+                                   cw->text, EPD_GFX_BLACK);
+            } else {
+                epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, cw->text,
+                                  EPD_GFX_BLACK,
+                                  ui_fit_font(cw->text, ui_word_start_size(),
+                                              UI_BODY_MAX_W));
+            }
+            if (cw->phonetic[0]) {
+                /* 词典惯例斜杠包裹（与词卡同源逻辑） */
+                if (cw->phonetic[0] == '/' || cw->phonetic[0] == '[')
+                    cjk_text_draw(UI_MARGIN_X, UI_PHON_TOP, UI_AUX_LEVEL,
+                                  cw->phonetic, EPD_GFX_BLACK);
+                else {
+                    char ph[WORD_PHONETIC_MAX + 4];
+                    snprintf(ph, sizeof(ph), "/%s/", cw->phonetic);
+                    cjk_text_draw(UI_MARGIN_X, UI_PHON_TOP, UI_AUX_LEVEL,
+                                  ph, EPD_GFX_BLACK);
+                }
+            }
+        }
         cjk_text_draw(UI_MARGIN_X, UI_BODY_TOP, UI_MEAN_LEVEL,
-                      "请跟读 · 按任意键取消", EPD_GFX_BLACK);
+                      "请大声读出 · 按任意键取消", EPD_GFX_BLACK);
         break;
+    }
     case PRON_STATE_SCORING:
         epd_gfx_draw_text(UI_MARGIN_X, UI_WORD_BASE, "Scoring...",
                           EPD_GFX_BLACK, 2);
