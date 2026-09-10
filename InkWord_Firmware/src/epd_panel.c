@@ -16,6 +16,7 @@
  * 本文件枚举 API（registry_count/at）供设置页循环选择使用
  */
 #include "epd_panel.h"
+#include "panels/epd_bus.h"  /* 自动识别：bus_auto_detect_probe */
 
 #include <stdio.h>
 #include <string.h>
@@ -172,3 +173,94 @@ int epd_panel_desc_check(const epd_panel_desc_t *d, char *err, size_t err_len)
 }
 
 #undef DESC_FAIL
+
+/* —— 自动识别（2026-09-10 新增，多维指纹级联匹配） ——
+ * 三阶段级联：BUSY 判族 → OTP 指纹 → 分辨率 → 色彩模式。
+ * 每阶段匹配后检查唯一性，唯一则命中；碰撞则进入下一阶段细化。
+ * 命中返回 desc 指针；未命中返回 NULL（调用方走 NVS fallback） */
+const epd_panel_desc_t *epd_panel_auto_detect(void)
+{
+    bus_probe_result_t probe;
+    if (bus_auto_detect_probe(&probe) != 0) {
+        DIAG_LOG("auto-detect: probe failed (COG no response)");
+        return NULL;
+    }
+
+    DIAG_LOG("auto-detect: BUSY=%s OTP=0x%02X resolution=%ux%u",
+             probe.busy_idle_high ? "HIGH-idle(UC)" : "LOW-idle(SSD16xx)",
+             probe.status_reg,
+             (unsigned)probe.panel_w, (unsigned)probe.panel_h);
+
+    const bool has_res = (probe.panel_w > 0 && probe.panel_h > 0);
+    const int count = epd_panel_registry_count();
+
+    /* 辅助宏：BUSY 空闲电平匹配检查 */
+    #define BUSY_MATCH(d) \
+        (((d)->busy_level == 0) == probe.busy_idle_high)
+
+    /* === 第一阶：OTP 唯一匹配（最高置信度） ===
+     * 同族内 otp_signature 唯一（无碰撞）的面板直接命中 */
+    if (probe.status_reg != 0) {
+        const epd_panel_desc_t *otp_match = NULL;
+        int otp_count = 0;
+        for (int i = 0; i < count; i++) {
+            const epd_panel_desc_t *d = epd_panel_at(i);
+            if (d->otp_signature == 0) continue;
+            if (!BUSY_MATCH(d)) continue;
+            if (d->otp_signature == probe.status_reg) {
+                otp_match = d;
+                otp_count++;
+            }
+        }
+        if (otp_count == 1) {
+            return otp_match;
+        }
+    }
+
+    /* === 第二阶：OTP + 分辨率匹配（中置信度，解决同族碰撞） ===
+     * 同控制器多面板（如 E042A13 vs E042A13BW 同 SSD1619 0x01）
+     * 分辨率不同即可区分 */
+    if (probe.status_reg != 0 && has_res) {
+        const epd_panel_desc_t *combo_match = NULL;
+        int combo_count = 0;
+        for (int i = 0; i < count; i++) {
+            const epd_panel_desc_t *d = epd_panel_at(i);
+            if (d->otp_signature == 0) continue;
+            if (!BUSY_MATCH(d)) continue;
+            if (d->otp_signature != probe.status_reg) continue;
+            if (d->panel_w == probe.panel_w &&
+                d->panel_h == probe.panel_h) {
+                combo_match = d;
+                combo_count++;
+            }
+        }
+        if (combo_count == 1) {
+            return combo_match;
+        }
+    }
+
+    /* === 第三阶：分辨率 + BUSY 匹配（低置信度，无需 OTP） ===
+     * 即使 OTP 未录入（otp_signature=0），分辨率 + BUSY 空闲电平
+     * 组合也可能唯一。解决新屏 OTP 未实测的场景 */
+    if (has_res) {
+        const epd_panel_desc_t *res_match = NULL;
+        int res_count = 0;
+        for (int i = 0; i < count; i++) {
+            const epd_panel_desc_t *d = epd_panel_at(i);
+            if (!BUSY_MATCH(d)) continue;
+            if (d->panel_w == probe.panel_w &&
+                d->panel_h == probe.panel_h) {
+                res_match = d;
+                res_count++;
+            }
+        }
+        if (res_count == 1) {
+            return res_match;
+        }
+    }
+
+    #undef BUSY_MATCH
+
+    /* 未命中：指纹表未录入或碰撞，返回 NULL 走 fallback */
+    return NULL;
+}

@@ -298,6 +298,7 @@ const epd_panel_desc_t g_panel_opm021eb = {
     .controller = EPD_CTRL_UC8151,  /* 一轮 SSD1680 证伪改判（BUSY
                                      * 空闲 HIGH + 0x2F 无应答，日志
                                      * 实锤；UC8253/IL0373 同模型） */
+    .otp_signature = 0x13,          /* FLG 0x71 实测值（2026-09-10 真机） */
     .panel_w    = 122,
     .panel_h    = 250,
     .gfx_rotation = 0,       /* 竖屏持机（gfx 122x250，LAYOUT_TINY） */

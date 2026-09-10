@@ -39,6 +39,7 @@ UC8253_DEFINE_OPS(s_epd2, g_panel_depg0370)
 const epd_panel_desc_t g_panel_depg0370 = {
     .name       = "depg0370_uc8253",
     .controller = EPD_CTRL_UC8253,
+    .otp_signature = 0,           /* 待实测指纹（自动识别暂不启用） */
     .panel_w    = 240,
     .panel_h    = 416,
     .gfx_rotation = 1,       /* 横屏持机（gfx 416x240），Phase 2 转置泛化依据 */

@@ -53,6 +53,10 @@ typedef struct epd_panel_desc {
     /* —— 身份 —— */
     const char          *name;          /* "depg0370_uc8253"（注册查表主键） */
     epd_controller_t    controller;
+    uint8_t             otp_signature;  /* OTP 指纹（0x2F 读回值 / UC FLG 0x71
+                                         * 读回值；0=不参与自动识别，仅走
+                                         * NVS fallback。epd_panel_auto_detect
+                                         * 分层探测用，2026-09-10 新增） */
 
     /* —— 几何 —— */
     uint16_t            panel_w, panel_h;   /* 物理竖屏分辨率 */
@@ -160,6 +164,20 @@ const epd_panel_desc_t *epd_panel_at(int idx);
  * @return 0 契约满足；-1 违规（err 填首个命中项）。
  */
 int epd_panel_desc_check(const epd_panel_desc_t *d, char *err, size_t err_len);
+
+/**
+ * @brief 面板自动识别（2026-09-10 新增）。
+ *
+ * 分层探测：BUSY 空闲电平判族 → SSD16xx 读 0x2F / UC 读 FLG 0x71 →
+ * 遍历注册表匹配 otp_signature。命中返回 desc 指针；未命中返回 NULL
+ * （调用方走 NVS fallback → DEFAULT_ID）。
+ *
+ * 识别成功后调用方应写 NVS set_panel 持久化（下次启动快速路径）。
+ * 耗时 ~200ms（RST 脉冲 + BUSY 采样 + 状态读），不阻塞主循环。
+ *
+ * @return 命中返回 desc 指针（静态生存期）；未命中返回 NULL。
+ */
+const epd_panel_desc_t *epd_panel_auto_detect(void);
 
 #ifdef __cplusplus
 }

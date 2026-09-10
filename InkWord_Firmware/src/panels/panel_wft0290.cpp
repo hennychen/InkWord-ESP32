@@ -320,6 +320,7 @@ const epd_panel_desc_t g_panel_wft0290 = {
     .name       = "wft0290_bw",
     .controller = EPD_CTRL_UC8151,  /* 三轮实锤（GDEW029T5D 同族，
                                      * WFT0290CZ10 FPC 对照 + TRES 修复） */
+    .otp_signature = 0,           /* 待实测指纹（自动识别暂不启用） */
     .panel_w    = 128,
     .panel_h    = 296,
     .gfx_rotation = 0,       /* 竖屏持机（gfx 128x296，LAYOUT_TINY） */

@@ -36,6 +36,7 @@
 #include "epd_driver.h"
 #include "gpio_config.h"
 #include "epd_panel.h"
+#include "panels/epd_bus.h"  /* 自动识别探测：bus_auto_detect_probe */
 #include "epd_geom.h"   /* T2.1：转置/窗口/调色板纯函数权威（native 真值表） */
 #include "layout_profile.h"  /* set_dpi：PPI 自动层注入（2026-09-08，
                               * 首调 get 前时序保证=init 内早于 UI） */
@@ -244,42 +245,68 @@ int epd_driver_init(void)
         return 0;
     }
 
-    /* 0. L2 面板描述符查表（Phase 1 唯一面板；Phase 3 起构建矩阵注入）。
-     *    P1 收官（2026-09-02）NVS 运行期选屏："inkword"/set_panel 存
-     *    面板注册名（字符串主键，注册表追加不漂移；键缺失=跟随构建
-     *    默认），一固件任意换屏（产线/售后同包烧录）。错选型号屏不亮
-     *    时的无屏恢复路径：按住 RST 侧键上电直读 GPIO（无源开关按下
-     *    接地，gpio_config.h 按键区；button_handler 尚未初始化，绕过
-     *    去抖/队列直接读电平），本次启动忽略 NVS 覆盖回落构建默认，
-     *    亮屏后回设置页「面板型号」改回「默认」 */
-    const char *panel_id = EPD_PANEL_DEFAULT_ID;
+    /* 0. L2 面板描述符选择。
+     *
+     *    0a. 自动识别（2026-09-10，多维指纹级联匹配）：
+     *    BUSY 空闲电平判族 → OTP 指纹 → OTP+分辨率 → 分辨率+BUSY。
+     *    每阶段内部检查唯一性，碰撞自动进入下一阶段细化。
+     *    命中则采用，写 NVS 持久化（下次启动快速路径）。
+     *    未命中走 0b NVS fallback。耗时 ~200ms */
+    const char *panel_id = NULL;
     char nvs_id[32];
-    pinMode(NAV_RST_PIN, INPUT_PULLUP);
-    if (digitalRead(NAV_RST_PIN) == LOW) {
-        LOG_W("NAV_RST held at boot: skip NVS panel override");
-    } else {
-        nvs_handle_t h;
-        if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
-            size_t len = sizeof(nvs_id);
-            if (nvs_get_str(h, NVS_KEY_SET_PANEL, nvs_id, &len) == ESP_OK)
-                panel_id = nvs_id;
-            nvs_close(h);
+    bool auto_detected = false;
+    {
+        const epd_panel_desc_t *detected = epd_panel_auto_detect();
+        if (detected) {
+            panel_id = detected->name;
+            s_panel = detected;
+            auto_detected = true;
+            LOG_I("auto-detect: panel '%s' %ux%u (OTP 0x%02X, BUSY %s)",
+                  panel_id, detected->panel_w, detected->panel_h,
+                  detected->otp_signature,
+                  (detected->busy_level == 0) ? "HIGH-idle/UC" : "LOW-idle/SSD16xx");
+            /* NVS 持久化（下次启动快速路径，跳过探测） */
+            nvs_handle_t h;
+            if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+                nvs_set_str(h, NVS_KEY_SET_PANEL, panel_id);
+                nvs_commit(h);
+                nvs_close(h);
+            }
+        } else {
+            LOG_I("auto-detect: no match, fallback to NVS/default");
         }
     }
-    s_panel = epd_panel_get_by_id(panel_id);
-    if (!s_panel && strcmp(panel_id, EPD_PANEL_DEFAULT_ID) != 0) {
-        /* NVS 值未命中注册表（型号拼写漂移/裁剪残留）：回落构建默认，
-         * 不进下方拒绝路径——那是 DEFAULT_ID 也查不到的构建期错误专属 */
-        LOG_W("NVS set_panel '%s' not in registry, fallback '%s'",
-              panel_id, EPD_PANEL_DEFAULT_ID);
+
+    /* 0b. NVS fallback（自动识别未命中或碰撞时）：读 NVS set_panel 键
+     *     （上次成功识别/手动设置结果）→ 未命中回落 DEFAULT_ID。
+     *     NAV_RST 侧键按下时跳过 NVS（产线/售后首次配屏安全阀） */
+    if (!s_panel) {
         panel_id = EPD_PANEL_DEFAULT_ID;
+        pinMode(NAV_RST_PIN, INPUT_PULLUP);
+        if (digitalRead(NAV_RST_PIN) == LOW) {
+            LOG_W("NAV_RST held at boot: skip NVS panel override");
+        } else {
+            nvs_handle_t h;
+            if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+                size_t len = sizeof(nvs_id);
+                if (nvs_get_str(h, NVS_KEY_SET_PANEL, nvs_id, &len) == ESP_OK)
+                    panel_id = nvs_id;
+                nvs_close(h);
+            }
+        }
         s_panel = epd_panel_get_by_id(panel_id);
+        if (!s_panel && strcmp(panel_id, EPD_PANEL_DEFAULT_ID) != 0) {
+            LOG_W("NVS set_panel '%s' not in registry, fallback '%s'",
+                  panel_id, EPD_PANEL_DEFAULT_ID);
+            panel_id = EPD_PANEL_DEFAULT_ID;
+            s_panel = epd_panel_get_by_id(panel_id);
+        }
     }
     if (!s_panel) {
         LOG_E("panel desc '%s' not found in registry", panel_id);
         return -1;
     }
-    if (strcmp(panel_id, EPD_PANEL_DEFAULT_ID) != 0)
+    if (!auto_detected && strcmp(panel_id, EPD_PANEL_DEFAULT_ID) != 0)
         LOG_I("panel '%s' selected (NVS override, build default '%s')",
               panel_id, EPD_PANEL_DEFAULT_ID);
 

@@ -345,6 +345,7 @@ static void panel_deep_sleep(void)
 const epd_panel_desc_t g_panel_e042a13bw = {
     .name       = "e042a13bw_ssd1619",
     .controller = EPD_CTRL_SSD1619,
+    .otp_signature = 0,           /* 与 E042A13 同族同 0x2F=0x01，碰撞待三阶区分 */
     .panel_w    = 400,
     .panel_h    = 300,
     .gfx_rotation = 0,       /* 横向原生面板（gfx 400x300，LAYOUT_MID） */

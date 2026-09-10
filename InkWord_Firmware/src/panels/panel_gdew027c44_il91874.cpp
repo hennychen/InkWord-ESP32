@@ -442,6 +442,7 @@ static void panel_deep_sleep(void)
 const epd_panel_desc_t g_panel_gdew027c44 = {
     .name       = "gdew027c44_il91874",
     .controller = EPD_CTRL_IL91874,
+    .otp_signature = 0,           /* IL91874 无 0x2F 寄存器，不参与自动识别 */
     .panel_w    = 176,
     .panel_h    = 264,
     .gfx_rotation = 1,       /* 物理竖屏 176x264 → UI 横屏 264x176 */

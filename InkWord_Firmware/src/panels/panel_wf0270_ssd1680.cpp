@@ -182,6 +182,7 @@ static void panel_deep_sleep(void)
 const epd_panel_desc_t g_panel_wf0270 = {
     .name       = "wf0270_ssd1680",
     .controller = EPD_CTRL_SSD1680,
+    .otp_signature = 0,           /* 待实测指纹（自动识别暂不启用） */
     .panel_w    = 176,
     .panel_h    = 264,
     .gfx_rotation = 1,        /* 物理竖屏 176x264 → UI 横屏 264x176

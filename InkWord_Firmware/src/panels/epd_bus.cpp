@@ -285,4 +285,89 @@ void bus_diag_ssd16(void)
 #endif
 }
 
+/* —— 自动识别探测（2026-09-10 新增） ——
+ * RST 脉冲 + BUSY 采样 + 状态寄存器读。通用序列（SSD16xx/UC 族均兼容），
+ * 不依赖特定面板 desc。epd_panel_auto_detect 消费结果分层匹配 */
+int bus_auto_detect_probe(bus_probe_result_t *out)
+{
+    if (!out) return -1;
+    out->cog_alive = false;
+    out->busy_idle_high = false;
+    out->status_reg = 0;
+    out->panel_w = 0;
+    out->panel_h = 0;
+
+    /* GPIO 初始化（与 bus_detect_alive 同口径） */
+    pinMode(EPD_RESET_PIN, OUTPUT);
+    pinMode(EPD_CS_PIN, OUTPUT);
+    pinMode(EPD_DC_PIN, OUTPUT);
+    pinMode(EPD_BUSY_PIN, INPUT);
+    digitalWrite(EPD_CS_PIN, HIGH);
+    digitalWrite(EPD_DC_PIN, LOW);
+
+    /* RST 脉冲：HIGH 200ms → LOW 10ms → HIGH（通用 10ms 脉宽，SSD16xx/UC 均兼容） */
+    digitalWrite(EPD_RESET_PIN, HIGH);
+    delay(200);
+    digitalWrite(EPD_RESET_PIN, LOW);
+    delay(10);
+    digitalWrite(EPD_RESET_PIN, HIGH);
+
+    /* 证据①：RST 释放后 5s 窗口观察 BUSY 忙→闲往返（COG boot 自检） */
+    const uint32_t t0 = millis();
+    bool saw_high = false, saw_low = false;
+    while (millis() - t0 < 5000 && !(saw_high && saw_low)) {
+        if (digitalRead(EPD_BUSY_PIN)) saw_high = true;
+        else saw_low = true;
+        delay(10);
+    }
+    out->cog_alive = saw_high && saw_low;
+    if (!out->cog_alive) {
+        DIAG_LOG("auto-detect: COG no answer (FPC/VCI/BS wiring?)");
+        return -1;
+    }
+
+    /* 证据②：静置 300ms 后采样 5 次取众数（BUSY 空闲电平） */
+    delay(300);
+    int high_cnt = 0;
+    for (int i = 0; i < 5; i++) {
+        if (digitalRead(EPD_BUSY_PIN)) high_cnt++;
+        delay(10);
+    }
+    out->busy_idle_high = (high_cnt >= 3);
+
+    /* 证据③：状态寄存器读（SSD16xx 0x2F / UC FLG 0x71） */
+    out->status_reg = bus_diag_read_status(
+        out->busy_idle_high ? 0x71 : 0x2F, true);
+
+    /* 证据④：分辨率寄存器读（RST 后 OTP 加载值，init 前捕获）
+     * SSD16xx：0x44 RAM X 窗口 + 0x45 RAM Y 窗口（OTP 默认值，可靠）
+     * UC 族：0x65/0x66 尝试读（非标准分辨率寄存器，可能无效） */
+    if (out->busy_idle_high) {
+        /* UC 族：0x65/0x66 尝试读，经验证后填入 */
+        uint8_t rx = bus_diag_read_status(0x65, false);
+        uint8_t ry = bus_diag_read_status(0x66, false);
+        if (rx >= 32 && rx <= 200 && ry >= 32) {
+            out->panel_w = rx;
+            out->panel_h = ry;
+        }
+    } else {
+        /* SSD16xx：0x44 RAM X end + 0x45 RAM Y end（OTP 分辨率） */
+        uint8_t rx = bus_diag_read_status(0x44, false);
+        uint8_t ry_lo = bus_diag_read_status(0x45, false);
+        uint8_t ry_hi = bus_diag_read_status(0x45, false);
+        uint16_t w = (uint16_t)(rx + 1);
+        uint16_t h = (uint16_t)((ry_hi << 8) | ry_lo);
+        if (w >= 32 && w <= 1024 && h >= 32 && h <= 1024) {
+            out->panel_w = w;
+            out->panel_h = h;
+        }
+    }
+
+    DIAG_LOG("auto-detect: BUSY idle %s, status=0x%02X, resolution=%ux%u",
+             out->busy_idle_high ? "HIGH (UC)" : "LOW (SSD16xx)",
+             out->status_reg,
+             (unsigned)out->panel_w, (unsigned)out->panel_h);
+    return 0;
+}
+
 } /* extern "C" */

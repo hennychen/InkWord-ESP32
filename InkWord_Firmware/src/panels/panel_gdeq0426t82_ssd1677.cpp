@@ -274,6 +274,7 @@ static void panel_deep_sleep(void)
 const epd_panel_desc_t g_panel_gdeq0426t82 = {
     .name       = "gdeq0426t82_ssd1677",
     .controller = EPD_CTRL_SSD1677,
+    .otp_signature = 0,           /* 待实测指纹（自动识别暂不启用） */
     .panel_w    = 800,
     .panel_h    = 480,
     .gfx_rotation = 0,       /* 横向原生面板（gfx 800x480，LAYOUT_LARGE
