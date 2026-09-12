@@ -265,7 +265,10 @@ int es8311_init(void)
     i2c_write(REG_SDPIN, 0x0C);           /* DAC SDP：16bit I2S 格式（官方 0x0C，
                                             位定义 bit[3:2]=字长 bit[1:0]=I2S） */
     i2c_write(REG_SDPOUT, 0x4C);          /* ADC SDP：16bit I2S + bit6=1 关（静默态） */
-    i2c_write(REG_DAC31, 0x00);           /* DAC mute 关（后续 dac_start 再上电） */
+    i2c_write(REG_DAC31, 0x60);           /* DAC soft mute（init 期间保持静音，
+                                            * dac_start 再解除；2026-09-10 修复
+                                            * 启动“滋啦”：原 0x00 解静音，init
+                                            * 到 deinit 窗口内 DAC 输出瞬态噪声） */
     i2c_write(REG_DAC32, 0x00);           /* DAC 音量 0 */
     i2c_write(REG_ADC17, 0x00);           /* ADC 音量 0 */
     i2c_write(REG_SYS0E, 0xFF);           /* 全局电源关 */

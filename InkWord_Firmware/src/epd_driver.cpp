@@ -209,6 +209,43 @@ static void transpose_to_plane(const GFXcanvas1 *cv, uint8_t *plane)
                        plane, panel_stride(s_panel), (int)s_rot);
 }
 
+/* 帧像素十字膨胀（2026-09-12 v3：1px 半径，帧反相模式白字补偿）：
+ * 每个黑色像素（bit=0）向上下左右各扩展 1 像素，笔画宽度 +2px。
+ * 反相模式下：canvas 黑像素 = 白字，膨胀使白字笔画温和加粗，
+ * 提升白粒子覆盖面积（补偿 ESL 屏白色驱动不足）。
+ * 使用 static 临时缓冲（帧 ≤ 4000B，避免栈溢出） */
+static void frame_dilate_cross(uint8_t *frame, size_t fb_size)
+{
+    static uint8_t tmp[4096];
+    if (fb_size > sizeof(tmp)) return;  /* 防御：帧过大跳过 */
+    memcpy(tmp, frame, fb_size);
+
+    const int stride = panel_stride(s_panel);
+    const int w = stride * 8;
+    const int h = s_panel->panel_h;
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            /* 当前像素是否为黑色（bit=0） */
+            if (!(tmp[y * stride + (x >> 3)] & (0x80 >> (x & 7)))) {
+                /* 上下左右各扩展 1px */
+                if (y - 1 >= 0)
+                    frame[(y - 1) * stride + (x >> 3)] &=
+                        (uint8_t)~(0x80 >> (x & 7));
+                if (y + 1 < h)
+                    frame[(y + 1) * stride + (x >> 3)] &=
+                        (uint8_t)~(0x80 >> (x & 7));
+                if (x - 1 >= 0)
+                    frame[y * stride + ((x - 1) >> 3)] &=
+                        (uint8_t)~(0x80 >> ((x - 1) & 7));
+                if (x + 1 < w)
+                    frame[y * stride + ((x + 1) >> 3)] &=
+                        (uint8_t)~(0x80 >> ((x + 1) & 7));
+            }
+        }
+    }
+}
+
 /* 双层画布 → 面板多平面展开（Phase 6，§9.3）：
  * plane[0] = B/W 白位平面（bit=1 白）、plane[1] = 红位平面（bit=1 红），
  * 多平面连续布局与 Phase 2 帧缓冲约定一致（ops.full_refresh 直通）；
@@ -219,6 +256,18 @@ static void canvas_to_panel(uint8_t *panel)
     transpose_to_plane(s_canvas, panel);
     if (s_canvas_ac && s_panel->plane_count > 1)
         transpose_to_plane(s_canvas_ac, panel + s_fb_size);
+    /* 像素膨胀（2026-09-11 低对比度屏补偿）：面板 desc.pixel_dilate=true
+     * 时启用，对 B/W 平面 plane[0] 做十字膨胀，笔画宽度翻倍 */
+    if (s_panel->pixel_dilate)
+        frame_dilate_cross(panel, s_fb_size);
+    /* 帧反相（2026-09-12 低对比度屏补偿）：面板 desc.frame_invert=true
+     * 时启用，B/W 平面逐位取反（canvas WHITE→显示黑底、canvas BLACK
+     * →显示白字），利用面板天然黑驱优势提升对比度。仅反相 B/W 平面
+     * plane[0]，红平面 plane[1] 不受影响（色彩面板无此需求） */
+    if (s_panel->frame_invert) {
+        for (size_t i = 0; i < s_fb_size; i++)
+            panel[i] ^= 0xFF;
+    }
 }
 
 /* GFX 窗口 → 面板窗口（Phase 2 四方向泛化，§6.3；rot=1 即旧
@@ -489,6 +538,12 @@ int epd_driver_init(void)
           s_panel->dpi,
           16.0f * 25.4f / s_panel->dpi, 20.0f * 25.4f / s_panel->dpi,
           24.0f * 25.4f / s_panel->dpi, 32.0f * 25.4f / s_panel->dpi);
+    /* 文本加粗自动应用（2026-09-10）：低对比度屏（ESL 拆机屏白色驱动
+     * 不足）面板 desc.text_bold=true 声明，此处自动启用粗体字体补偿 */
+    if (s_panel->text_bold) {
+        epd_gfx_set_bold(true);
+        LOG_I("Text bold enabled (panel desc: low-contrast compensation)");
+    }
 #if defined(INKWORD_BOARD_V14)
     LOG_I("Booster: v1.4 on-board self-managed boost (decoupled from COG GDR), no MCU PWM");
 #else

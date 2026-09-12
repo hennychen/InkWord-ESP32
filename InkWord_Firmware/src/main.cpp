@@ -87,6 +87,7 @@
 #include "ota_manager.h"
 #include "lan_display_server.h"
 #include "standby_page.h"
+#include "screen_aging_test.h"  /* 屏幕老化诊断测试（2026-09-10） */
 #include "reader_engine.h"   /* 阅读模式（P3）：书分页/字号/进度 */
 #include "ble_provision.h"
 #include "power_manager.h"   /* P5 深睡/唤醒分流与入睡检查 */
@@ -788,6 +789,12 @@ static void boot_stamp(const char *stage)
 /* Arduino setup - 初始化所有组件 */
 void setup()
 {
+    /* 最早期：I2S DOUT (GPIO 6) 内部下拉。NS4150B 功放无 MCU 控制线
+     * （R10 上拉常开），启动/烧录期间 I2S 驱动未装载，GPIO 6 悬空被
+     * ES8311 DAC 输入拾取→功放→喇叭“滋啦”。内部下拉 ~45kΩ 把悬空
+     * 引脚钳 LOW，消除瞬态噪声（2026-09-10 修复） */
+    gpio_pulldown_en((gpio_num_t)I2S_DATA_OUT_PIN);
+
     Serial.begin(115200);
     delay(100);
     boot_stamp("start");
@@ -947,10 +954,18 @@ void setup()
     LOG_I("=== InkWord ready ===");
     boot_stamp("ready");
 
+#if INKWORD_SCREEN_AGING_TEST
+    screen_aging_test_enter();
+#endif
+
 #if INKWORD_GOLDEN_FRAME
     /* T2.2：demo env 自检序列（首帧已绘、词库/字体/后台任务就绪后；
      * 跑完内部挂起，不进 loop） */
     selftest_frame_run();
+#endif
+
+#if INKWORD_SCREEN_AGING_TEST
+    screen_aging_test_enter();
 #endif
 }
 
@@ -964,8 +979,14 @@ void loop()
 {
     nav_key_t     id;
     button_event_t ev;
-    if (button_wait(&id, &ev, 100))
-        on_button(id, ev);
+    if (button_wait(&id, &ev, 100)) {
+#if INKWORD_SCREEN_AGING_TEST
+        if (screen_aging_test_is_active()) {
+            screen_aging_test_on_button((int)id, (int)ev);
+        } else
+#endif
+            on_button(id, ev);
+    }
 #if INKWORD_FEATURE_LAN
     /* T0.3（修 C1 终态）：LAN 帧由主任务直刷（httpd 只收帧置就绪），
      * EPD 回归单写者；无待刷帧时零开销返回 */

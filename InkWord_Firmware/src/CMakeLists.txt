@@ -78,6 +78,7 @@ idf_component_register(
                             # 生产 env 空展开；双轨同步占位）
         "layout_profile.c"   # P5+Phase5：L4 布局档位层（档位→字库级映射）
         "standby_page.c"
+        "screen_aging_test.c"  # 屏幕老化诊断测试（2026-09-10）
         "cjk_font.c"
         "cjk_font_sd.c"   # v1.4 T4.5：SD 卡组子集字库级联（主集 miss → 子集）
         "cjk_text.c"

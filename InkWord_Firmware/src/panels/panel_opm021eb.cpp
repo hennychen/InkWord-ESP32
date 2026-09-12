@@ -182,10 +182,23 @@ static int uc_refresh_bw(const uint8_t *frame /* NULL = 全白 */)
  * 驱动使实际对比度远超标称打断点。“波形时间恒定”推论作废。
  * 快刷终局重写：REG LUT 硅锁 + OTP 无快档仍在（无寄存器级快刷），
  * 但打断法在双写序列下成立（全刷波形截短，ED057TC1 同源） */
-#define K_ABORT_MS 250                 /* 打断点：波形执行 0.25s 处 POF。
-                                        * 四十三轮定档：1000/500/250ms
-                                        * 阶梯降档真机文字均清晰，取
-                                        * 探针 40 轮最低可辨档（~0.65s/帧）*/
+/* —— 打断法快刷（2026-09-10 修正：DTM1 写旧帧 + 打断 500ms）——
+ * REG LUT 移植失败（2026-09-10）：PSR 0xBF + 5 张 LUT 表在 OPM021EB
+ * 上 BUSY 等待卡死（COG 不支持 REG LUT 模式或 BUSY 行为改变），
+ * 按键无响应。回退打断法。
+ *
+ * 修正①：DTM1(0x10) 写 prev 旧帧（此前写 new_ 导致 DTM1=DTM2，
+ * COG 差分引擎无差异可驱，全靠 OTP 波形强制全屏驱动，中间区域
+ * 能量不足灰暗）。修正后 COG 真正差分驱动变化像素。
+ * 修正②：打断时间 250ms → 500ms，给像素更多翻转能量，改善
+ * 中间区域对比度（代价 ~0.9s/帧，可接受） */
+#define K_ABORT_MS 500                 /* 打断点：波形执行 0.5s 处 POF。
+                                        * 250ms 中间灰暗（能量不足），
+                                        * 500ms 真机文字清晰 + 中间
+                                        * 对比度改善 */
+
+/* 诊断用：打断时间覆盖变量（0 = 使用默认 K_ABORT_MS） */
+volatile uint16_t g_abort_ms_override = 0;
 
 /* —— ops —— */
 
@@ -242,18 +255,19 @@ static int panel_write_full(const uint8_t *frame)
     return panel_full_refresh(frame);
 }
 
-/* 打断法快刷（四十一轮，2026-09-01）：双写序列（同 39 轮口径）+
- * 0x12 波形执行 K_ABORT_MS 处 0x02 POF 打断。40 轮探针实证四档
- * 全部逐帧正确显示当前帧；POF 后寄存器不丢（31 轮 POF/PON 轮转
- * 实证），每帧 PON 重升压。打断截断清屏相位会积累残影 —— 由
- * refresh_scheduler 阈值保养全刷（局刷 8 次强制 1 次完整全刷）清，
- * 架构现成。prev 不参与（差分由 COG DTM1 承担，同帧双写） */
+/* 打断法快刷（2026-09-10 修正版）：DTM1 写 prev 旧帧 + DTM2 写 new_
+ * 新帧（真正差分），OTP 全刷波形执行 K_ABORT_MS 处 POF 打断。
+ * COG 按 DTM1/DTM2 差分驱动变化像素，打断截断清屏相位会积累
+ * 残影——由 refresh_scheduler 阈值保养全刷清除 */
 static int panel_partial(const uint8_t *prev, const uint8_t *new_,
                          uint8_t passes)
 {
-    (void)prev;
     if (passes < 1) passes = 1;
     if (!s_ready && uc_init() != 0) return -1;
+
+    /* 诊断用：打断时间覆盖（g_abort_ms_override > 0 时使用） */
+    const uint16_t abort_ms = (g_abort_ms_override > 0)
+        ? g_abort_ms_override : K_ABORT_MS;
 
     #if INKWORD_EPD_DIAG
     const uint32_t t0 = millis();
@@ -262,17 +276,17 @@ static int panel_partial(const uint8_t *prev, const uint8_t *new_,
         bus_cmd(0x04);                 /* PON：POF 态后重升压 */
         bus_wait_idle(&g_panel_opm021eb,
                      g_panel_opm021eb.busy_timeout_ms);
-        bus_cmd(0x10);                 /* DTM1 old（同帧，差分基准） */
-        write_ram_frame(new_);
+        bus_cmd(0x10);                 /* DTM1 old（prev 帧，差分基准） */
+        write_ram_frame(prev);
         bus_cmd(0x13);                 /* DTM2 new */
         write_ram_frame(new_);
         bus_cmd(0x12);
-        delay(K_ABORT_MS);             /* 波形执行 Xms 处 */
+        delay(abort_ms);               /* 波形执行 Xms 处 */
         bus_cmd(0x02);                 /* POF 打断（不等波形完成） */
         bus_wait_idle(&g_panel_opm021eb, 1000);
     }
     DIAG_LOG("partial abort %ux%ums took %ums",
-             passes, (unsigned)K_ABORT_MS,
+             passes, (unsigned)abort_ms,
              (unsigned)(millis() - t0));
     return 0;
 }
@@ -325,20 +339,25 @@ const epd_panel_desc_t g_panel_opm021eb = {
     .full_ms    = 3200,            /* 二轮实测 3,117ms（含上电/
                                     * 关电，波形 2,970ms 稳定复现
                                     * 四次）+ 余量 */
-    .partial_ms = 650,             /* 打断法快刷：K_ABORT_MS=250 +
-                                    * 传输/POF 开销（四十三轮最低档） */
-    .partial_enabled = true,       /* 打断法快刷（四十三轮定档）：双写
-                                    * + 250ms POF 打断 ~0.65s/帧；真机
-                                    * 1000/500/250 三档文字均清晰 */
+    .partial_ms = 1000,            /* 打断法快刷：K_ABORT_MS=500 +
+                                    * 传输/POF 开销（~0.9s/帧） */
+    .partial_enabled = true,       /* 打断法快刷（2026-09-10 修正：
+                                    * DTM1 写 prev 真差分 + 500ms 打断
+                                    * 改善中间对比度；REG LUT 移植失败
+                                    * 回退） */
     .passes     = 1,
     .partial_count_full_refresh = 4, /* 局刷计数保养（OTP 全刷波形
                                     * 自带清屏相位，残影轻，4 次保守） */
     .window_8align = true,         /* gfx 侧窗口 8 对齐约束（x 字节轴） */
+    .text_bold = false,
+    .pixel_dilate = false,
+    .frame_invert = false,         /* 帧反相关闭（恢复白底黑字） */
     .ops = {
         .init         = panel_init,
         .full_refresh = panel_full_refresh,
         .write_full   = panel_write_full,
-        .partial      = panel_partial,   /* 转发双写全刷（三十九轮） */
+        .partial      = panel_partial,   /* 打断法快刷（2026-09-10
+                                         * 修正：DTM1 写 prev 真差分） */
         .power_off    = panel_power_off,
         .deep_sleep   = panel_deep_sleep,
         .probe        = NULL,       /* epd_driver 诊断 0x71 FLG 已覆盖

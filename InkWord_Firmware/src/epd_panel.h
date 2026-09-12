@@ -94,6 +94,21 @@ typedef struct epd_panel_desc {
     uint8_t             passes;         /* 局刷默认遍数（调用方可覆盖） */
     uint8_t             partial_count_full_refresh; /* 局刷计数全刷阈值 */
     bool                window_8align;  /* 面板侧 x/w 8 像素对齐要求 */
+    bool                text_bold;      /* 文本加粗（低对比度屏补偿：ESL
+                                         * 拆机屏白色驱动不足，黑字加粗
+                                         * 提升可读性；2026-09-10 OPM021EB
+                                         * 首用） */
+    bool                pixel_dilate;   /* 像素膨胀（低对比度屏补偿：帧
+                                         * 缓冲中每个黑像素向 4-邻域扩展
+                                         * 1px，笔画宽度翻倍，对 ASCII+CJK
+                                         * 统一生效；2026-09-11 OPM021EB
+                                         * 首用） */
+    bool                frame_invert;   /* 帧反相（低对比度屏补偿：帧
+                                         * 缓冲逐位取反，canvas WHITE
+                                         * → 显示黑底 / canvas BLACK →
+                                         * 显示白字，利用面板天然黑驱
+                                         * 优势提升对比度；2026-09-12
+                                         * OPM021EB 首用） */
 
     /* —— ops：L0 控制器序列统一入口 ——
      * 约定：各序列完全无状态（UC8253 双 RAM 差分先例：不依赖 COG 内部
