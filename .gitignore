@@ -26,6 +26,8 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+# screen(1) 串口捕获残留（大屏联调产物，可由 tools 重新采集）
+screenlog.*
 
 # Backup & temp files（*.bak* 通配覆盖 .bak10 等多位后缀）
 *.bak*

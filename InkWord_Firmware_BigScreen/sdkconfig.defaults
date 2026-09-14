@@ -1,0 +1,44 @@
+# InkWord BigScreen sdkconfig 种子（espidf 框架，首次构建生成 sdkconfig）
+# 方案 §2.3 落地修正记录：
+#   1. CONFIG_SPIRAM_SPEED=80 → CONFIG_SPIRAM_SPEED_80M=y：原写法不是
+#      Kconfig 语法，会被静默丢弃（defaults 未匹配项不报错，属隐性坑）；
+#   2. 移除 CONFIG_ESP_LCD_RGB_PANEL=y：IDF 4.4 无此选项名，ep_lcd 组件
+#      由 epdiy 组件 REQUIRES 自动拉入，写在 defaults 里同样被静默丢弃；
+#   3. CONFIG_ESP32S3_DATA_CACHE_LINE_64B：LCD 并行总线吞吐受益于 64B
+#      cache line（epdiy V7 推荐，否则运行时警告并降半像素时钟）。
+#      （勘误 2026-09-12：首版误写 CONFIG_ESP32S3_DATA_CACHE_64KB ——
+#      不存在的选项名，被 Kconfig 静默丢弃，真机日志实证 32B 生效降速。）
+
+# PSRAM：1920x1080 @ 4bpp ≈ 1MB 帧缓冲，必须 OPI 模式（方案 §2.3）
+CONFIG_ESP32S3_SPIRAM_SUPPORT=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+
+# 分区表：app 3MB + storage ≈13MB（波形/字体/词库资源区）
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_bigscreen.csv"
+
+# Flash 16MB：IDF 6.0 sdkconfig 默认 2MB，与板载 16MB/分区表不符会告警
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# legacy I2C（driver/i2c.h）在 IDF 6.0 为 EOL 但保留，epdiy V7 及 bring-up
+# 代码均依赖之；抑制编译期 pragma 噪音，新 API 迁移留待 Phase 2
+CONFIG_I2C_SUPPRESS_DEPRECATE_WARN=y
+
+# 同上：epdiy epd_board_common.c 温度采样用 legacy ADC（driver/adc.h +
+# esp_adc_cal.h），官方抑制开关降噪，新 API 迁移留待 Phase 2
+CONFIG_ADC_SUPPRESS_DEPRECATE_WARN=y
+
+# 日志级别：INFO（bring-up 阶段需要完整 I 级观察窗）
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# 强制使用 UART0 作为控制台（禁用 USB Serial/JTAG 避免串口冲突）
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=n
+
+# [InkWord 修复] bring-up 主控已提为与 feed 线程同优先级（轮转点即上核），
+# 但 feed 满载自旋仍会饿死 IDLE（同优先级无他任务，vTaskDelay(0) 自让自）。
+# 渲染满载是 epdiy 设计预期形态，关闭 IDLE 看门狗监控；
+# 渲染挂死由 lcd_do_update 的 10s 超时诊断兜底（真机实证必须）。
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
