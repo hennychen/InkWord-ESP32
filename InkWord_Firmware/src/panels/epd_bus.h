@@ -122,25 +122,37 @@ void bus_diag_ssd16(void);
 /* —— 自动识别探测（2026-09-10 新增） —— */
 
 typedef struct {
-    bool    cog_alive;      /* RST 后 BUSY 忙→闲往返可见 */
+    bool    cog_alive;      /* RST 后 COG 有响应：忙→闲往返可见，或
+                             * BUSY 电平稳定≥500ms（2026-09-16 放宽：
+                             * SSD1677 自检不拉 BUSY，仅往返判据恒 false） */
     bool    busy_idle_high; /* BUSY 空闲电平（true=HIGH=UC 族，false=LOW=SSD16xx 族） */
-    uint8_t status_reg;     /* 状态寄存器读回值（SSD16xx 0x2F / UC 0x71） */
+    bool    busy_saw_pulse; /* RST 观察窗内 BUSY 有忙闲往返（自检忙窗）。
+                             * 2026-09-16 新增：静默屏（SSD1677 实证
+                             * 三轮 5s 无忙窗）作 desc.rst_busy_quiet
+                             * 匹配维度（auto_detect 静默判别阶） */
+    uint8_t status_reg;     /* 状态寄存器读回值（SSD16xx 0x2F / UC 0x71）。
+                             * 注意：SSD1677（GDEQ0426T82）读回无 COG
+                             * 驱动，值为 MCU 发送末位残留（探针 v3
+                             * 命令矩阵实证），不作指纹 */
     uint16_t panel_w;       /* OTP 分辨率宽（像素；SSD16xx 0x44 读回，
-                             * RST 后 OTP 加载值。0=读取失败/UC 族不支持） */
+                             * RST 后 OTP 加载值。0=读取失败/UC 族不支持。
+                             * GDEQ0426T82 实测 0x44/0x45 W-only
+                             * 读回残留，此路径无效） */
     uint16_t panel_h;       /* OTP 分辨率高（像素；SSD16xx 0x45 读回。
                              * UC 族 0x65/0x66 非标准分辨率寄存器，
                              * 读回值经验证后填入，无效则 0） */
 } bus_probe_result_t;
 
 int bus_auto_detect_probe(bus_probe_result_t *out);
-/* 自动识别探测：RST 脉冲 + BUSY 采样 + 状态寄存器读 + 分辨率寄存器读。
- * 不依赖特定面板 desc，通用序列（SSD16xx/UC 族均兼容）。
- * 返回 0=探测成功（out 填结果）；-1=COG 无响应（FPC/接线问题）。
+/* 自动识别探测：RST 脉冲 + BUSY 采样（往返/稳定双判据）+ 状态寄存器读
+ * + 分辨率寄存器读。不依赖特定面板 desc，通用序列（SSD16xx/UC 族均
+ * 兼容）。返回 0=探测成功（out 填结果）；-1=COG 无响应（FPC/接线问题）。
  * out->status_reg 含义由 out->busy_idle_high 决定：
  *   - HIGH (UC 族)：FLG 0x71 读回值（expect 0x02）
- *   - LOW (SSD16xx 族)：0x2F 读回值（SSD1619=0x01，SSD1680 待实测）
+ *   - LOW (SSD16xx 族)：0x2F 读回值（SSD1619=0x01 可靠；SSD1677
+ *     读回无驱动=残留，SSD1680 待实测）
  * out->panel_w/panel_h：
- *   - SSD16xx：0x44/0x45 RAM 窗口寄存器（OTP 加载值，可靠）
+ *   - SSD16xx：0x44/0x45 RAM 窗口寄存器（仅读回有驱动的 COG 有效）
  *   - UC 族：0x65/0x66 尝试读（非标准，可能为 0） */
 
 #ifdef __cplusplus

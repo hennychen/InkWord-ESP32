@@ -214,6 +214,11 @@ extern void test_panel_desc_check_palette_and_timing(void);
 extern void test_panel_desc_check_ops_mandatory(void);
 extern void test_panel_registry_lookup_and_bounds(void);
 extern void test_panel_registry_stubs_contract_valid(void);
+extern void test_panel_auto_detect_probe_fail_returns_null(void);
+extern void test_panel_auto_detect_quiet_ssd16_hits_gdeq0426(void);
+extern void test_panel_auto_detect_otp_unique_first_stage(void);
+extern void test_panel_auto_detect_uc_flgreach_hits_opm(void);
+extern void test_panel_auto_detect_unknown_returns_null(void);
 
 int main(void)
 {
@@ -309,5 +314,10 @@ int main(void)
     RUN_TEST(test_panel_desc_check_ops_mandatory);
     RUN_TEST(test_panel_registry_lookup_and_bounds);
     RUN_TEST(test_panel_registry_stubs_contract_valid);
+    RUN_TEST(test_panel_auto_detect_probe_fail_returns_null);
+    RUN_TEST(test_panel_auto_detect_quiet_ssd16_hits_gdeq0426);
+    RUN_TEST(test_panel_auto_detect_otp_unique_first_stage);
+    RUN_TEST(test_panel_auto_detect_uc_flgreach_hits_opm);
+    RUN_TEST(test_panel_auto_detect_unknown_returns_null);
     return UNITY_END();
 }

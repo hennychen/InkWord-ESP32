@@ -3,18 +3,23 @@
  * @brief epd_panel 单测（开源通用化 Phase 1.5，2026-10-24）
  *
  * desc_check 违规用例矩阵（契约逐项：几何/帧预算/色彩平面/调色板/
- * 时序下限/ops 必填）+ 注册表 API（get_by_id/at/count 边界）。
+ * 时序下限/ops 必填）+ 注册表 API（get_by_id/at/count 边界）+
+ * auto_detect 四阶级联（2026-09-16：bus_auto_detect_probe 桩结果注入，
+ * 静默屏 GDEQ0426T82 判别路径覆盖）。
  *
- * 链接说明：epd_panel.c 的 s_registry extern 引用 10 个 g_panel_*
+ * 链接说明：epd_panel.c 的 s_registry extern 引用 11 个 g_panel_*
  * （真身在 panels 目录的 .cpp，C++/ESP 硬件依赖 native 不可编）——本文件
- * 提供 10 个合法 stub desc 顶替链接位（同时让注册表 API 可被真测，
- * 且每个 stub 须经 desc_check 的免费断言）。
+ * 提供 11 个合法 stub desc 顶替链接位（同时让注册表 API 可被真测，
+ * 且每个 stub 须经 desc_check 的免费断言）。另提供
+ * bus_auto_detect_probe 注入桩（真身在 panels/epd_bus.cpp，Arduino
+ * 依赖）：s_probe_stub 控制探测结果，auto_detect 级联纯逻辑可测。
  *
  * 运行：pio test -e native-test（挂载见 test_srs_engine.c runner）
  */
 #include <string.h>
 #include <unity.h>
 #include "epd_panel.h"
+#include "panels/epd_bus.h"
 
 /* ---- 链接位：panels 目录 g_panel_* 的 native 顶替（均合法 desc） ---- */
 
@@ -22,8 +27,11 @@ static int stub_op_init(void) { return 0; }
 static int stub_op_full(const uint8_t *f) { (void)f; return 0; }
 static void stub_op_nop(void) { }
 
+/* stub 定义非 const：auto_detect 用例需临时定制 otp_signature /
+ * rst_busy_quiet 字段（真 desc 为 const，链接符号不检查限定符，
+ * epd_panel.c 侧 extern const 声明照常命中） */
 #define STUB_PANEL(sym, nm)                                     \
-    const epd_panel_desc_t sym = {                              \
+    epd_panel_desc_t sym = {                                    \
         .name = nm, .controller = EPD_CTRL_UC8253,              \
         .panel_w = 240, .panel_h = 416, .gfx_rotation = 1,      \
         .dpi = 150,                                             \
@@ -52,7 +60,30 @@ STUB_PANEL(g_panel_opm021eb, "opm021eb_bw");
 STUB_PANEL(g_panel_e042a13bw, "e042a13bw_ssd1619");
 STUB_PANEL(g_panel_gdeq031t10, "gdeq031t10_uc8253");
 STUB_PANEL(g_panel_hink_e0213a31, "hink_e0213a31_bw");
+STUB_PANEL(g_panel_e213a57, "e213a57_ssd1680");
 STUB_PANEL(g_panel_gdeq0426t82, "gdeq0426t82_ssd1677");
+
+/* ---- bus_auto_detect_probe 注入桩（auto_detect 级联 native 可测） ----
+ * s_probe_stub_ret=-1：探测失败（默认）；置 0 时 s_probe_stub 作返回值 */
+static bus_probe_result_t s_probe_stub;
+static int s_probe_stub_ret = -1;
+
+int bus_auto_detect_probe(bus_probe_result_t *out)
+{
+    if (s_probe_stub_ret != 0 || !out) return -1;
+    *out = s_probe_stub;
+    return 0;
+}
+
+static void probe_set(bool idle_high, bool pulse, uint8_t otp)
+{
+    memset(&s_probe_stub, 0, sizeof(s_probe_stub));
+    s_probe_stub.cog_alive = true;
+    s_probe_stub.busy_idle_high = idle_high;
+    s_probe_stub.busy_saw_pulse = pulse;
+    s_probe_stub.status_reg = otp;
+    s_probe_stub_ret = 0;
+}
 
 /* ---- desc_check：合法基准与违规矩阵 ---- */
 
@@ -195,7 +226,7 @@ void test_panel_desc_check_ops_mandatory(void)
 
 void test_panel_registry_lookup_and_bounds(void)
 {
-    TEST_ASSERT_EQUAL_INT(10, epd_panel_registry_count());
+    TEST_ASSERT_EQUAL_INT(11, epd_panel_registry_count());
 
     TEST_ASSERT_EQUAL_PTR(&g_panel_depg0370,
                           epd_panel_get_by_id("depg0370_uc8253"));
@@ -205,9 +236,9 @@ void test_panel_registry_lookup_and_bounds(void)
     TEST_ASSERT_NULL(epd_panel_get_by_id(NULL));
 
     TEST_ASSERT_EQUAL_PTR(&g_panel_depg0370, epd_panel_at(0));
-    TEST_ASSERT_EQUAL_PTR(&g_panel_gdeq0426t82, epd_panel_at(9));
+    TEST_ASSERT_EQUAL_PTR(&g_panel_gdeq0426t82, epd_panel_at(10));
     TEST_ASSERT_NULL(epd_panel_at(-1));
-    TEST_ASSERT_NULL(epd_panel_at(10));
+    TEST_ASSERT_NULL(epd_panel_at(11));
 }
 
 void test_panel_registry_stubs_contract_valid(void)
@@ -217,8 +248,55 @@ void test_panel_registry_stubs_contract_valid(void)
         &g_panel_depg0370, &g_panel_e042a13, &g_panel_wf0270,
         &g_panel_gdew027c44, &g_panel_wft0290, &g_panel_opm021eb,
         &g_panel_e042a13bw, &g_panel_gdeq031t10, &g_panel_hink_e0213a31,
-        &g_panel_gdeq0426t82,
+        &g_panel_e213a57, &g_panel_gdeq0426t82,
     };
-    for (int i = 0; i < 10; i++)
+    for (int i = 0; i < 11; i++)
         TEST_ASSERT_EQUAL_INT_MESSAGE(0, check(reg[i]), reg[i]->name);
+}
+
+/* ---- auto_detect 四阶级联（2026-09-16）----
+ * stub 字段语义：全 busy_level=0（UC 特征 idle HIGH），个别定制
+ * otp_signature / rst_busy_quiet 模拟真 desc（stub 非 const 可写）。
+ * 用例按 stub 实际字段构造 probe——测的是级联逻辑，非物理族语义；
+ * 定制字段用后还原，防用例间泄漏 */
+
+void test_panel_auto_detect_probe_fail_returns_null(void)
+{
+    s_probe_stub_ret = -1;
+    TEST_ASSERT_NULL(epd_panel_auto_detect());
+}
+
+void test_panel_auto_detect_quiet_ssd16_hits_gdeq0426(void)
+{
+    /* GDEQ0426T82（SSD1677）：静默屏无指纹（otp 读回残留 0xFF）、
+     * 无分辨率读回——前三阶全落空后静默阶唯一命中 */
+    g_panel_gdeq0426t82.rst_busy_quiet = true;
+    probe_set(true, false, 0xFF);
+    TEST_ASSERT_EQUAL_PTR(&g_panel_gdeq0426t82, epd_panel_auto_detect());
+    g_panel_gdeq0426t82.rst_busy_quiet = false;
+}
+
+void test_panel_auto_detect_otp_unique_first_stage(void)
+{
+    /* SSD1619 指纹 0x01（e042a13 stub 定制）：第一阶唯一命中 */
+    g_panel_e042a13.otp_signature = 0x01;
+    probe_set(true, true, 0x01);
+    TEST_ASSERT_EQUAL_PTR(&g_panel_e042a13, epd_panel_auto_detect());
+    g_panel_e042a13.otp_signature = 0;
+}
+
+void test_panel_auto_detect_uc_flgreach_hits_opm(void)
+{
+    /* UC FLG 0x13（opm stub 定制）：第一阶唯一命中 */
+    g_panel_opm021eb.otp_signature = 0x13;
+    probe_set(true, true, 0x13);
+    TEST_ASSERT_EQUAL_PTR(&g_panel_opm021eb, epd_panel_auto_detect());
+    g_panel_opm021eb.otp_signature = 0;
+}
+
+void test_panel_auto_detect_unknown_returns_null(void)
+{
+    /* 未知指纹 + 有忙窗（静默阶不进）→ NULL 走 NVS fallback */
+    probe_set(true, true, 0x77);
+    TEST_ASSERT_NULL(epd_panel_auto_detect());
 }

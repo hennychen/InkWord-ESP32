@@ -293,6 +293,7 @@ int bus_auto_detect_probe(bus_probe_result_t *out)
     if (!out) return -1;
     out->cog_alive = false;
     out->busy_idle_high = false;
+    out->busy_saw_pulse = false;
     out->status_reg = 0;
     out->panel_w = 0;
     out->panel_h = 0;
@@ -312,15 +313,32 @@ int bus_auto_detect_probe(bus_probe_result_t *out)
     delay(10);
     digitalWrite(EPD_RESET_PIN, HIGH);
 
-    /* 证据①：RST 释放后 5s 窗口观察 BUSY 忙→闲往返（COG boot 自检） */
+    /* 证据①：RST 释放后 5s 窗口观察 BUSY 忙→闲往返（COG boot 自检）。
+     * 2026-09-16 双判据：无忙窗屏（SSD1677 自检不拉 BUSY，探针 v3
+     * 三轮 5s 实证）在电平持续稳定 500ms 后提前退出判活——
+     * 往返与稳定任一成立即 alive；悬空 BUSY 稳定误活的后果与
+     * 判死同为 NVS fallback，无行为恶化 */
     const uint32_t t0 = millis();
     bool saw_high = false, saw_low = false;
+    int last_level = digitalRead(EPD_BUSY_PIN);
+    uint32_t last_change = millis();
+    bool stable_quiet = false;
     while (millis() - t0 < 5000 && !(saw_high && saw_low)) {
-        if (digitalRead(EPD_BUSY_PIN)) saw_high = true;
+        const int lv = digitalRead(EPD_BUSY_PIN);
+        if (lv != last_level) {
+            last_change = millis();
+            last_level = lv;
+        }
+        if (lv) saw_high = true;
         else saw_low = true;
-        delay(10);
+        if (millis() - last_change > 500) {
+            stable_quiet = true;
+            break;
+        }
+        delay(2);
     }
-    out->cog_alive = saw_high && saw_low;
+    out->busy_saw_pulse = saw_high && saw_low;
+    out->cog_alive = out->busy_saw_pulse || stable_quiet;
     if (!out->cog_alive) {
         DIAG_LOG("auto-detect: COG no answer (FPC/VCI/BS wiring?)");
         return -1;
@@ -363,8 +381,10 @@ int bus_auto_detect_probe(bus_probe_result_t *out)
         }
     }
 
-    DIAG_LOG("auto-detect: BUSY idle %s, status=0x%02X, resolution=%ux%u",
+    DIAG_LOG("auto-detect: BUSY idle %s, pulse=%d, status=0x%02X, "
+             "resolution=%ux%u",
              out->busy_idle_high ? "HIGH (UC)" : "LOW (SSD16xx)",
+             (int)out->busy_saw_pulse,
              out->status_reg,
              (unsigned)out->panel_w, (unsigned)out->panel_h);
     return 0;

@@ -85,6 +85,16 @@ typedef struct epd_panel_desc {
     uint16_t            rst_pulse_ms;
     uint8_t             busy_level;     /* BUSY 忙电平（0/1：UC8253 系 LOW
                                          * 忙 / SSD16xx 系 HIGH 忙） */
+    bool                rst_busy_quiet;/* RST 后 BUSY 静默（无自检忙窗）。
+                                         * 2026-09-16 新增：SSD1677
+                                         * （GDEQ0426T82）实测 RST 后 BUSY
+                                         * 三轮 5s 无忙窗，且 0x2F/0x44/0x45
+                                         * 读回全程无 COG 驱动（残留=命令
+                                         * bit0，探针 v1~v4 实证）——忙窗
+                                         * 静默成为其唯一可用指纹，
+                                         * auto_detect 静默判别阶消费。
+                                         * 默认 false=预期有忙窗（SSD1619/
+                                         * SSD1680/UC 族均实证或惯例有） */
     uint32_t            busy_timeout_ms;/* 色彩面板 20~60s 各异，禁用全局默认 */
     uint16_t            power_on_ms, power_off_ms;
     uint32_t            full_ms, partial_ms;
@@ -181,14 +191,20 @@ const epd_panel_desc_t *epd_panel_at(int idx);
 int epd_panel_desc_check(const epd_panel_desc_t *d, char *err, size_t err_len);
 
 /**
- * @brief 面板自动识别（2026-09-10 新增）。
+ * @brief 面板自动识别（2026-09-10 新增，2026-09-16 判活放宽+静默阶）。
  *
- * 分层探测：BUSY 空闲电平判族 → SSD16xx 读 0x2F / UC 读 FLG 0x71 →
- * 遍历注册表匹配 otp_signature。命中返回 desc 指针；未命中返回 NULL
- * （调用方走 NVS fallback → DEFAULT_ID）。
+ * 四阶段级联：BUSY 空闲电平判族 → OTP 指纹（+忙窗约束）→
+ * OTP+分辨率 → 分辨率+BUSY → RST 忙窗静默判别。
+ * 命中返回 desc 指针；未命中返回 NULL（调用方走 NVS fallback
+ * → DEFAULT_ID）。
+ *
+ * 判活（2026-09-16 放宽）：RST 后 BUSY 忙闲往返 OR 电平稳定
+ * ≥500ms（SSD1677 自检不拉 BUSY，原往返判据恒 false 实证）；
+ * 后者对悬空 BUSY 可能误活，但与判死路径同样落入 NVS fallback，
+ * 无行为恶化。
  *
  * 识别成功后调用方应写 NVS set_panel 持久化（下次启动快速路径）。
- * 耗时 ~200ms（RST 脉冲 + BUSY 采样 + 状态读），不阻塞主循环。
+ * 有忙窗屏耗时 ~200ms；静默屏 ~1s（500ms 稳定窗+采样）。
  *
  * @return 命中返回 desc 指针（静态生存期）；未命中返回 NULL。
  */

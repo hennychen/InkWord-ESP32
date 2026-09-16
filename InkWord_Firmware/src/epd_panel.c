@@ -174,9 +174,10 @@ int epd_panel_desc_check(const epd_panel_desc_t *d, char *err, size_t err_len)
 
 #undef DESC_FAIL
 
-/* —— 自动识别（2026-09-10 新增，多维指纹级联匹配） ——
- * 三阶段级联：BUSY 判族 → OTP 指纹 → 分辨率 → 色彩模式。
- * 每阶段匹配后检查唯一性，唯一则命中；碰撞则进入下一阶段细化。
+/* —— 自动识别（2026-09-10 新增，2026-09-16 静默阶扩展） ——
+ * 四阶段级联：BUSY 判族 → OTP 指纹 → OTP+分辨率 → 分辨率+BUSY
+ * → RST 忙窗静默判别。每阶段匹配后检查唯一性，唯一则命中；
+ * 碰撞则进入下一阶段细化。
  * 命中返回 desc 指针；未命中返回 NULL（调用方走 NVS fallback） */
 const epd_panel_desc_t *epd_panel_auto_detect(void)
 {
@@ -186,17 +187,22 @@ const epd_panel_desc_t *epd_panel_auto_detect(void)
         return NULL;
     }
 
-    DIAG_LOG("auto-detect: BUSY=%s OTP=0x%02X resolution=%ux%u",
+    DIAG_LOG("auto-detect: BUSY=%s OTP=0x%02X resolution=%ux%u pulse=%d",
              probe.busy_idle_high ? "HIGH-idle(UC)" : "LOW-idle(SSD16xx)",
              probe.status_reg,
-             (unsigned)probe.panel_w, (unsigned)probe.panel_h);
+             (unsigned)probe.panel_w, (unsigned)probe.panel_h,
+             (int)probe.busy_saw_pulse);
 
     const bool has_res = (probe.panel_w > 0 && probe.panel_h > 0);
     const int count = epd_panel_registry_count();
 
-    /* 辅助宏：BUSY 空闲电平匹配检查 */
+    /* 辅助宏：BUSY 空闲电平匹配 + 忙窗一致性。
+     * desc 声明 rst_busy_quiet（RST 后静默）时要求探测确实无忙窗
+     * （防静默屏被有忙窗屏的 OTP 偶发值错认）；反向不约束
+     * （未实测屏保守，不因无忙窗排除） */
     #define BUSY_MATCH(d) \
-        (((d)->busy_level == 0) == probe.busy_idle_high)
+        ((((d)->busy_level == 0) == probe.busy_idle_high) && \
+         ((d)->rst_busy_quiet ? !probe.busy_saw_pulse : true))
 
     /* === 第一阶：OTP 唯一匹配（最高置信度） ===
      * 同族内 otp_signature 唯一（无碰撞）的面板直接命中 */
@@ -256,6 +262,26 @@ const epd_panel_desc_t *epd_panel_auto_detect(void)
         }
         if (res_count == 1) {
             return res_match;
+        }
+    }
+
+    /* === 第四阶：RST 忙窗静默判别（2026-09-16 新增） ===
+     * 静默屏（SSD1677 实证：RST 后 BUSY 无自检忙窗，且 0x2F/0x44/
+     * 0x45 读回无 COG 驱动，无寄存器指纹可用）的唯一判据：
+     * 探测无忙窗时，族内 rst_busy_quiet=true 的面板唯一则命中。
+     * 当前注册表内仅 GDEQ0426T82（SSD1677）声明静默 */
+    if (!probe.busy_saw_pulse) {
+        const epd_panel_desc_t *quiet_match = NULL;
+        int quiet_count = 0;
+        for (int i = 0; i < count; i++) {
+            const epd_panel_desc_t *d = epd_panel_at(i);
+            if (!d->rst_busy_quiet) continue;
+            if (!BUSY_MATCH(d)) continue;
+            quiet_match = d;
+            quiet_count++;
+        }
+        if (quiet_count == 1) {
+            return quiet_match;
         }
     }
 

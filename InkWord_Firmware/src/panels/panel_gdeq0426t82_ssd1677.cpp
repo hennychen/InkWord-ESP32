@@ -274,7 +274,12 @@ static void panel_deep_sleep(void)
 const epd_panel_desc_t g_panel_gdeq0426t82 = {
     .name       = "gdeq0426t82_ssd1677",
     .controller = EPD_CTRL_SSD1677,
-    .otp_signature = 0,           /* 待实测指纹（自动识别暂不启用） */
+    .otp_signature = 0,           /* 无寄存器指纹可用（2026-09-16 探针
+                                  * v1~v4 四轮实证：0x2F/0x44/0x45 读回
+                                  * 全程无 COG 驱动，读回值=MCU 发送
+                                  * 末位残留，命令 bit0=1 偶发 01 与
+                                  * SSD1619 指纹碰撞不可分辨）——识别
+                                  * 依赖 rst_busy_quiet 静默判别阶 */
     .panel_w    = 800,
     .panel_h    = 480,
     .gfx_rotation = 0,       /* 横向原生面板（gfx 800x480，LAYOUT_LARGE
@@ -298,6 +303,10 @@ const epd_panel_desc_t g_panel_gdeq0426t82 = {
                                    * CPU 逐字节发送，无 DMA 需求） */
     .rst_pulse_ms = 10,           /* demo RST 低脉冲 10ms（STM32/Arduino 一致） */
     .busy_level = 1,              /* BUSY=HIGH 忙（demo + PDF §5 实证） */
+    .rst_busy_quiet = true,       /* RST 后 BUSY 静默无自检忙窗（探针 v3
+                                  * E4 三轮 5s 实证；SSD1619/1680 有忙窗
+                                  * ——族内唯一行为判别，auto_detect
+                                  * 第四阶消费，2026-09-16） */
     .busy_timeout_ms = 6000,     /* 实测两轮 boot 全刷 BUSY 均 <6s 正常
                                   * 完成（epd 阶段 +4.27s 含渲染/传输/
                                   * 波形，0xF7 波形估 ~3.5s+），余量足够 */
@@ -326,8 +335,9 @@ const epd_panel_desc_t g_panel_gdeq0426t82 = {
         .partial      = panel_partial,   /* 双 RAM 差分 + 0x22/0xFF */
         .power_off    = panel_power_off,
         .deep_sleep   = panel_deep_sleep,
-        .probe        = NULL,       /* SSD1677 版本读 0x2F 可作 probe
-                                   * （epd_driver 诊断路径覆盖），留 §14.3 */
+        .probe        = NULL,       /* 版本读不可用（0x2F 读回无驱动，
+                                   * 探针 v1~v4 实证，见 otp_signature
+                                   * 注），留 §14.3 */
         .write_planes = panel_write_planes,
         .diag         = bus_diag_ssd16, /* T1.8：SSD16xx 0x2F 双读 */
     },
