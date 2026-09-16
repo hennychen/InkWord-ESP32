@@ -11,7 +11,7 @@
 # lan/：LAN 图片上传显示（BIGSCREEN_LAN 构建，适配里程碑 M1）
 idf_component_register(
     SRCS "main.c" "driver/panel_es108fc.c" "test/test_basic.c" "test/demo/demo_seller.c"
-         "lan/lan_image.c"
+         "lan/lan_image.c" "lan/waveform_scanq.c"
     INCLUDE_DIRS "." "driver" "config" "test"
     PRIV_REQUIRES epdiy esp_wifi esp_netif esp_event esp_http_server nvs_flash
 )

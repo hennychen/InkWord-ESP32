@@ -10,9 +10,22 @@
 //   2. 灰阶处理：亮度、对比度、Gamma、反色；
 //   3. 输出模式：16 级灰阶直出（4bpp）/ 1bit Floyd-Steinberg 抖动 /
 //      1bit 阈值，阈值可调；
+//   3b. [run100] 默认 1bit FS 抖动：LCD 并行路径不执行波形 phase_times，
+//      gray16 直传的中间灰阶会塌缩为白（bringup 文档 §15）；选灰阶直出时
+//      设备默认再做一次 FS 二值化兜底（/dither 可关），屏显为抖动灰而非
+//      平滑灰，预览仅示量化灰阶、与屏显纹理不同；
+//   3c. [run108] 2bit 抖动：4 级灰（nibble 0/5/10/15）+ FS 误差扩散，量化
+//      误差仅 1bit 的 1/3 → 纹理更细；设备白名单识别后跳过二值化兜底
+//      直传，中间级依赖 scanq 波形，builtin 下塌白可 A/B；
+//   3d. [run108] 清晰度三件套：量化前 USM 锐化（3x3 box 近似，预补墨水屏
+//      边界扩散，照片建议 40~70%）；1bit Bayer 8x8 有序抖动（无 FS 蠕虫/
+//      拖尾，打印业标准手法）；1bit FS 改蛇形扫描（奇偶行反向，消方向纹）；
 //   4. 预览即所得：打包后反解回 canvas，所见即屏显（含灰阶量化误差）；
 //   5. 性能：拖动滑块只做 canvas 变换（实时），松手 220ms 后才做像素级
-//      处理与打包（1920x1080 逐像素在手机上约数百 ms，不可每帧做）。
+//      处理与打包（1920x1080 逐像素在手机上约数百 ms，不可每帧做）；
+//   6. [run109] 波形三态切换：builtin/scanq/binfast 页面直切（原需地址栏
+//      /wf?wf=..），手机即可完成标定循环；binfast 为二值快速波形（更锐更快，
+//      只配 1bit 模式）；nsat/mmax/map 与 bn1/bn2 细参数仍经 /wf 查询串调整。
 //
 // 半字节布局必须与固件 fb 完全一致（偶 x = 低半字节 / 奇 x = 高半字节，
 //   15 = 白、0 = 黑），否则 4bpp 直传（固件端 memcpy）会错位。
@@ -43,7 +56,8 @@ static const char HTML_PAGE[] =
     "#sz{color:#666;font-size:.83rem}"
     "</style></head><body>"
     "<h2>InkWord BigScreen</h2>"
-    "<div class='sub'>10.8 英寸 1920x1080 · 16 级灰阶直出 · 全屏 GC16 刷新约 3-4 秒</div>"
+    "<div class='sub'>10.8 英寸 1920x1080 · 默认 1bit FS 抖动（预览即屏显）· 全屏 GC16 刷新约 3-4 秒</div>"
+    "<div style='margin:8px 0'><a href='/wifi' style='font-size:14px'>⚙ WiFi 设置</a></div>"
 
     "<h3>1 · 选择图片</h3>"
     "<div class='row'><input type='file' id='f' accept='image/*'>"
@@ -77,16 +91,23 @@ static const char HTML_PAGE[] =
     "<input type='range' id='ct' min='0.3' max='3' step='0.01' value='1'></div>"
     "<div class='row'><label>Gamma <span class='v' id='gav'>1.00</span></label>"
     "<input type='range' id='ga' min='0.3' max='3' step='0.01' value='1'></div>"
+    "<div class='row'><label>锐化 <span class='v' id='shv'>0</span></label>"
+    "<input type='range' id='sh' min='0' max='200' step='5' value='0'></div>"
     "<div class='row'><label>反色</label><button id='neg'>关</button></div>"
     "</div>"
 
     "<h3>4 · 输出模式</h3>"
     "<div class='row'>"
-    "<button class='mode on' data-v='gray16'>16 级灰阶</button>"
-    "<button class='mode' data-v='fs'>1bit FS 抖动</button>"
+    "<button class='mode' data-v='gray16'>16 级灰阶</button>"
+    "<button class='mode' data-v='fs2'>2bit 抖动</button>"
+    "<button class='mode on' data-v='fs'>1bit FS</button>"
+    "<button class='mode' data-v='bayer'>1bit Bayer</button>"
     "<button class='mode' data-v='thr'>1bit 阈值</button>"
     "<label id='thrl'>阈值 <span class='v' id='thrv'>128</span></label>"
     "<input type='range' id='thr' min='1' max='254' step='1' value='128'></div>"
+    "<div class='row'><span class='sub'>注：并行管线不执行波形相位时长，16 级灰阶直出中间灰塌缩为白（设备默认 FS 二值化兜底）；"
+    "2bit 中间两级需 scanq 波形（/wf?wf=scanq），builtin 下塌白但黑白级恒稳；"
+    "Bayer 纹理规整无拖尾，FS 蛇形扫描消方向条纹；照片建议锐化 50~150%</span></div>"
 
     "<h3>5 · 预览与上传</h3>"
     "<canvas id='cv' width='1920' height='1080'></canvas>"
@@ -94,9 +115,12 @@ static const char HTML_PAGE[] =
     "<button id='dl' disabled>下载处理后图片</button><span id='sz'></span></div>"
 
     "<h3>屏幕诊断</h3>"
+    "<div class='row'><label>波形</label>"
+    "<button id='wfb'>builtin</button><button id='wfs'>scanq</button>"
+    "<button id='wff'>binfast</button><span id='wfi' class='sub'></span></div>"
     "<div class='row'><button id='wh'>全白</button><button id='bk'>全黑</button>"
-    "<button id='pt'>测试图案</button><button id='pl'>反转极性</button>"
-    "<button id='st'>查询状态</button></div>"
+    "<button id='pt'>测试图案</button><button id='gr'>16 级灰阶</button>"
+    "<button id='pl'>反转极性</button><button id='st'>查询状态</button></div>"
     "<div id='msg'>就绪，请选择图片。</div>"
 
     "<script>"
@@ -105,8 +129,8 @@ static const char HTML_PAGE[] =
     "cx=cv.getContext('2d',{willReadFrequently:true}),"
     "msg=document.getElementById('msg'),up=document.getElementById('up'),"
     "sz=document.getElementById('sz'),dl=document.getElementById('dl');"
-    "let img=null,rot=0,mirH=false,mirV=false,fit='contain',mode='gray16',packed=null;"
-    "const P={zoom:1,ox:0,oy:0,br:0,ct:1,ga:1,neg:false,thr:128};"
+    "let img=null,rot=0,mirH=false,mirV=false,fit='contain',mode='fs',packed=null;"
+    "const P={zoom:1,ox:0,oy:0,br:0,ct:1,ga:1,neg:false,thr:128,sh:0};"
 
     // 仅做 canvas 变换绘制（不含像素处理），供滑块拖动实时反馈
     "function drawOnly(){"
@@ -132,14 +156,28 @@ static const char HTML_PAGE[] =
     " const im=cx.createImageData(W,H),o=im.data;"
     " for(let p=0;p<NP;p++){"
     "  let v;"
-    "  if(mode==='gray16'){const b=packed[p>>1],q=(p&1)?(b>>4):(b&15);v=q*17;}"
+    "  if(mode==='gray16'||mode==='fs2'){const b=packed[p>>1],q=(p&1)?(b>>4):(b&15);v=q*17;}"
     "  else{v=(packed[p>>3]&(128>>(p&7)))?255:0;}"
     "  const i=p<<2;o[i]=v;o[i+1]=v;o[i+2]=v;o[i+3]=255;"
     " }"
     " cx.putImageData(im,0,0);"
     "}"
 
-    // 像素级处理：灰度 -> 亮度/对比度/Gamma/反色 -> 按模式打包
+    // [run108] USM 锐化（3x3 box blur 近似）：v + amt*(v - blur)，预补偿
+    //   墨水屏边界扩散；边界 clamp。另：Bayer 8x8 有序抖动矩阵（0..63）。
+    "const B8=[0,32,8,40,2,34,10,42,48,16,56,24,50,18,58,26,"
+    "12,44,4,36,14,46,6,38,60,28,52,20,62,30,54,22,"
+    "3,35,11,43,1,33,9,41,51,19,59,27,49,17,57,25,"
+    "15,47,7,39,13,45,5,37,63,31,55,23,61,29,53,21];"
+    "function usm(g){"
+    " const amt=P.sh/100,b=new Float32Array(NP);"
+    " for(let y=0;y<H;y++){const ym=(y>0?y-1:0)*W,yp=(y<H-1?y+1:H-1)*W,yr=y*W;"
+    "  for(let x=0;x<W;x++){const xm=x>0?x-1:0,xp=x<W-1?x+1:W-1;"
+    "   b[yr+x]=(g[ym+xm]+g[ym+x]+g[ym+xp]+g[yr+xm]+g[yr+x]+g[yr+xp]"
+    "    +g[yp+xm]+g[yp+x]+g[yp+xp])/9;}}"
+    " for(let p=0;p<NP;p++){const v=g[p]+amt*(g[p]-b[p]);"
+    "  g[p]=v<0?0:(v>255?255:v);}}"
+    // 像素级处理：灰度 -> 亮度/对比度/Gamma/反色/USM -> 按模式打包
     "function process(){"
     " if(!drawOnly()){packed=null;up.disabled=true;dl.disabled=true;sz.textContent='';return;}"
     " const d=cx.getImageData(0,0,W,H).data,g=new Float32Array(NP);"
@@ -151,32 +189,58 @@ static const char HTML_PAGE[] =
     "  if(ga!==1)v=255*Math.pow(v/255,ga);"
     "  g[p]=neg?255-v:v;"
     " }"
-    " if(mode==='gray16'){"
+    " if(P.sh>0)usm(g);"
+    " if(mode==='gray16'||mode==='fs2'){"
     "  packed=new Uint8Array(NP/2);"
-    "  for(let p=0;p<NP;p++){"
-    "   const q=(g[p]*15/255+.5)|0;"
-    "   if(p&1)packed[p>>1]|=q<<4;else packed[p>>1]|=q;"
+    "  if(mode==='gray16'){"
+    "   for(let p=0;p<NP;p++){"
+    "    const q=(g[p]*15/255+.5)|0;"
+    "    if(p&1)packed[p>>1]|=q<<4;else packed[p>>1]|=q;"
+    "   }"
+    "  }else{"
+    // 2bit：4 级 FS（量化步长 85，nibble=q*5），量化误差仅 1bit 的 1/3
+    "   for(let y=0;y<H;y++)for(let x=0;x<W;x++){"
+    "    const p=y*W+x,v=g[p];"
+    "    const q=Math.max(0,Math.min(3,Math.round(v/85)));"
+    "    if(p&1)packed[p>>1]|=q*5<<4;else packed[p>>1]|=q*5;"
+    "    const er=v-q*85;"
+    "    if(x+1<W)g[p+1]+=er*7/16;"
+    "    if(y+1<H){if(x>0)g[p+W-1]+=er*3/16;g[p+W]+=er*5/16;"
+    "     if(x+1<W)g[p+W+1]+=er/16;}"
+    "   }"
     "  }"
     " }else{"
     "  packed=new Uint8Array(NP/8);"
     "  const th=P.thr;"
     "  if(mode==='thr'){"
     "   for(let p=0;p<NP;p++)if(g[p]>=th)packed[p>>3]|=128>>(p&7);"
-    "  }else{"
+    "  }else if(mode==='bayer'){"
+    // Bayer 8x8：有序抖动无蠕虫/拖尾，阈值=(m+0.5)*4 均匀覆盖 0..255
     "   for(let y=0;y<H;y++)for(let x=0;x<W;x++){"
-    "    const p=y*W+x,v=g[p],b=v>=th?1:0;"
-    "    if(b)packed[p>>3]|=128>>(p&7);"
-    "    const er=v-(b?255:0);"
-    "    if(x+1<W)g[p+1]+=er*7/16;"
-    "    if(y+1<H){if(x>0)g[p+W-1]+=er*3/16;g[p+W]+=er*5/16;"
-    "     if(x+1<W)g[p+W+1]+=er/16;}"
+    "    const p=y*W+x;"
+    "    if(g[p]>=(B8[(y&7)*8+(x&7)]+.5)*4)packed[p>>3]|=128>>(p&7);"
+    "   }"
+    "  }else{"
+    // FS 蛇形扫描：奇数行右→左，误差核随扫描向镜像，消方向性条纹
+    "   for(let y=0;y<H;y++){"
+    "    const ltr=(y&1)===0,dx=ltr?1:-1;"
+    "    for(let i=0;i<W;i++){"
+    "     const x=ltr?i:W-1-i,p=y*W+x,v=g[p],b=v>=th?1:0;"
+    "     if(b)packed[p>>3]|=128>>(p&7);"
+    "     const er=v-(b?255:0);"
+    "     if(ltr?x+1<W:x-1>=0)g[p+dx]+=er*7/16;"
+    "     if(y+1<H){"
+    "      if(ltr?x-1>=0:x+1<W)g[p-dx+W]+=er*3/16;"
+    "      g[p+W]+=er*5/16;"
+    "      if(ltr?x+1<W:x-1>=0)g[p+dx+W]+=er/16;}"
+    "    }"
     "   }"
     "  }"
     " }"
     " preview();"
     " up.disabled=false;dl.disabled=false;"
     " sz.textContent='待上传 '+packed.length+' 字节（'"
-    "  +(mode==='gray16'?'4bpp 16 级灰':'1bit 二值')+'）';"
+    "  +(mode==='gray16'?'4bpp 16 级灰':mode==='fs2'?'4bpp 4 级 FS':'1bit 二值')+'）';"
     "}"
 
     // 像素处理较重（手机约数百 ms），滑块拖动只重绘变换，停止 220ms 后才打包
@@ -192,10 +256,10 @@ static const char HTML_PAGE[] =
     " el.oninput();"
     "}"
     "bindSlider('zoom','zoom',2);bindSlider('ox','ox',0);bindSlider('oy','oy',0);"
-    "bindSlider('br','br',0);bindSlider('ct','ct',2);bindSlider('ga','ga',2);"
+    "bindSlider('br','br',0);bindSlider('ct','ct',2);bindSlider('ga','ga',2);bindSlider('sh','sh',0);"
     "document.getElementById('thr').oninput=e=>{"
     " P.thr=parseInt(e.target.value);document.getElementById('thrv').textContent=P.thr;"
-    " if(mode!=='gray16')render();};"
+    " if(mode==='fs'||mode==='thr')render();};"
 
     // 按钮组：旋转 / 适配 / 输出模式（互斥高亮）
     "function group(cls,cb){"
@@ -206,7 +270,7 @@ static const char HTML_PAGE[] =
     "group('rot',v=>{rot=parseInt(v);render();});"
     "group('fit',v=>{fit=v;render();});"
     "group('mode',v=>{mode=v;document.getElementById('thrl').style.opacity="
-    "  v==='gray16'?'.35':'1';render();});"
+    "  (v==='gray16'||v==='fs2'||v==='bayer')?'.35':'1';render();});"
     "document.getElementById('mh').onclick=e=>{mirH=!mirH;"
     " e.target.classList.toggle('on',mirH);render();};"
     "document.getElementById('mv').onclick=e=>{mirV=!mirV;"
@@ -257,6 +321,22 @@ static const char HTML_PAGE[] =
     "document.getElementById('wh').onclick=()=>job('wh','/white','全白');"
     "document.getElementById('bk').onclick=()=>job('bk','/black','全黑');"
     "document.getElementById('pt').onclick=()=>job('pt','/pattern','测试图案');"
+    // [run106] 16 带灰阶标板：builtin 波形下呈 §15 塌缩签名；配 /wf?wf=scanq
+    //   （电脑端或浏览器地址栏访问）可拍照迭代 map 标定，免上传 raw。
+    "document.getElementById('gr').onclick=()=>job('gr','/grayramp','灰阶标板');"
+    // [run109] 波形三态切换：scanq 标灰阶（灰阶标板/2bit）、binfast 二值
+    //   快速（1bit 图片更快更锐）；/wf 响应体带回全部波形参数。
+    "async function setwf(u,label){"
+    " try{const r=await fetch(u);const t=await r.text();"
+    "  msg.textContent='波形→'+label+' HTTP '+r.status+' '+t;"
+    "  try{document.getElementById('wfi').textContent='当前 '+JSON.parse(t).wf;}"
+    "  catch(e){}}"
+    " catch(err){msg.textContent='切换失败: '+err;}}"
+    "document.getElementById('wfb').onclick=()=>setwf('/wf?wf=builtin','builtin');"
+    "document.getElementById('wfs').onclick=()=>setwf('/wf?wf=scanq','scanq');"
+    "document.getElementById('wff').onclick=()=>setwf('/wf?wf=binfast','binfast');"
+    "fetch('/status').then(r=>r.json())"
+    " .then(s=>{document.getElementById('wfi').textContent='当前 '+s.wf;}).catch(()=>{});"
     "document.getElementById('pl').onclick=async()=>{"
     " try{const r=await fetch('/pol');"
     "  msg.textContent='极性已切换 '+await r.text()+'，请再点全白/全黑对比';"
