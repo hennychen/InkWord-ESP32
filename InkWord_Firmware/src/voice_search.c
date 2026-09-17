@@ -514,3 +514,31 @@ bool voice_search_on_button(nav_key_t id, button_event_t event)
     }
     return true;
 }
+
+/* ================================================================
+ * 语音查词栈页 page_t 定义（架构拆分 2026-09-17，自 main.cpp 迁入）
+ * owns_display=false（三色屏零渲染，局刷屏自绘内容区）；
+ * 退出编排收敛于 exit 回调（voice_search_request_exit + 模式归位）。
+ * ================================================================ */
+static bool voice_on_button(nav_key_t id, button_event_t event)
+{
+    if (voice_search_on_button(id, event)) return true;
+    haptic_event(HAPTIC_MODE);   /* 退出模式反馈（原 base 转发语义） */
+    return false;                /* dispatch 统一 pop+render_top 回上级 */
+}
+
+static void voice_enter(void)
+{
+    voice_search_reset();   /* 清态+起任务（调用方已预检 enter 成功） */
+    voice_search_render();  /* 首帧（三色屏零渲染直接 return） */
+}
+
+static void voice_exit(void)
+{
+    voice_search_request_exit();      /* 请求录音/上传任务收尾 */
+    study_mode_exit_voice_search();   /* 模式归位（清态幂等） */
+}
+
+const page_t g_voice_page = { "voice", voice_search_render,
+                              voice_on_button, voice_enter,
+                              voice_exit, false };

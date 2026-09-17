@@ -57,6 +57,8 @@
 #include "review_ui.h"   /* T1.3：复习词表视图（自本文件迁出，修 A1） */
 #include "word_card_ui.h" /* P2 拆分：学习页渲染族（自本文件迁出；
                             * ui_render_word/ui_mean_page_step 等经此声明 */
+#include "word_view_page.h" /* 架构拆分 2026-09-17：词卡通用按键路由
+                              * （自本文件迁出至 word_view_page.c） */
 #include "storage_manager.h"
 #include "refresh_scheduler.h"
 #include "word_parser.h"
@@ -205,17 +207,6 @@ static void base_render(void)
 /* P5 幻影按键吞除武装标志：按键唤醒的会话置位（setup），on_button 吞掉
  * 唤醒后首个中键事件后清位（见 on_button 注释） */
 static bool s_wake_swallow_center = false;
-
-/* ---- 学习视图栈页前置声明（栈串联重构 2026-09-08；定义见
- * base_page_on_button 之后——收藏/墨封录/语音查词经 extern "C" 导出
- * 供 menu_ui.c act_* 引用；错词本仅固件内部引用） ---- */
-extern "C" const page_t g_collection_page;
-extern "C" const page_t g_mastered_page;
-extern "C" const page_t g_voice_page;
-extern const page_t g_wrongbook_page;   /* 仅固件内部引用（无 C 侧）；
-                                        * extern 声明+后置定义保 external
-                                        * linkage（const 聚合无默认初始化
-                                        * 不可 tentative 声明） */
 
 /* ---- 用户自定义长按快捷键执行器（2026-09-03，shortcut_map）----
  * 编排镜像 menu_ui act_*（去掉菜单自退；覆盖层进入均经 page_router_push
@@ -376,9 +367,8 @@ static bool shortcut_try_long(nav_key_t id)
  * 设置，左/右=自评；出厂长按六键；SET 长按=移出收藏/启封（after_*
  * 清空自动归位时退视图），RST 长按=临时视图退出/进错词本。
  * 返回 false=请求退出视图（栈页 dispatch 统一 pop+render_top；base
- * 调用时 m 恒为持久模式，RST/SET 分支不会返回 false） */
-static bool word_view_on_button(study_mode_t m, nav_key_t id,
-                                button_event_t event);
+ * 调用时 m 恒为持久模式，RST/SET 分支不会返回 false）；
+ * word_view_on_button 声明见 word_view_page.h（架构拆分 2026-09-17） */
 
 /* base 页按键编排（P2 路由补完收编 + 栈串联重构 2026-09-08 瘦身）：
  * pron 短事务前置（与栈互斥，base 层触发）→ 待机页转发 → 长按功能
@@ -502,245 +492,6 @@ static bool base_page_on_button(nav_key_t id, button_event_t event)
      * 临时视图专属分支由栈页侧消费） */
     return word_view_on_button(study_mode_current(), id, event);
 }
-
-/* ---- word_view_on_button 实现（提取自原 base 通用词卡路由，
- * 行为零变化 + 栈化清空退视图；见前置声明处协议注释） ---- */
-static bool word_view_on_button(study_mode_t m, nav_key_t id,
-                                button_event_t event)
-{
-    if (event == BUTTON_EVENT_LONG_PRESS) {
-        switch (id) {
-        case NAV_CENTER:
-            page_router_push(&g_menu_ui_page);   /* T1.4：enter=menu_ui_enter */
-            return true;
-        case NAV_UP:
-            LOG_I("user requested ghost-clear full refresh");
-            refresh_force_full();
-            return true;
-        case NAV_DOWN:
-            /* 切换学习模式并重绘（ui_render_word 检测到模式变化自动全刷） */
-            haptic_event(HAPTIC_MODE);   /* 模式切换 50ms（PRD 5.4） */
-            ui_sfx_play(UI_SFX_MODE);    /* T1.6 模式切换音「滴--」 */
-            study_mode_switch_next();
-            page_router_render_top();
-            return true;
-        case NAV_LEFT:
-            page_router_push(&g_portal_page);   /* 栈串联：portal 栈化 */
-            return true;
-        case NAV_RIGHT:
-            page_router_push(&g_lan_page);      /* 栈串联：LAN 接收页栈化 */
-            return true;
-        case NAV_SET:
-            /* 收藏/取消当前词（P1）：局部重绘内容区刷新 * 标记；
-             * 阅读模式无“当前词”概念，不响应；
-             * 收藏视图（MODE_COLLECTION）内=移出序列（after_uncollect
-             * 收缩钳位，清空自动退视图），2026-08-23；
-             * 墨封录（MODE_MASTERED）内=启封当前词移出序列
-             * （after_master 同构，启封无动画，2026-09-04）；栈化后
-             * 清空（after_* 内部归位 FLASH）以模式变化判据退视图 */
-            if (m == MODE_READER) return true;
-            haptic_event(HAPTIC_REVIEW); /* 确认型操作归自评档 30ms */
-            if (m == MODE_MASTERED) {
-                learning_state_toggle_master(study_mode_current_word_index());
-                study_mode_after_master();
-                if (study_mode_current() != MODE_MASTERED)
-                    return false;   /* 清空：退视图回上级（栈页 pop） */
-                page_router_render_top();   /* 游标收缩留视图重绘 */
-                return true;
-            }
-            learning_state_toggle_collect(study_mode_current_word_index());
-            if (m == MODE_COLLECTION) {
-                study_mode_after_uncollect();
-                if (study_mode_current() != MODE_COLLECTION)
-                    return false;   /* 清空：退视图回上级 */
-            }
-            page_router_render_top();  /* 星标局部重绘/游标收缩 */
-            return true;
-        case NAV_RST:
-            /* 临时视图=RST 长按退出（原四级判语义；dispatch 统一 pop
-             * 回上级）；base=进错词本（无错词 100ms 长震+拒绝音，PRD 5.4） */
-            if (m == MODE_WRONGBOOK || m == MODE_COLLECTION ||
-                m == MODE_MASTERED)
-                return false;
-            if (!study_mode_enter_wrongbook()) {
-                haptic_event(HAPTIC_ERROR);
-                ui_sfx_play(UI_SFX_ERR); /* T1.6 边界拒绝音「嘟-」 */
-                return true;
-            }
-            haptic_event(HAPTIC_MODE);
-            page_router_push(&g_wrongbook_page);   /* 状态已置，enter=首帧 */
-            return true;
-        default:
-            return true;
-        }
-    }
-    if (event != BUTTON_EVENT_SHORT_PRESS) return true;
-
-    /* 短按：上/下翻词（释义多页时先词内翻释义页），中=发音，
-     * SET=遮蔽/揭晓释义，RST=直达设置页（2026-08-27 音量等高频项
-     * 快速触达）；左=自评「忘记」Q1，右=自评「简单」Q5（FSRS 评分入
-     * learning_state，错词本内答对自动移出，序列清空自动退视图） */
-    switch (id) {
-    case NAV_UP:
-        if (ui_mean_page_step(-1)) return true;  /* 释义多页：词内上一页 */
-        study_mode_handle_action(0);   /* prev */
-        return true;
-    case NAV_DOWN:
-        if (ui_mean_page_step(+1)) return true;  /* 释义多页：词内下一页 */
-        study_mode_handle_action(1);   /* next */
-        return true;
-    case NAV_CENTER:
-        study_mode_handle_action(3);   /* speak */
-        return true;
-    case NAV_SET:
-        study_mode_handle_action(2);   /* confirm：遮蔽/揭晓释义 */
-        return true;
-    case NAV_RST:
-        page_router_push(&g_settings_ui_page);  /* T1.4：enter=settings_ui_enter */
-        return true;
-    case NAV_LEFT:
-        learning_state_apply_quality(study_mode_current_word_index(), 1);
-        haptic_event(HAPTIC_REVIEW);   /* 自评提交 30ms（PRD 5.4） */
-        ui_sfx_play(UI_SFX_RATE);      /* T1.6 自评提交音「滴答」 */
-        if (study_mode_after_quality(1))
-            page_router_render_top();
-        return true;
-    case NAV_RIGHT:
-        learning_state_apply_quality(study_mode_current_word_index(), 5);
-        haptic_event(HAPTIC_REVIEW);   /* 自评提交 30ms（PRD 5.4） */
-        ui_sfx_play(UI_SFX_RATE);      /* T1.6 自评提交音「滴答」 */
-        /* 2026-09-04：自评简单联动墨封——用户认为简单=已掌握，
-         * 置位方向播旋转盖章动画（toggle 幂等，已墨封词不重复触发） */
-        {
-            int wi_rt = study_mode_current_word_index();
-            if (wi_rt >= 0) {
-                bool just_mastered = learning_state_toggle_master(wi_rt);
-                if (just_mastered) ui_stamp_play();
-            }
-        }
-        /* 墨封/自评后序列收缩 + 清空自动退视图（原 base 层清空退闪卡
-         * 由 render_top 自适应；栈化后模式归位=pop 栈页回上级） */
-        study_mode_after_master();
-        if ((m == MODE_WRONGBOOK || m == MODE_MASTERED) &&
-            study_mode_current() != m)
-            return false;   /* 清空：退视图回上级 */
-        page_router_render_top();
-        return true;
-    default:
-        return true;
-    }
-}
-
-/* ---- 学习视图栈页（栈串联重构 2026-09-08）：错词本/收藏/墨封录/
- * 语音查词临时视图补齐 page_t 协议入栈（P4 收编）。owns_display=
- * false 复用渲染族（quiz/chat 先例，top_owns_display 守卫放行）；
- * on_button 与 base 同源（word_view_on_button；false=清空/退出 →
- * dispatch 统一 pop+render_top，pop 时 exit 幂等清态回上级——
- * 「从哪进退哪」）。enter 语义按调用方约定分两类：collection/
- * mastered 由菜单/快捷键计数预检（非零必成功）后 push，enter 置
- * 状态+首帧；wrongbook/voice 调用方先 enter_xxx（bool 预检反馈，
- * 失败长震留原页），enter 仅首帧/reset ---- */
-
-static void wrongbook_render(void)
-{
-    ui_render_word(MODE_WRONGBOOK, study_mode_current_word_index());
-}
-
-static void wrongbook_enter(void)
-{
-    wrongbook_render();   /* 状态由调用方 enter_wrongbook 先置（预检） */
-}
-
-static void wrongbook_exit(void)
-{
-    study_mode_exit_wrongbook();
-}
-
-static bool wrongbook_on_button(nav_key_t id, button_event_t event)
-{
-    return word_view_on_button(MODE_WRONGBOOK, id, event);
-}
-
-const page_t g_wrongbook_page = { "wrongbook", wrongbook_render,
-                                  wrongbook_on_button, wrongbook_enter,
-                                  wrongbook_exit, false };
-
-static void collection_render(void)
-{
-    ui_render_word(MODE_COLLECTION, study_mode_current_word_index());
-}
-
-static void collection_enter(void)
-{
-    study_mode_enter_collection();   /* 调用方计数预检非零必成功 */
-    collection_render();             /* 首帧（ui_render_word 模式变化全刷） */
-}
-
-static void collection_exit(void)
-{
-    study_mode_exit_collection();
-}
-
-static bool collection_on_button(nav_key_t id, button_event_t event)
-{
-    return word_view_on_button(MODE_COLLECTION, id, event);
-}
-
-extern "C" const page_t g_collection_page = { "collection", collection_render,
-                                              collection_on_button,
-                                              collection_enter,
-                                              collection_exit, false };
-
-static void mastered_render(void)
-{
-    ui_render_word(MODE_MASTERED, study_mode_current_word_index());
-}
-
-static void mastered_enter(void)
-{
-    study_mode_enter_mastered();   /* act_collection 同构（预检必成功） */
-    mastered_render();
-}
-
-static void mastered_exit(void)
-{
-    study_mode_exit_mastered();
-}
-
-static bool mastered_on_button(nav_key_t id, button_event_t event)
-{
-    return word_view_on_button(MODE_MASTERED, id, event);
-}
-
-extern "C" const page_t g_mastered_page = { "mastered", mastered_render,
-                                            mastered_on_button,
-                                            mastered_enter, mastered_exit,
-                                            false };
-
-/* 语音查词：退出编排收敛于 exit 回调（voice_search.h 生命周期注释的
- * 「main.cpp 编排层」职责栈化内聚；haptic 退出反馈保留在 on_button） */
-static bool voice_on_button(nav_key_t id, button_event_t event)
-{
-    if (voice_search_on_button(id, event)) return true;
-    haptic_event(HAPTIC_MODE);   /* 退出模式反馈（原 base 转发语义） */
-    return false;                /* dispatch 统一 pop+render_top 回上级 */
-}
-
-static void voice_enter(void)
-{
-    voice_search_reset();   /* 清态+起任务（调用方已预检 enter 成功） */
-    voice_search_render();  /* 首帧（三色屏零渲染直接 return） */
-}
-
-static void voice_exit(void)
-{
-    voice_search_request_exit();      /* 请求录音/上传任务收尾 */
-    study_mode_exit_voice_search();   /* 模式归位（清态幂等） */
-}
-
-extern "C" const page_t g_voice_page = { "voice", voice_search_render,
-                                         voice_on_button, voice_enter,
-                                         voice_exit, false };
 
 /* T1.4 base 页注册（P2 路由补完：on_button 经 dispatch 栈空转发）；
  * enter/exit 无（常驻） */

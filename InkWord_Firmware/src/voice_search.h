@@ -24,11 +24,16 @@
 #define INKWORD_VOICE_SEARCH_H
 
 #include "button_handler.h"
+#include "page_router.h"    /* page_t（语音查词栈页声明） */
 #include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* 语音查词栈页（架构拆分 2026-09-17，定义迁 voice_search.c）：
+ * 供 main.cpp shortcut_exec 及 menu_ui.c act_voice_search 入栈引用 */
+extern const page_t g_voice_page;
 
 /** 四态 */
 typedef enum {

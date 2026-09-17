@@ -87,10 +87,8 @@ static const char *TAG = "MENU_UI";
 
 /* main.cpp 导出（study_mode_machine.c 引用 ui_render_word 同款先例） */
 extern const char *fw_version(void);
-/* 栈串联重构：学习视图栈页（main.cpp 定义，deck_flow_switch 导出先例） */
-extern const page_t g_collection_page;
-extern const page_t g_mastered_page;
-extern const page_t g_voice_page;
+/* 学习视图栈页 g_collection_page/g_mastered_page 经 study_mode_machine.h；
+ * g_voice_page 经 voice_search.h（架构拆分 2026-09-17，定义迁各模块） */
 /* T1.2：quiz_flow_start 迁 quiz_ui.c 或 quiz_ui_start（quiz_ui.h） */
 
 /* ---- 几何派生（MENU_DESIGN §4.2，全档运行期） ---- */

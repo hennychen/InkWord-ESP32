@@ -28,6 +28,8 @@
 #include "page_router.h" /* T1.4：渲染恢复经 render_top（pron 恢复路径） */
 #include "reader_engine.h"   /* READER 模式：页序列/字号切换/进度恢复 */
 #include "chapter_index.h"   /* 2026-09-05 阅读器增强：章节跳转 */
+#include "word_card_ui.h"    /* 架构拆分 2026-09-17：page 回调 ui_render_word */
+#include "word_view_page.h"  /* 架构拆分 2026-09-17：page 回调 word_view_on_button */
 
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -680,3 +682,89 @@ int study_mode_seq_total(void)
 {
     return seq_total();
 }
+
+/* ================================================================
+ * 学习视图栈页 page_t 定义（架构拆分 2026-09-17，自 main.cpp 迁入）
+ * owns_display=false 复用渲染族（ui_render_word）；on_button 委托
+ * word_view_on_button（base + 栈页同源），返回 false 时 dispatch
+ * 统一 pop+render_top 回上级。
+ * ================================================================ */
+
+/* ---- 错词本 ---- */
+static void wrongbook_render(void)
+{
+    ui_render_word(MODE_WRONGBOOK, study_mode_current_word_index());
+}
+
+static void wrongbook_enter(void)
+{
+    wrongbook_render();   /* 状态由调用方 enter_wrongbook 先置（预检） */
+}
+
+static void wrongbook_exit(void)
+{
+    study_mode_exit_wrongbook();
+}
+
+static bool wrongbook_on_button(nav_key_t id, button_event_t event)
+{
+    return word_view_on_button(MODE_WRONGBOOK, id, event);
+}
+
+const page_t g_wrongbook_page = { "wrongbook", wrongbook_render,
+                                  wrongbook_on_button, wrongbook_enter,
+                                  wrongbook_exit, false };
+
+/* ---- 收藏浏览 ---- */
+static void collection_render(void)
+{
+    ui_render_word(MODE_COLLECTION, study_mode_current_word_index());
+}
+
+static void collection_enter(void)
+{
+    study_mode_enter_collection();   /* 调用方计数预检非零必成功 */
+    collection_render();             /* 首帧（ui_render_word 模式变化全刷） */
+}
+
+static void collection_exit(void)
+{
+    study_mode_exit_collection();
+}
+
+static bool collection_on_button(nav_key_t id, button_event_t event)
+{
+    return word_view_on_button(MODE_COLLECTION, id, event);
+}
+
+const page_t g_collection_page = { "collection", collection_render,
+                                   collection_on_button,
+                                   collection_enter,
+                                   collection_exit, false };
+
+/* ---- 墨封录 ---- */
+static void mastered_render(void)
+{
+    ui_render_word(MODE_MASTERED, study_mode_current_word_index());
+}
+
+static void mastered_enter(void)
+{
+    study_mode_enter_mastered();   /* act_collection 同构（预检必成功） */
+    mastered_render();
+}
+
+static void mastered_exit(void)
+{
+    study_mode_exit_mastered();
+}
+
+static bool mastered_on_button(nav_key_t id, button_event_t event)
+{
+    return word_view_on_button(MODE_MASTERED, id, event);
+}
+
+const page_t g_mastered_page = { "mastered", mastered_render,
+                                 mastered_on_button,
+                                 mastered_enter, mastered_exit,
+                                 false };

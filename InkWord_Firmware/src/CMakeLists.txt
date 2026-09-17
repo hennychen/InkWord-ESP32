@@ -71,6 +71,7 @@ idf_component_register(
         "browse_mode.c"      # 教材目录三级视图（MODE_BROWSE 临时视图：年级→单元→词表）
         "voice_search.c"     # AI 语音查词四态状态机（MODE_VOICE 临时视图：录音→上传→候选）
         "study_mode_machine.c"
+        "word_view_page.c"   # 架构拆分 2026-09-17：词卡通用按键路由（自 main.cpp 迁出）
         "page_router.c"     # T1.4 页面路由：base+覆盖层栈（page_t 协议，双轨同步）
         "selftest_diff.c"   # T2.2 黄金帧 diff 纯函数（native-test 覆盖灵敏度）
         "lan_proto.c"      # T2.3 LAN 直传协议 v2 帧分类/头解析（native-test 覆盖）

@@ -24,11 +24,19 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "chat_mode.h"   /* A1：chat_request_t（enter_chat 模式透传） */
+#include "chat_mode.h"      /* A1：chat_request_t（enter_chat 模式透传） */
+#include "page_router.h"    /* page_t（错词本/收藏/墨封录栈页声明） */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* ---- 学习视图栈页（架构拆分 2026-09-17，定义迁 study_mode_machine.c）：
+ * 错词本/收藏/墨封录临时视图 page_t 全局，供 main.cpp shortcut_exec /
+ * word_view_on_button 及 menu_ui.c act_* 入栈引用 ---- */
+extern const page_t g_wrongbook_page;
+extern const page_t g_collection_page;
+extern const page_t g_mastered_page;
 
 typedef enum {
     MODE_FLASH = 0,      /**< 闪卡：看词猜义 */
