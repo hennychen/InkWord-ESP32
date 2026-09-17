@@ -20,6 +20,7 @@
 //   3d. [run108] 清晰度三件套：量化前 USM 锐化（3x3 box 近似，预补墨水屏
 //      边界扩散，照片建议 40~70%）；1bit Bayer 8x8 有序抖动（无 FS 蠕虫/
 //      拖尾，打印业标准手法）；1bit FS 改蛇形扫描（奇偶行反向，消方向纹）；
+//      [2026-09-17] USM 默认 0→50（墨水屏物理边界扩散普适，文字图可手动归零）
 //   4. 预览即所得：打包后反解回 canvas，所见即屏显（含灰阶量化误差）；
 //   5. 性能：拖动滑块只做 canvas 变换（实时），松手 220ms 后才做像素级
 //      处理与打包（1920x1080 逐像素在手机上约数百 ms，不可每帧做）；
@@ -91,8 +92,8 @@ static const char HTML_PAGE[] =
     "<input type='range' id='ct' min='0.3' max='3' step='0.01' value='1'></div>"
     "<div class='row'><label>Gamma <span class='v' id='gav'>1.00</span></label>"
     "<input type='range' id='ga' min='0.3' max='3' step='0.01' value='1'></div>"
-    "<div class='row'><label>锐化 <span class='v' id='shv'>0</span></label>"
-    "<input type='range' id='sh' min='0' max='200' step='5' value='0'></div>"
+    "<div class='row'><label>锐化 <span class='v' id='shv'>50</span></label>"
+    "<input type='range' id='sh' min='0' max='200' step='5' value='50'></div>"
     "<div class='row'><label>反色</label><button id='neg'>关</button></div>"
     "</div>"
 
@@ -105,8 +106,9 @@ static const char HTML_PAGE[] =
     "<button class='mode' data-v='thr'>1bit 阈值</button>"
     "<label id='thrl'>阈值 <span class='v' id='thrv'>128</span></label>"
     "<input type='range' id='thr' min='1' max='254' step='1' value='128'></div>"
-    "<div class='row'><span class='sub'>注：并行管线不执行波形相位时长，16 级灰阶直出中间灰塌缩为白（设备默认 FS 二值化兜底）；"
-    "2bit 中间两级需 scanq 波形（/wf?wf=scanq），builtin 下塌白但黑白级恒稳；"
+    "<div class='row'><span class='sub'>注：并行管线不执行波形相位时长，16 级灰阶直出中间灰塌缩为白；"
+    "产品固件（APP 版）对灰阶/2bit 上传一律 FS 抖动呈现（2026-09-17 起，观感同 1bit FS），"
+    "实验台固件配 /dither=off + /wf?wf=scanq 可物理灰阶；"
     "Bayer 纹理规整无拖尾，FS 蛇形扫描消方向条纹；照片建议锐化 50~150%</span></div>"
 
     "<h3>5 · 预览与上传</h3>"
@@ -130,11 +132,34 @@ static const char HTML_PAGE[] =
     "msg=document.getElementById('msg'),up=document.getElementById('up'),"
     "sz=document.getElementById('sz'),dl=document.getElementById('dl');"
     "let img=null,rot=0,mirH=false,mirV=false,fit='contain',mode='fs',packed=null;"
-    "const P={zoom:1,ox:0,oy:0,br:0,ct:1,ga:1,neg:false,thr:128,sh:0};"
+    "const P={zoom:1,ox:0,oy:0,br:0,ct:1,ga:1,neg:false,thr:128,sh:50};"
+
+    // [run111] 高质量降采样：大图一步 drawImage 到 1920x1080 会因浏览器低质
+    //   插值 + 跳采样丢细节/生摩尔纹（上传图片发糊的客户端根因之一）。
+    //   prep 缓存按 图片id+量化步长 键控，滑块拖动中复用；金字塔逐级减半
+    //   降采样后再交付主画布变换（旋转/镜像/偏移仍走原路径）。
+    "let imgSeq=0,prep=null,prepKey='';"
+    "function makePrep(sx,sy){"
+    " const k=imgSeq+'|'+(Math.round(sx*20)/20)+'|'+(Math.round(sy*20)/20);"
+    " if(k===prepKey)return;"
+    " let src=img,sw=img.width,sh=img.height;"
+    " const tw=Math.max(1,Math.round(sw*sx)),th=Math.max(1,Math.round(sh*sy));"
+    " while(sw>=tw*2&&sh>=th*2){"
+    "  sw=Math.max(tw,Math.round(sw/2));sh=Math.max(th,Math.round(sh/2));"
+    "  const c=document.createElement('canvas');c.width=sw;c.height=sh;"
+    "  const cc=c.getContext('2d');cc.imageSmoothingEnabled=true;"
+    "  cc.imageSmoothingQuality='high';cc.drawImage(src,0,0,sw,sh);src=c;"
+    " }"
+    " const c=document.createElement('canvas');c.width=tw;c.height=th;"
+    " const cc=c.getContext('2d');cc.imageSmoothingEnabled=true;"
+    " cc.imageSmoothingQuality='high';cc.drawImage(src,0,0,tw,th);"
+    " prep=c;prepKey=k;"
+    "}"
 
     // 仅做 canvas 变换绘制（不含像素处理），供滑块拖动实时反馈
     "function drawOnly(){"
     " cx.setTransform(1,0,0,1,0,0);"
+    " cx.imageSmoothingEnabled=true;cx.imageSmoothingQuality='high';"
     " cx.fillStyle='#fff';cx.fillRect(0,0,W,H);"
     " if(!img)return false;"
     " const swap=(rot===90||rot===270);"
@@ -143,10 +168,12 @@ static const char HTML_PAGE[] =
     " if(fit==='stretch'){sx=W/img.width;sy=H/img.height;}"
     " else{const s=fit==='contain'?Math.min(W/iw,H/ih):Math.max(W/iw,H/ih);sx=sy=s;}"
     " sx*=P.zoom;sy*=P.zoom;"
+    " makePrep(sx,sy);"
     " cx.translate(W/2+P.ox,H/2+P.oy);"
     " cx.rotate(rot*Math.PI/180);"
     " cx.scale(sx*(mirH?-1:1),sy*(mirV?-1:1));"
-    " cx.drawImage(img,-img.width/2,-img.height/2);"
+    // prep 以原图尺寸为目的地绘制：缩放补偿取整误差，旋转/镜像几何不变
+    " cx.drawImage(prep,-img.width/2,-img.height/2,img.width,img.height);"
     " cx.setTransform(1,0,0,1,0,0);"
     " return true;"
     "}"
@@ -282,7 +309,7 @@ static const char HTML_PAGE[] =
     " const file=e.target.files[0];if(!file)return;"
     " msg.textContent='读取图片中...';"
     " const im=new Image();"
-    " im.onload=()=>{img=im;"
+    " im.onload=()=>{img=im;imgSeq++;prepKey='';"
     "  document.getElementById('dim').textContent=im.width+' x '+im.height+' · '+file.name;"
     // 竖图自动转 90°：手机照片多为竖向，横屏下 contain 会留大片白边
     "  if(im.height>im.width){rot=90;"

@@ -1,0 +1,126 @@
+# BigScreen 上传图片不清晰问题分析与改进记录（run111）
+
+> 日期：2026-09-17 · 涉及工程：`InkWord_Firmware_BigScreen`
+> 状态：客户端缩放已修复（run111 上板验证）；专用波形待外部输入
+
+## 1. 问题
+
+LAN 发送页面上传图片到 ES108FC1C1 10.8" 屏后显示不清晰。
+
+## 2. 显示管线回顾
+
+```
+浏览器 canvas：变换（旋转/镜像/适配/缩放/偏移）→ 灰度/亮度/对比度/Gamma/USM
+  → 量化（1bit FS 蛇形 / Bayer 8x8 / 阈值 / 2bit FS / 16 级灰直出）
+  → POST /upload（1bit=259200B 或 4bpp=1036800B）
+设备端：解包入 epdiy 4bpp fb →（4bpp 且非 2bit 白名单时设备侧 FS 二值化兜底）
+  → 全屏 GC16 diff 更新（波形三态 builtin/scanq/binfast 可切换）
+```
+
+## 3. 根因分层结论（按影响排序）
+
+| # | 层 | 根因 | 状态 |
+|---|---|---|---|
+| 1 | 波形 | 借用 ED047TC1（9.7" 通用）波形驱 ES108FC1C1；LCD 并行路径不执行 phase_times → §15 灰阶塌缩、边界驱不满 | **待专用波形**（display_config.h TODO(A)） |
+| 2 | 客户端缩放 | drawImage 一步缩到 1920x1080，默认低质插值 + 跳采样丢细节/生摩尔纹 | **run111 已修** |
+| 3 | 量化 | 1bit 抖动物理极限（~204ppi 颗粒感固有）；USM 50 对文字图偏多 | 参数调整即可（页面滑块/模式） |
+| 4 | diff 刷新 | 连续上传时仅变化像素被驱，波形不匹配时小幅跃迁驱不干净 → 残影累积 | 缓解：传图前先点"全白" |
+
+## 4. 硬件核对结论（2026-09-17，对照卖家 ESP32-S3 引脚图 + FPC_OUT1 图）
+
+- **D7 引脚疑点已排除**：引脚图 pin12 标注 "IO19" 为笔误（GPIO18 实际在 pin26），
+  卖家确认 FPC D7 接 GPIO8，GPIO19 为按键 ADC 专用。`board_config.h` 的
+  `EPD_PIN_D7=8` 正确。
+- D0-D15/CKH/CKV/STH/LEH/STV/I2C 全部核对一致。
+- 卖家 FPC 为 **34pin 自研方案**（含 ±15V/+22V/-20V/VCOM/16bit 数据/OE/MODE 硬拉
+  EPD_VDD、EPD_DIR 10K 上拉 3V3），与 NekoInk 50pin 参考引脚号完全不同 →
+  **NekoInk 的 pin31 上拉 / pin43 GDSP / pin36 SDCE0 三条注意事项不适用本板**。
+- 8080 并口时序为标准（NekoInk 作者确认），命令链路无问题。
+
+## 5. 专用波形获取与接入工具链
+
+### 5.1 现状
+
+NekoInk 仓库（zephray/NekoInk，已停止维护，后继为 GitLab Glider）：
+- 有 ES108FC1 的 39-50pin 适配板 KiCAD 文件；
+- `utils/wbf_waveform_dump` 模式表中含 ES108FC1 条目
+  （wbf 版本 0x18/0x20，模式 INIT/DU/GC16/GL16×3/A2），但**波形数据文件未入库**。
+
+### 5.2 获取路径（二选一）
+
+1. 联系 NekoInk 作者（Wenting Zhang）索取 ES108FC1 wbf dump；
+2. 从联想 Yoga Book C930（该屏来源机型）固件提取 wbf，
+   经 `wbf_waveform_dump` 转 iwf（descriptor .iwf + PREFIX_M*_T*.csv）。
+
+### 5.3 转换工具（已就绪，实测通过）
+
+`tools/iwf2epdiy.py`：iwf → epdiy 波形 C 头。已用 NekoInk 官方样例
+（gdew101_gd，5 模式）验证转换正确，产出结构与 `epdiy_ED047TC1.h` 同构。
+
+```bash
+python3 tools/iwf2epdiy.py es108fc1.iwf src/config/waveform_ES108FC1.h --name ES108FC1
+```
+
+然后 `display_config.h` 的 `PANEL_WAVEFORM` 改为 `ES108FC1`。
+
+关键映射（勿凭直觉改）：
+- iwf 电压码：0=GND、1=VNEG(驱黑)、2=VPOS(驱白)、3=Keep；
+- epdiy 电压码：1=驱白、2=驱黑（ED047TC1 GC16 白基线实证口径）；
+- 即 iwf 1→2、2→1；
+- epdiy lut 布局：`data[phase][from][4]`，byte=`to>>2`、shift=`6-2*(to&3)`
+  （与 `tools/decode_waveform.py` / `waveform_scanq.c` 逐位一致）。
+
+**首验注意**：极性映射为推定，上屏若黑白互换，对调脚本 `IWF_TO_EPDIY`
+表中的 1/2 重跑即可。
+
+### 5.4 波形到位后的验证
+
+烧录后用页面"16 级灰阶"按钮（/grayramp 标板，run106/107）拍照判读：
+带 0 黑、带 15 白、中间带 1-14 应呈渐变而非塌白（§15 签名消失即根治）。
+
+## 6. run111：客户端缩放质量修复（已上板）
+
+改动 `lan_page.h`：
+- `drawOnly()` 前置 `makePrep(sx,sy)`：金字塔逐级减半降采样到目标分辨率，
+  全程 `imageSmoothingQuality='high'`；
+- prep 缓存键 = 图片序号 + 缩放量化步长（5%），滑块拖动复用不卡顿；
+- prep 以原图尺寸为目的地绘制（`drawImage(prep,-w/2,-h/2,w,h)`），
+  缩放补偿取整误差，旋转/镜像/偏移几何路径不变；
+- 图片载入 `imgSeq++` 失效缓存。
+
+`lan_image.c` `LAN_BUILD_TAG` → "run111"（含注释）。烧录验证：
+串口心跳 `alive [run111]`，`/status` 确认，页面含新代码，
+NVS WiFi 自动重连正常（STA IP 直连可达）。
+
+## 7. 测试图
+
+`InkWord-ESP32/inkword_test_1920x1080.png`（Pillow 生成，1920×1080 灰度，
+与屏物理分辨率 1:1，用「完整显示」上传即无缩放干扰）。
+
+| 区域 | 判读目标 |
+|---|---|
+| 48→12px 分级中文小字 | 文字可读下限、笔画边缘是否发虚 |
+| 16 级灰阶条（带号） | 灰阶塌缩复证 / FS 抖动纹理均匀性 |
+| 1/2/4/8px 横竖细线 | 细线缺失/糊灰（binfast vs builtin A/B 关键指标） |
+| 16px 棋盘 | 高频翻转稳定性、鬼影 |
+| 同心圆（8px 间距） | 摩尔纹、圆弧锯齿 |
+| 斜线楔形 + 纯黑/纯白饱和块 | 饱和度（波形驱不满的直接证据） |
+
+建议流程：1bit FS + builtin 刷一次 → 切 binfast 再刷对比细线/文字 →
+（灰阶验证）scanq + /dither=off + 16 级灰模式。
+注：1px 细线融入 FS 噪点属正常，重点看 2px 以上。
+
+## 8. 烧录/验证环境备忘
+
+- 环境：`pio run -e bigscreen-lan`（pio 路径
+  `/Users/pm/Library/Python/3.9/bin/pio`），串口 `/dev/cu.wchusbserial10`；
+- 烧录失败 "device reports readiness but returned no data" = 串口被残留
+  进程占用（本次为 `/tmp/serread.py`），`lsof` 找到 kill 后重烧；
+- 串口非交互抓取：python3.11 pyserial timeout 轮询，心跳每 10s 带 build 标识。
+
+## 9. 待办
+
+- [ ] 获取 ES108FC1 专用 wbf/iwf（联系 NekoInk 作者或 C930 提取）；
+- [ ] 转换接入 + /grayramp 验证灰阶塌缩根治；
+- [ ] 真机对比 run110/run111 上传照片清晰度（用户侧）；
+- [ ] scanq map 标定迭代（免重烧，/wf 端点，真机拍照收敛）。

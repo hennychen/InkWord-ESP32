@@ -182,11 +182,16 @@ static const char* TAG = "lan_image";
 //   黑白跃迁各 n1/n2 扫（默认 3+3≈0.66s，vs GC16 3.3s），同色 nop 零注入
 //   → 翻转少边界锐；扫描数真机迭代（不足签名：黑不黑/白不白）。
 // [run110] WiFi 凭据 NVS 持久化：根因是 run104 起凭据只写 RAM，重启即失
-//   （烧录=复位，感知“每次烧录后要重配”）。NVS 分区在 app 烧录时原样
+//   （烧录=复位，感知"每次烧录后要重配"）。NVS 分区在 app 烧录时原样
 //   保留（仅 erase/分区表变化/NVS 版本兑底擦除才丢）。GOT_IP 确认成功才
 //   落盘（错误密码不写）；启动读 NVS 自动重连（SoftAP 保持兑底）；
 //   /wifi_forget + 页面 Forget 按钮可清除。max_uri_handlers 16→24。
-#define LAN_BUILD_TAG "run110"
+// [run111] 页面缩放质量：drawImage 一步缩到 1920x1080 在浏览器默认低质
+//   插值下丢细节/生摩尔纹（上传图片发糊的客户端根因）。页面加金字塔
+//   多级降采样（prep 缓存，键控 图片id+量化步长）+ imageSmoothingQuality
+//   ='high'；旋转/镜像/偏移几何路径不变。波形侧工具链另备 tools/iwf2epdiy.py
+//   （ES108FC1 专用 iwf 波形到手后替换 PANEL_WAVEFORM，见 display_config.h TODO(A)）。
+#define LAN_BUILD_TAG "run111"
 
 // 屏定义实体在 demo_seller.c（卖家 main.c L54-61 定义，全环境链接）
 extern const EpdDisplay_t ES108FC;
