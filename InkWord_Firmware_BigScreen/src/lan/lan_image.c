@@ -201,7 +201,9 @@ static const char* TAG = "lan_image";
 // [run114] 灰阶标板 binfast 防护：标板左半带 0~8 在 binfast 下全黑（纯二值
 //   波形无中间灰），大面积实心黑块又触发 LCD 排水黑条纹 → JOB_GRAYRAMP
 //   非 builtin 时临时切 builtin 执行后恢复（真机实证 2026-09-17）。
-#define LAN_BUILD_TAG "run114"
+// [run115] 深清自驱：纯色段弃 GC16 改 binfast（机理见 JOB_UPDATE 内注释），
+//   深清总时长 17.5s → ~4s，且消除 GC16 短相位跳行导致的黑→白未完成灰纹。
+#define LAN_BUILD_TAG "run115"
 
 // 屏定义实体在 demo_seller.c（卖家 main.c L54-61 定义，全环境链接）
 extern const EpdDisplay_t ES108FC;
@@ -1334,20 +1336,16 @@ void lan_image_task(void* arg) {
                     //   再刷同帧（back 已被上次更新同步为 front，等效全驱），
                     //   清残影后换回 binfast。换波形仅在非 busy 的本任务内，
                     //   与 /wf 端点的 busy 互斥约定一致。
-                    // [run113b 定稿] 深清序列：全白驱 → 全黑驱 → 全白驱 → 目标图。
-                    //   序列真机 A/B 终审（2026-09-17 用户判读）：
-                    //   - 单次过驱（run112）：残影不清；
-                    //   - 白→黑→图（run113a）：残影清、但黑粗条纹重；
-                    //   - 白→黑→白→图（run113b）：效果最好，仅轻微灰纹 ← 采用；
-                    //   - 白→反相图→图（run113c）：条纹源头消除但净残影弱于 113b。
-                    //   结论：黑帧的满摆幅深驱对残影清除贡献最大，轻微灰纹为
-                    //   可接受代价（规格书 CR 上限 16，面板物理极限）。
-                    //   结束时从 s_raw 重解包恢复上传图。
+                    // [run115] 深清序列改用 binfast 自驱：GC16 纯色段的
+                    //   黑→白满摆幅跃迁依赖短相位（20~30ms），LCD 路径每帧
+                    //   产大于消使部分扫描行错过短相位 → 横向灰纹（黑→白
+                    //   未完成，用户判读 + §15 同源机理）。binfast 等幅方波
+                    //   连续扫描每扫均满摆幅、对相位跳脱免疫 → 白/黑/白 三段
+                    //   纯色驱动改用 binfast（各 ~0.7s），末段 binfast 回图。
+                    //   深清总时长 17.5s → ~4s。
                     if (s_wf_kind == WF_BINFAST && s_job_err == EPD_DRAW_SUCCESS) {
                         if (++s_bf_updates >= s_bf_clean_every) {
                             s_bf_updates = 0;
-                            const EpdWaveform* wf_cur = hl.waveform;
-                            hl.waveform = s_wf_builtin;
                             int cerr = 0;
                             const struct { uint8_t front, back; } seq[3] = {
                                 {0xFF, 0x00}, {0x00, 0xFF}, {0xFF, 0x00},
@@ -1364,8 +1362,7 @@ void lan_image_task(void* arg) {
                                 cerr = (int)epd_hl_update_screen(&hl, MODE_GC16,
                                                                  epd_ambient_temperature());
                             }
-                            hl.waveform = wf_cur;
-                            ESP_LOGW(TAG, "binfast deep clean: err=%d", cerr);
+                            ESP_LOGW(TAG, "binfast self clean: err=%d", cerr);
                         }
                     } else {
                         s_bf_updates = 0;
