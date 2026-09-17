@@ -191,7 +191,17 @@ static const char* TAG = "lan_image";
 //   多级降采样（prep 缓存，键控 图片id+量化步长）+ imageSmoothingQuality
 //   ='high'；旋转/镜像/偏移几何路径不变。波形侧工具链另备 tools/iwf2epdiy.py
 //   （ES108FC1 专用 iwf 波形到手后替换 PANEL_WAVEFORM，见 display_config.h TODO(A)）。
-#define LAN_BUILD_TAG "run111"
+// [run112] binfast 残留自动兜底：binfast 为等幅方波快速波形，diff 更新下
+//   小幅跃迁驱不净 → 跨帧残影累积（真机实证）。JOB_UPDATE 后每 N 次（默认 2，
+//   /wf?bfn= 可调）追加深清，序列迭代见 JOB_UPDATE 内 run113 注释（终版：
+//   全白驱 → 反相图驱 → 目标图驱，弃纯色黑帧）。单次过驱不足以清除面板
+//   物理滞留（run112 实证仍残影，规格书 CR 上限 16），需满摆幅多轮交替
+//   （同小屏深清经验）。深清成本高，binfast 只适合快速预览；正式显示建议
+//   builtin GC16。
+// [run114] 灰阶标板 binfast 防护：标板左半带 0~8 在 binfast 下全黑（纯二值
+//   波形无中间灰），大面积实心黑块又触发 LCD 排水黑条纹 → JOB_GRAYRAMP
+//   非 builtin 时临时切 builtin 执行后恢复（真机实证 2026-09-17）。
+#define LAN_BUILD_TAG "run114"
 
 // 屏定义实体在 demo_seller.c（卖家 main.c L54-61 定义，全环境链接）
 extern const EpdDisplay_t ES108FC;
@@ -217,6 +227,10 @@ static const EpdWaveform* s_wf_builtin = NULL;
 //   binfast（二值快速）。httpd 任务写、lan_image 任务读 → volatile。
 typedef enum { WF_BUILTIN = 0, WF_SCANQ, WF_BINFAST } wf_kind_t;
 static volatile wf_kind_t s_wf_kind = WF_BUILTIN;
+// [run112] binfast 连续更新计数：达到清屏周期后执行黑白交替深清
+// [run113] 周期 /wf?bfn=N 远程可调（1..10，默认 2）
+static volatile int s_bf_updates = 0;
+static volatile int s_bf_clean_every = 2;
 
 static const char* wf_kind_str(wf_kind_t k) {
     return k == WF_SCANQ ? "scanq" : k == WF_BINFAST ? "binfast" : "builtin";
@@ -942,6 +956,16 @@ static esp_err_t wf_handler(httpd_req_t* req) {
         n_bn2 = atoi(val);
         bf_rebuild = true;
     }
+    // [run113] binfast 深清周期：每 N 次快刷后执行黑白交替深清（1..10）
+    if (httpd_query_key_value(q, "bfn", val, sizeof(val)) == ESP_OK) {
+        int n = atoi(val);
+        if (n < 1 || n > 10) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bfn 1..10");
+            return ESP_OK;
+        }
+        s_bf_clean_every = n;
+        ESP_LOGW(TAG, "binfast clean every -> %d", n);
+    }
     if ((rebuild || bf_rebuild || wf_set) && s_busy) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_set_type(req, "text/plain");
@@ -967,8 +991,9 @@ static esp_err_t wf_handler(httpd_req_t* req) {
     binfast_get_params(&bn1, &bn2);
     char body[288];
     int off = snprintf(body, sizeof(body),
-                       "{\"wf\":\"%s\",\"nsat\":%d,\"mmax\":%d,\"phases\":%d,\"bn1\":%d,\"bn2\":%d,\"map\":[",
-                       wf_kind_str(s_wf_kind), nsat, mmax, nsat + mmax, bn1, bn2);
+                       "{\"wf\":\"%s\",\"nsat\":%d,\"mmax\":%d,\"phases\":%d,\"bn1\":%d,\"bn2\":%d,\"bfn\":%d,\"map\":[",
+                       wf_kind_str(s_wf_kind), nsat, mmax, nsat + mmax, bn1, bn2,
+                       s_bf_clean_every);
     for (int t = 0; t < 16 && off < (int)sizeof(body) - 4; t++) {
         off += snprintf(body + off, sizeof(body) - (size_t)off, "%s%d",
                         t ? "," : "", map[t]);
@@ -1305,6 +1330,46 @@ void lan_image_task(void* arg) {
                     unpack_raw_to_fb();
                     s_job_err = (int)epd_hl_update_screen(&hl, MODE_GC16,
                                                           epd_ambient_temperature());
+                    // [run112] binfast 残影兜底：每 N 次快刷后用 builtin GC16
+                    //   再刷同帧（back 已被上次更新同步为 front，等效全驱），
+                    //   清残影后换回 binfast。换波形仅在非 busy 的本任务内，
+                    //   与 /wf 端点的 busy 互斥约定一致。
+                    // [run113b 定稿] 深清序列：全白驱 → 全黑驱 → 全白驱 → 目标图。
+                    //   序列真机 A/B 终审（2026-09-17 用户判读）：
+                    //   - 单次过驱（run112）：残影不清；
+                    //   - 白→黑→图（run113a）：残影清、但黑粗条纹重；
+                    //   - 白→黑→白→图（run113b）：效果最好，仅轻微灰纹 ← 采用；
+                    //   - 白→反相图→图（run113c）：条纹源头消除但净残影弱于 113b。
+                    //   结论：黑帧的满摆幅深驱对残影清除贡献最大，轻微灰纹为
+                    //   可接受代价（规格书 CR 上限 16，面板物理极限）。
+                    //   结束时从 s_raw 重解包恢复上传图。
+                    if (s_wf_kind == WF_BINFAST && s_job_err == EPD_DRAW_SUCCESS) {
+                        if (++s_bf_updates >= s_bf_clean_every) {
+                            s_bf_updates = 0;
+                            const EpdWaveform* wf_cur = hl.waveform;
+                            hl.waveform = s_wf_builtin;
+                            int cerr = 0;
+                            const struct { uint8_t front, back; } seq[3] = {
+                                {0xFF, 0x00}, {0x00, 0xFF}, {0xFF, 0x00},
+                            };
+                            for (int k = 0; k < 3 && cerr == EPD_DRAW_SUCCESS; k++) {
+                                memset(hl.front_fb, seq[k].front, FB_BYTES);
+                                memset(hl.back_fb, seq[k].back, FB_BYTES);
+                                cerr = (int)epd_hl_update_screen(&hl, MODE_GC16,
+                                                                 epd_ambient_temperature());
+                            }
+                            if (cerr == EPD_DRAW_SUCCESS) {
+                                unpack_raw_to_fb();
+                                memset(hl.back_fb, 0xFF, FB_BYTES);
+                                cerr = (int)epd_hl_update_screen(&hl, MODE_GC16,
+                                                                 epd_ambient_temperature());
+                            }
+                            hl.waveform = wf_cur;
+                            ESP_LOGW(TAG, "binfast deep clean: err=%d", cerr);
+                        }
+                    } else {
+                        s_bf_updates = 0;
+                    }
                     break;
                 case JOB_CLEAR:
                     // [run98] 仅留作对照：验证 epd_clear() 时长是否仍漂移
@@ -1315,9 +1380,23 @@ void lan_image_task(void* arg) {
                     s_job_err = EPD_DRAW_SUCCESS;
                     break;
                 case JOB_GRAYRAMP:
-                    draw_gray_ramp_to_fb();
-                    s_job_err = (int)epd_hl_update_screen(&hl, MODE_GC16,
-                                                          epd_ambient_temperature());
+                    // [run114] binfast 防护：灰阶标板只在灰阶波形下有判读意义
+                    //   （binfast 纯二值：带 0~8 全黑 + 大面积实心黑块触发 LCD
+                    //   排水黑条纹，真机实证）。临时切 builtin 执行后恢复。
+                    if (s_wf_kind != WF_BUILTIN) {
+                        const EpdWaveform* wf_cur = hl.waveform;
+                        hl.waveform = s_wf_builtin;
+                        draw_gray_ramp_to_fb();
+                        s_job_err = (int)epd_hl_update_screen(&hl, MODE_GC16,
+                                                              epd_ambient_temperature());
+                        hl.waveform = wf_cur;
+                        ESP_LOGW(TAG, "grayramp forced builtin (was %s)",
+                                 wf_kind_str(s_wf_kind));
+                    } else {
+                        draw_gray_ramp_to_fb();
+                        s_job_err = (int)epd_hl_update_screen(&hl, MODE_GC16,
+                                                              epd_ambient_temperature());
+                    }
                     break;
             }
             s_job_ms = (int)((esp_timer_get_time() - t0) / 1000);
