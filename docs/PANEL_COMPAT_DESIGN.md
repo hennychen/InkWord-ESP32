@@ -738,9 +738,10 @@ NVS 运行期选择：保留 `epd_panel_get_by_id()` 运行期查表接口，量
 
 原设想 `[env:inkword-s3-probe]` + 单一循环测试集未采纳——实建为**一类一
 探针**的 env 族（`src/probe/*.cpp` 各自 `setup()` 自包含，
-`build_src_filter = +<probe/xxx.cpp>` 只编该文件），2026-09-19 共 18 个探针
-源、11 个诊断 env（*-probe / *-timing / panel-fprint / gpio-scan / button-test /
-hink213-custom-lut / hink213-recover / bs-check）。可跨屏复用的两支：
+`build_src_filter = +<probe/xxx.cpp>` 只编该文件），2026-09-19 共 19 个探针
+源、12 个诊断 env（*-probe / *-timing / panel-fprint / gpio-scan / button-test /
+hink213-custom-lut / hink213-recover / bs-check / audio-volume-sweep）。
+可跨屏复用的两支：
 
 - **`env:panel-fprint`**（[`probe_panel_fprint.cpp`](../InkWord_Firmware/src/probe/probe_panel_fprint.cpp)）：
   位敲 SPI 逐寄存器指纹——0x71 双读稳定性、0x12 后漂移、0x65/0x66/0x61、
