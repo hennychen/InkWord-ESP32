@@ -45,7 +45,9 @@ extern const epd_panel_desc_t g_panel_opm021eb;
  * 版，LAYOUT_MID 档；SSD1619，三色兄弟屏同族，2026-08-30 bring-up 完成） */
 extern const epd_panel_desc_t g_panel_e042a13bw;
 /* panels/panel_gdeq031t10_uc8253.cpp（3.1" 240x320 BW，GDEQ031T10，
- * UC8253，24P FPC 0.5mm；2026-09-05 新增，demo 序列已接入） */
+ * UC8253，24P FPC 0.5mm；2026-09-05 新增，demo 序列已接入。当前上机
+ * 实物排线丝印 P310011-MF1-A，2026-09-19 5V 供电下已见刷新动作，
+ * 序列/方向待烧录验证；无 24P 引脚定义表，见该面板文件头注） */
 extern const epd_panel_desc_t g_panel_gdeq031t10;
 /* panels/panel_hink_e0213a31.cpp（2.13" 122x250 BW 竖屏，HINK-E0213A31-A0，
  * LAYOUT_TINY 档；SSD1680，GxEPD2 B74 序列，2026-09-05 新增） */
@@ -174,10 +176,12 @@ int epd_panel_desc_check(const epd_panel_desc_t *d, char *err, size_t err_len)
 
 #undef DESC_FAIL
 
-/* —— 自动识别（2026-09-10 新增，2026-09-16 静默阶扩展） ——
+/* —— 自动识别（2026-09-10 新增，2026-09-16 静默阶扩展，
+ *    2026-09-19 UC 指纹可信度门）——
  * 四阶段级联：BUSY 判族 → OTP 指纹 → OTP+分辨率 → 分辨率+BUSY
  * → RST 忙窗静默判别。每阶段匹配后检查唯一性，唯一则命中；
- * 碰撞则进入下一阶段细化。
+ * 碰撞则进入下一阶段细化。OTP 两阶只接受 SSD16xx 0x2F（UC 族 0x71
+ * 为状态位，见下方 fp_trusted 注释），故 UC 屏恒走 fallback。
  * 命中返回 desc 指针；未命中返回 NULL（调用方走 NVS fallback） */
 const epd_panel_desc_t *epd_panel_auto_detect(void)
 {
@@ -196,6 +200,17 @@ const epd_panel_desc_t *epd_panel_auto_detect(void)
     const bool has_res = (probe.panel_w > 0 && probe.panel_h > 0);
     const int count = epd_panel_registry_count();
 
+    /* 指纹可信度门（2026-09-19 真机证伪，探针 env:panel-fprint）：
+     * UC 族的 0x71 是 FLG 状态寄存器而非身份——同一块屏硬复位读回
+     * 0x13、软复位 0x12 后读回 0x12（bit0=POR 翻转），且该值族内通用
+     * （OPM021EB 与 3.1" UC8253 同读 0x13）。拿它进 OTP 阶会把任意
+     * UC 屏唯一命中判给 opm021eb_bw（3.1" env 实机被劫持实录）。
+     * 故 OTP 阶只接受 SSD16xx 0x2F（版本寄存器，SSD1619 实测稳定
+     * 0x01）。UC 屏改走 NVS/DEFAULT fallback——其分辨率维度同样不可
+     * 用（0x65/0x66/0x61 读回 FF/00/FF，无 COG 驱动，has_res 恒假），
+     * 第三阶自然不命中，非本门引入的行为收窄 */
+    const bool fp_trusted = !probe.busy_idle_high;
+
     /* 辅助宏：BUSY 空闲电平匹配 + 忙窗一致性。
      * desc 声明 rst_busy_quiet（RST 后静默）时要求探测确实无忙窗
      * （防静默屏被有忙窗屏的 OTP 偶发值错认）；反向不约束
@@ -206,7 +221,7 @@ const epd_panel_desc_t *epd_panel_auto_detect(void)
 
     /* === 第一阶：OTP 唯一匹配（最高置信度） ===
      * 同族内 otp_signature 唯一（无碰撞）的面板直接命中 */
-    if (probe.status_reg != 0) {
+    if (fp_trusted && probe.status_reg != 0) {
         const epd_panel_desc_t *otp_match = NULL;
         int otp_count = 0;
         for (int i = 0; i < count; i++) {
@@ -226,7 +241,7 @@ const epd_panel_desc_t *epd_panel_auto_detect(void)
     /* === 第二阶：OTP + 分辨率匹配（中置信度，解决同族碰撞） ===
      * 同控制器多面板（如 E042A13 vs E042A13BW 同 SSD1619 0x01）
      * 分辨率不同即可区分 */
-    if (probe.status_reg != 0 && has_res) {
+    if (fp_trusted && probe.status_reg != 0 && has_res) {
         const epd_panel_desc_t *combo_match = NULL;
         int combo_count = 0;
         for (int i = 0; i < count; i++) {

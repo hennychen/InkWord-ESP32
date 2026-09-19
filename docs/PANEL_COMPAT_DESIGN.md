@@ -29,6 +29,14 @@
 >   NVS 键集中 settings_keys.h；epd_bus 新增族标准电源序列
 >   （bus_ssd16_* / bus_uc_*，byte 级一致者收敛）。
 >
+> **实现演进勘注（2026-09-19）**：
+> - §14.1 设想的 `[env:inkword-s3-probe]` 单一试屏 env 从未建，实态是「一类
+>   一探针」env 族（§14.3 已按实态改写）；
+> - 「批量接入新屏」流程中新增**零人工纪律**：探针 DTR/RTS 自动复位、面板
+>   env 构建期钉屏、UC 族不参与 OTP 身份判别（§14.3 / §十七）；
+> - 刷新时长口径固化：desc 的 full_ms/partial_ms 为**实测**值而非规格标称，
+>   且 partial_ms 按量产 passes 口径（§十七）。
+>
 > **备份纪律（T2.4 起，修 E1）**：历史 .bak 存量已全库清零（git 从未跟踪
 > 过 .bak；.gitignore `*.bak*` 防增量）。现行纪律为「commit 即备份」：
 > 改动前不再留 .bak 副本，验证通过即分阶段 commit，回退走 git 历史。
@@ -463,7 +471,7 @@ gpio_config.h L28-31 已写明 BS=-1 路径与 `epd_driver_init` 条件编译保
 |:-----|:------------------------|:-------|:-----|
 | LAYOUT_TINY | <140 px（2026-08-23 新增） | 2.13" (122x250)、2.9" (128x296) 电子标签屏竖屏 | 单列、16px CJK（level 0）、超紧凑头部（状态栏 24/边距 8）、学习页 3~5 字/行×7~9 行、待机引文 16px 紧排版、配网走 AP 门户（屏上键盘不适用） |
 | LAYOUT_SMALL | 140~199 px | 2.7" (264x176) | 单列、16px CJK（level 0） |
-| LAYOUT_MID | 200~319 px | 3.7" (416x240)、4.2" (400x300，含黑白版骨架) | 现有学习页单列同族 |
+| LAYOUT_MID | 200~319 px | 3.1" (320x240)、3.7" (416x240)、4.2" (400x300，含黑白版骨架) | 现有学习页单列同族；本档最窄画布 320 宽——键盘 `kb_scale` 由 `get()` 按运行期宽度钳制（表值只保证垂直约束，2026-09-19 补） |
 | LAYOUT_LARGE | ≥320 px | 7.5" (800x480) | 多列 / 更大留白 |
 
 档位由运行期 gfx 尺寸判定函数选择（`layout_profile_get()`），与具体面板解耦；
@@ -505,10 +513,11 @@ LARGE 档几何字段为预估值，「7.5" 上机校准」。上例 `layout_stu
 **P2 形态轴兑现（2026-09-05）**：档位表新增运行期字段 `form`
 （`LAYOUT_FORM_LANDSCAPE / PORTRAIT / SQUARE`，`get()` 按 gfx 宽高比
 填充，表值恒 LANDSCAPE）——起因：MID 档将共存多形态，单维短边分档
-无法区分。3.1" GDEQ031T10 经真机实证为 COG 竖屏 240x320 + rotation=1
-→ UI 320x240 横屏，与 416x240/400x300 同形态（非预想的竖屏 MID
-首例）；首个竖屏 MID 消费方仍待未来屏，档位字段已就绪，UI 侧查
-form 即可分支。测试：test_layout_form_axis 用例覆盖五屏形态。
+无法区分。3.1" 面板原生 COG 竖屏 240x320 + `gfx_rotation=1` → UI 320x240
+横屏（依据：卖家 demo 的 SetWindows 口径；本固件方向仍未真机复验，见
+`panel_gdeq031t10_uc8253.cpp` desc 注释），与 416x240/400x300 同形态（非
+预想的竖屏 MID 首例）；首个竖屏 MID 消费方仍待未来屏，档位字段已就绪，
+UI 侧查 form 即可分支。测试：test_layout_form_axis 用例覆盖五屏形态。
 
 ### 8.2 Phase 4 改动面三分类清单
 
@@ -714,7 +723,7 @@ EPD_GFX_AUX=3`）；BW 面板快路径在函数入口查退化表后维持原位
 [env:inkword-s3-e042]              # 4.2" 三色（实建 env 名）
 build_flags = ${env:inkword-s3.build_flags} -D INKWORD_PANEL_ID=PANEL_E042A13
 [env:inkword-s3-270c]               # 2.7" 三色（同构）
-[env:inkword-s3-probe]              # 试屏探针（§14.3）
+[env:inkword-s3-probe]              # 试屏探针（§14.3；未采纳，实态见该节）
 ```
 
 NVS 运行期选择：保留 `epd_panel_get_by_id()` 运行期查表接口，量产期以 NVS
@@ -727,18 +736,30 @@ NVS 运行期选择：保留 `epd_panel_get_by_id()` 运行期查表接口，量
 
 ### 14.3 probe 探针环境（吸收 ink_test 方法论）
 
-新增 `[env:inkword-s3-probe]` + `src/probe_main.cpp`（或 tools/panel_probe）：
+原设想 `[env:inkword-s3-probe]` + 单一循环测试集未采纳——实建为**一类一
+探针**的 env 族（`src/probe/*.cpp` 各自 `setup()` 自包含，
+`build_src_filter = +<probe/xxx.cpp>` 只编该文件），2026-09-19 共 18 个探针
+源、11 个诊断 env（*-probe / *-timing / panel-fprint / gpio-scan / button-test /
+hink213-custom-lut / hink213-recover / bs-check）。可跨屏复用的两支：
 
-- **动机**：ink_test（[Readme.txt](../Info/ink_test/Readme.txt) L30「不知型号
-  就只能一个个试」）的"逐个试驱动行"需 Arduino IDE 手工改行重编译——固件
-  工程内做成自动循环；
-- **行为**：在 INKWORD_PANEL_ID 候选矩阵上循环列面板类（如 420c → 420c_Z21
-  → 270c），每档执行 ink_test 同款测试集：helloWorld / 全刷 / 局刷
-  （`desc.partial_enabled` 门控）/ 字体 / 位图 / 深睡唤醒；
-- **自校验**：串口日志（busy 实测时长 / init 结果）+ 屏显画面人工确认，
-  实测数据直接回填 desc 时序字段；
-- **首批受益**：4.2" Hink（先 GxEPD2_420c 不中再试 420c_Z21）与 2.7"（先
-  GxEPD2_270c）均免改代码快速验证。
+- **`env:panel-fprint`**（[`probe_panel_fprint.cpp`](../InkWord_Firmware/src/probe/probe_panel_fprint.cpp)）：
+  位敲 SPI 逐寄存器指纹——0x71 双读稳定性、0x12 后漂移、0x65/0x66/0x61、
+  SSD16xx 0x2F、0x44/0x45、BUSY 采样与极性、RST 10ms/50ms 对比。新屏上机
+  第一支，产出的即 `desc.otp_signature`/`busy_level` 判据；
+- **`env:<panel>-timing`**（首支
+  [`probe_gdeq031t10_timing.cpp`](../InkWord_Firmware/src/probe/probe_gdeq031t10_timing.cpp)）：
+  库内官方同类驱动 vs 本项目序列的**单变量分臂对照**，量 0x12 净忙窗。
+  接入新屏若刷新时长与标称/官方对不上，照此加臂逐项排除（该支已把 3.1"
+  的 3× 差值归因到官方 `useFastFullUpdate` 的 E0/E5 强制温度，PSR/旧帧
+  RAM/杂散字节/冷热态逐项实测无效）。
+
+- **零人工纪律**（2026-09-19 定，用户要求「避免手动操作，全部自动」，因
+  为会持续接入新型号屏）：bring-up 链上不得出现按侧键/拨码/主机改 NVS
+  的环节。落地为三点——①面板 env 由 `EPD_PANEL_DEFAULT_ID` 注入即构成
+  构建期钉屏（`EPD_PANEL_IS_PINNED`，不探测、不读不写 NVS，「烧哪个屏的
+  env 就接哪个屏」）；②`otp_signature` 只允许 SSD16xx 0x2F 真身份寄存器，
+  UC 族 FLG 0x71 为状态位恒填 0，auto-detect 的 OTP 两阶按族加可信度门；
+  ③探针经 pyserial DTR/RTS 脉冲自动复位取日志，全程免按键。
 
 ### 14.4 诊断编译开关 INKWORD_EPD_DIAG（T1.8 已落地 ✓）
 
@@ -773,13 +794,15 @@ bus_diag_ssd16 由 epd_bus 提供，L3 不再感知面板型号。
 
 ## 十六、新屏接入 SOP（8 步 checklist）
 
-1. **查控制器**：FPC 规格书 + ink_test 试屏法（型号不明时逐个试驱动行）；
+1. **查控制器**：FPC 规格书 + `env:panel-fprint` 逐寄存器指纹（型号不明时
+   读 BUSY 极性与 0x2F/0x71 应答判族，替代旧「逐个试驱动」法）；
 2. **定 desc**：尺寸 + 色彩 + 平面编码 + busy 实测容限（§5.1 字段逐项填）；
 3. **选/写面板类**：先查本地 GxEPD2 epd3c/epd4c/epd7c 是否已有（**同型号
    变体必须读 .h 的 usePartialUpdateWindow/时序注释再定**，420c vs 420c_Z21
    教训）；无则沿 GxEPD2_7C 模式自写；
-4. **probe 真机时序验证**：inkword-s3-probe 跑测试集，busy 时长 / 局刷能力
-   实测回填 desc；
+4. **probe 真机时序验证**：`env:<panel>-probe` 跑序列、`env:<panel>-timing`
+   做单变量分臂对照（§14.3），busy 时长 / 局刷能力实测回填
+   desc.full_ms/partial_ms/busy_timeout_ms；
 5. **调色板/平面映射验证**：平面编码真值表单元测试（§9.5）；
 6. **布局档位确认**：短边判档，参数表缺项补齐（§8.1）；
 7. **字库档位**：SMALL 接 level 0 / LARGE 评估 32px 扩展（§十一）；
@@ -796,7 +819,9 @@ bus_diag_ssd16 由 epd_bus 提供，L3 不再感知面板型号。
 | 7.5" 刷新时长/残影 | 策略降级：全刷为主 + 定时深清 |
 | 内存峰值（大屏多色） | PSRAM 路径预算表 + 禁 DMA cap（§10.2） |
 | busy_timeout 面板差异大（20~60s） | desc 强制字段，禁全局默认值；probe 实测回填 |
+| UC 族 FLG 0x71 非身份寄存器，误当 otp_signature 会让 auto-detect 劫持选屏 | 该族 desc 恒填 `otp_signature = 0`；`epd_panel.c` 按探测族别加 `fp_trusted` 可信度门，OTP 两阶仅 SSD16xx 0x2F 参与；面板 env 由 `EPD_PANEL_DEFAULT_ID` 构建期钉屏（2026-09-19 闭合） |
 | 420c/Z21 同型号变体行为相反 | SOP 第 3 步读 .h 注释固化（§9.1） |
+| 刷新时长比标称长数倍（实为库内官方驱动用了强制温度波形） | `env:<panel>-timing` 单变量分臂归因；生产默认走自动温度波形（真 3s 全刷），强制温度路径（E0/E5）仅在可接受低温欠驱动风险时按需启用（3.1" 实测 3088ms vs 1018ms） |
 | 字库体积膨胀（扩 32px 级） | 分级码点收录 + bin 版本号 bump 前向兼容（§11.2） |
 | 网页端兼容性（旧页面访问新固件） | v1 裸 body 兼容窗口 + 400 提示升级（§12.2） |
 | 6C 波形/LUT 资料闭源 | 屏厂 demo 逆向对齐（DEPG0370 先例）；Phase 8+ 不阻塞首批 |

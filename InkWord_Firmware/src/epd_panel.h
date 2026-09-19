@@ -53,10 +53,13 @@ typedef struct epd_panel_desc {
     /* —— 身份 —— */
     const char          *name;          /* "depg0370_uc8253"（注册查表主键） */
     epd_controller_t    controller;
-    uint8_t             otp_signature;  /* OTP 指纹（0x2F 读回值 / UC FLG 0x71
-                                         * 读回值；0=不参与自动识别，仅走
+    uint8_t             otp_signature;  /* OTP 指纹（仅 SSD16xx 0x2F 版本寄存器
+                                         * 可用；UC 族 0x71 是 FLG 状态位、族内
+                                         * 通用，auto-detect 已按族屏蔽，UC 屏
+                                         * 一律填 0。0=不参与自动识别，仅走
                                          * NVS fallback。epd_panel_auto_detect
-                                         * 分层探测用，2026-09-10 新增） */
+                                         * 分层探测用，2026-09-10 新增，
+                                         * 2026-09-19 可信度门收口） */
 
     /* —— 几何 —— */
     uint16_t            panel_w, panel_h;   /* 物理竖屏分辨率 */
@@ -150,8 +153,15 @@ typedef struct epd_panel_desc {
  * 加面板只改 platformio.ini env + panels/ 注册单元，本头不再维护
  * 型号清单）；未注入（统一固件 inkword-s3 / probe env）时兜底
  * DEPG0370，运行期 NVS set_panel 覆盖优先于本默认 */
-#ifndef EPD_PANEL_DEFAULT_ID
+#ifdef EPD_PANEL_DEFAULT_ID
+/* env 注入了具体型号 = 构建期钉屏（EPD_PANEL_IS_PINNED=1）：选屏以
+ * 构建为准，跳过自动识别与 NVS（见 epd_driver_init 0a 优先级注释）。
+ * 统一固件走另一支：兜底 DEPG0370 且 EPD_PANEL_IS_PINNED=0，由
+ * 自动识别/NVS 决定实际屏型 */
+#define EPD_PANEL_IS_PINNED 1
+#else
 #define EPD_PANEL_DEFAULT_ID "depg0370_uc8253"  /* 默认：3.7" 240x416 BW */
+#define EPD_PANEL_IS_PINNED 0
 #endif
 
 /**

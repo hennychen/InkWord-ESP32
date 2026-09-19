@@ -239,12 +239,14 @@ EVK011-C 保留为 DEPG0370 对照验证板。
 | Hink E042A13-A0 黑白版 | `e042a13bw_ssd1619` | 4.2" 400×300 黑白（LAYOUT_MID，UI 零改动即适配） | SSD1619 | [`panels/panel_e042a13bw.cpp`](src/panels/panel_e042a13bw.cpp) | 全刷 ~2.9s / 局刷 ~1.3s（两段式 + DMA，0x22/0xF7 实证） | ✅ 2026-08-30 真机验证 |
 | WFT0290CZ10 | `wft0290_bw` | 2.9" 128×296 黑白竖屏（电子价签源，LAYOUT_TINY） | UC8151D（三轮实锤，GDEW029T5D 同族） | [`panels/panel_wft0290.cpp`](src/panels/panel_wft0290.cpp) | 全刷 3.4s / REG LUT 局刷 0.9s 实测；TRES 修复 | ✅ 真机验证 |
 | OPM021EB | `opm021eb_bw` | 2.13" 122×250 黑白竖屏（电子标签，LAYOUT_TINY） | UC8151D（SSD1680 证伪改判，BUSY/0x2F 实锤） | [`panels/panel_opm021eb.cpp`](src/panels/panel_opm021eb.cpp) | 全刷 3.2s / 打断法快刷 0.65s（K_ABORT_MS=250 + 双写） | ✅ 真机验证 |
-| GDEQ031T10 3.1" | `gdeq031t10_uc8253` | 3.1" 240×320 黑白（COG 竖屏 240×320 + rotation=1 → UI 320×240 横屏 MID 档，与 416×240/400×300 同形态） | UC8253 | [`panels/panel_gdeq031t10_uc8253.cpp`](src/panels/panel_gdeq031t10_uc8253.cpp)（同族宏，自制 [`GxEPD2_gdeq031t10`](src/GxEPD2_gdeq031t10.h) 类） | 规格全刷 3s / 局刷 0.5s；PSR 单字节 0x1F / 180° 旋转 0x13 / 局刷 E5=0x79 / 快刷 E5=0x5A（demo 实证，与 DEPG0370 序列实质差异） | 🧪 bring-up 进行中（序列已接入，方向待真机验证，2026-09-05） |
+| GDEQ031T10 3.1" | `gdeq031t10_uc8253` | 3.1" 240×320 黑白（COG 竖屏 240×320 + rotation=1 → UI 320×240 横屏 MID 档，与 416×240/400×300 同形态） | UC8253 | [`panels/panel_gdeq031t10_uc8253.cpp`](src/panels/panel_gdeq031t10_uc8253.cpp)（同族宏，自制 [`GxEPD2_gdeq031t10`](src/GxEPD2_gdeq031t10.h) 类） | 实测全刷 3.1s / 快刷 1.06s / 局刷 0.65s 单遍、双遍 1.30s（探针 `env:gdeq031t10-timing`，2026-09-19）；PSR 单字节 0x1F / 180° 旋转 0x13 / 局刷 E5=0x79 / 快刷 E5=0x5A（demo 实证，与 DEPG0370 序列实质差异）。与库内官方同类 `GxEPD2_310_GDEQ031T10` 的单变量对照已闭合：官方快 3 倍的全部差值＝其 `useFastFullUpdate` 的 E0=0x02+E5=0x5A 强制温度（不带 3088ms／带上 1018ms），本固件全刷保留自动温补波形；PSR 第二字节 `0x0D`、0x10 旧帧 RAM、0x12 杂散字节、0x04 重复、冷热态逐项实测无效 | ✅ 真机点亮（2026-09-19，上机实物排线丝印 `P310011-MF1-A`；选屏走构建期钉屏 `EPD_PANEL_IS_PINNED`，不探测不读 NVS；UC 族 FLG 0x71 非身份寄存器 → 指纹恒 0，auto-detect 已加族别可信度门。方向/画质待人眼复核。同档宽度副作用已收敛：320 宽下键盘 kb_scale 钳制 + LAN 页 ASCII 降级折行） |
 | HINK-E0213A31 | `hink_e0213a31_bw` | 2.13" 122×250 黑白竖屏（COG 128×250 原生 16B/行，右缘 6px 无绑定 UI 避让，LAYOUT_TINY；GxEPD2 B74 同规格） | SSD1680 | [`panels/panel_hink_e0213a31.cpp`](src/panels/panel_hink_e0213a31.cpp) | 快速全刷 0xD7 实测 1911ms（标准 3460ms 省 45%；OTP 无快刷局刷波形，全/局刷统一 0xD7） | 🧪 bring-up 进行中（P0 探针实测回填，2026-09-05） |
 
-> **骨架/在途面板说明**（2026-09-05 更新）：10 屏注册表中 8 屏已真机
-> 验证；GDEQ031T10 3.1" 序列已接入（PSR 等 demo 实证回填，方向待真机
-> 验证）；WF0270（22Pin）屏在途。TINY 屏配网走 AP 门户（手机浏览器
+> **骨架/在途面板说明**（2026-09-19 更新）：注册表现有 11 屏条目，上表
+> 列其中 9 屏（E213A57、GDEQ0426T82 两屏待补行）；除 WF0270（未到货）
+> 与 HINK-E0213A31（在途）外均已真机点亮。GDEQ031T10 3.1" 于
+> 2026-09-19 完成序列与刷新时长实测回填，仅剩显示方向/画质待人眼复核。
+> TINY 屏配网走 AP 门户（手机浏览器
 > 连 InkWord 热点），屏上键盘不适用。新屏接入后开机即受
 > `epd_panel_desc_check()` 契约校验保护（全注册表自检，违规 LOG_W /
 > 选中屏 fail-fast）。
@@ -265,6 +267,8 @@ cd InkWord_Firmware
 ~/.platformio/penv/bin/pio run -e inkword-s3-e042bw -t upload --upload-port /dev/cu.usbserial-0001
 # 切到 2.13" OPM021EB（TINY 档，打断法快刷）
 ~/.platformio/penv/bin/pio run -e inkword-s3-opm021eb -t upload --upload-port /dev/cu.usbserial-0001
+# 切到 3.1" GDEQ031T10（MID 档横屏，当前上机屏）
+~/.platformio/penv/bin/pio run -e inkword-s3-gdeq031t10 -t upload --upload-port /dev/cu.usbserial-0001
 ```
 
 VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `inkword-s3-e042` / `inkword-s3-gdew027c44` / `inkword-s3-wf0270` 后点 Upload 等效。
@@ -280,11 +284,14 @@ VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `i
 
 ### 适配新屏幕（SOP）
 
-架构设计见 [`../docs/PANEL_COMPAT_DESIGN.md`](../docs/PANEL_COMPAT_DESIGN.md)（注册表 §5.3 / bring-up SOP §十六）。三步注册：
+架构设计见 [`../docs/PANEL_COMPAT_DESIGN.md`](../docs/PANEL_COMPAT_DESIGN.md)（注册表 §5.3 / bring-up SOP §十六）。四步注册：
 
 1. **建面板单元** `src/panels/panel_<型号>.cpp`：定义 `const epd_panel_desc_t`（几何/色彩/时序/调色板/ops 函数表），驱动序列一比一移植官方 demo 或规格书（GxEPD2 无对应类时手写 SPI 序列，参见 4.2" 单元）；
 2. **注册** [`src/epd_panel.c`](src/epd_panel.c)：extern 声明 + `s_registry[]` 追加一行；
 3. **加 env** [`platformio.ini`](platformio.ini)：复制 `inkword-s3-e042` 段，build_flags 注入 `'-D EPD_PANEL_DEFAULT_ID="新注册名"'`（epd_panel.h 已无宏链无需改动，2026-09-03 裁剪；烧统一固件时也可免 env，经设置页 NVS 选屏运行期覆盖）。
+4. **探针回填时序**：`env:panel-fprint` 读指纹与 BUSY 极性（`otp_signature`/`busy_level` 判据，仅 SSD16xx 0x2F 算身份，UC 族 0x71 为状态位填 0）→ `env:<屏>-timing` 与库内官方同类做单变量分臂对照，实测回填 `full_ms`/`partial_ms`/`busy_timeout_ms`（partial 按量产 `passes` 口径）。
+
+> **零人工纪律**（2026-09-19）：bring-up 全链不得出现按侧键 / 拨码 / 主机改 NVS 的环节——面板 env 注入 `EPD_PANEL_DEFAULT_ID` 即构建期钉屏（`EPD_PANEL_IS_PINNED`，跳探测与 NVS），探针日志经 pyserial DTR/RTS 脉冲自动复位采集。
 
 **bring-up 铁律**（4.2" 屏实战沉淀，全部真机实证）：
 - **BUSY 极性先核对**：UC8253/UC8xxx 系 LOW=忙，SSD16xx 系 HIGH=忙——判反极性会把「空闲正常态」误读为「无响应/卡死」，`desc.busy_level` 必须首验；

@@ -312,7 +312,11 @@ const epd_panel_desc_t g_panel_opm021eb = {
     .controller = EPD_CTRL_UC8151,  /* 一轮 SSD1680 证伪改判（BUSY
                                      * 空闲 HIGH + 0x2F 无应答，日志
                                      * 实锤；UC8253/IL0373 同模型） */
-    .otp_signature = 0x13,          /* FLG 0x71 实测值（2026-09-10 真机） */
+    .otp_signature = 0,           /* 2026-09-19 撤录：原记 0x13 是 FLG 状态
+                                   * 位而非身份（探针 env:panel-fprint 实证
+                                   * 硬复位 0x13/软复位 0x12，bit0=POR 翻
+                                   * 转，且 UC8253 3.1" 同读 0x13 被错认），
+                                   * auto-detect OTP 阶已按族屏蔽 UC 指纹 */
     .panel_w    = 122,
     .panel_h    = 250,
     .gfx_rotation = 0,       /* 竖屏持机（gfx 122x250，LAYOUT_TINY） */

@@ -294,16 +294,34 @@ int epd_driver_init(void)
         return 0;
     }
 
-    /* 0. L2 面板描述符选择。
+    /* 0. L2 面板描述符选择（两类构建两条路，2026-09-19 定稿）：
      *
-     *    0a. 自动识别（2026-09-10，多维指纹级联匹配）：
-     *    BUSY 空闲电平判族 → OTP 指纹 → OTP+分辨率 → 分辨率+BUSY。
-     *    每阶段内部检查唯一性，碰撞自动进入下一阶段细化。
-     *    命中则采用，写 NVS 持久化（下次启动快速路径）。
-     *    未命中走 0b NVS fallback。耗时 ~200ms */
+     *    钉屏档（EPD_PANEL_IS_PINNED=1，platformio.ini 面板 env 注入
+     *    EPD_PANEL_DEFAULT_ID）：只认构建，见 0a'，零人工零按键——
+     *    适配新屏的工作流就是「接上新屏 + 烧对应 env」。
+     *
+     *    统一固件档（inkword-s3，未注入，兜底 DEPG0370）：
+     *      0a. 自动识别（2026-09-10，多维指纹级联匹配）：
+     *          BUSY 空闲电平判族 → OTP 指纹 → OTP+分辨率 → 分辨率+BUSY，
+     *          每阶段内部检查唯一性，碰撞自动进入下一阶段细化；
+     *          命中则采用并写 NVS 持久化。耗时 ~200ms
+     *      0b. 未命中/碰撞走 NVS fallback → DEFAULT_ID */
     const char *panel_id = NULL;
-    char nvs_id[32];
     bool auto_detected = false;
+
+#if EPD_PANEL_IS_PINNED
+    /* 0a'. 构建期钉屏（platformio.ini env 注入 EPD_PANEL_DEFAULT_ID）：
+     *      选屏以构建为准，不探测、不读 NVS、不写 NVS。
+     *      动机（2026-09-19 3.1" 实机）：新适配屏在指纹回填前，探测
+     *      证据不足以分辨它，同族状态寄存器值反而会造成误命中并把
+     *      结果持久化（UC 族 0x71=0x13 曾把 3.1" 劫持给 opm021eb_bw）；
+     *      而「烧哪个屏的 env 就接哪个屏」本就是零人工的配屏契约 */
+    panel_id = EPD_PANEL_DEFAULT_ID;
+    s_panel = epd_panel_get_by_id(panel_id);
+    if (s_panel)
+        LOG_I("panel '%s' pinned by build "
+              "(auto-detect and NVS override skipped)", panel_id);
+#else
     {
         const epd_panel_desc_t *detected = epd_panel_auto_detect();
         if (detected) {
@@ -330,6 +348,7 @@ int epd_driver_init(void)
      *     （上次成功识别/手动设置结果）→ 未命中回落 DEFAULT_ID。
      *     NAV_RST 侧键按下时跳过 NVS（产线/售后首次配屏安全阀） */
     if (!s_panel) {
+        char nvs_id[32];
         panel_id = EPD_PANEL_DEFAULT_ID;
         pinMode(NAV_RST_PIN, INPUT_PULLUP);
         if (digitalRead(NAV_RST_PIN) == LOW) {
@@ -351,6 +370,7 @@ int epd_driver_init(void)
             s_panel = epd_panel_get_by_id(panel_id);
         }
     }
+#endif
     if (!s_panel) {
         LOG_E("panel desc '%s' not found in registry", panel_id);
         return -1;

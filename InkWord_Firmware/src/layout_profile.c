@@ -55,6 +55,14 @@ static const layout_profile_t k_profiles[] = {
                       * @150PPI 经自动层降 24px（4.1mm）免校准 */
 };
 
+/* 键盘行宽基准（wifi_config_ui.c 行 0 十键，416 档 scale=100 原值）：
+ * 10×36 + 9×3 = 387px；行 2（Shift+7 键+Del）372、行 3（Mode+Space+OK）
+ * 362 均小于此，故 387 为最宽行。kb_scale 是「相对 416 基线的百分比」，
+ * 档位表值只保证垂直约束（键高×行数），横向能否放下必须按运行期
+ * gfx 宽度钳制（下方 get() 内 clamp-to-fit）。 */
+#define KB_WIDEST_ROW_PX   387
+#define KB_SIDE_CLEAR_PX     8   /* 居中后左右各留 ≥4px，避免键贴屏边 */
+
 /* 档位缓存：首调填充；文件级供 test_reset 清（原 get 内 static 上提） */
 static layout_profile_t s_prof;
 static bool s_ready = false;
@@ -102,6 +110,12 @@ const layout_profile_t *layout_profile_get(void)
          * 判断收敛于此，T1.5）：OPM021EB 2.13" 122 宽（135DPI）辅助
          * 字级跟随正文；WFT0290 2.9" 128 宽（90DPI）保持 16px */
         s_prof.narrow_tiny = (k == LAYOUT_TINY && w <= 122) ? 1 : 0;
+        /* kb_scale 横向钳制：表值只保证垂直约束（键高×行数 ≤ 键区
+         * 高度），横屏宽度不足时按比例下调至最宽行放得下；放得下则
+         * 保持表值（416→103%/400→101% 均 ≥100，现役屏视觉零变化；
+         * 264→66% 不触发，SMALL 仍取垂直定档的 60） */
+        int kb_fit = (w - KB_SIDE_CLEAR_PX) * 100 / KB_WIDEST_ROW_PX;
+        if (kb_fit < s_prof.kb_scale) s_prof.kb_scale = kb_fit;
         /* PPI 自动层：主内容/释义选级 + 几何公式化派生（覆盖表值；
          * 字号目标与复现验证见 level_for_mm 注）。派生口径：
          * item_h = cell + 档位 padding（12/16/24/20——四档现状值

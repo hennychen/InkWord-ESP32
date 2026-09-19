@@ -26,7 +26,10 @@ class GxEPD2_gdeq031t10 : public GxEPD2_EPD
     static const uint16_t WIDTH = 240;
     static const uint16_t WIDTH_VISIBLE = WIDTH;
     static const uint16_t HEIGHT = 320;
-    static const GxEPD2::Panel panel = GxEPD2::GDEY037T03;
+    /* 库内官方同类 gdeq/GxEPD2_310_GDEQ031T10 即此条目（240x320）。
+     * 曾误留骨架来源的 GDEY037T03（3.7" 416x240）：本类从不读该字段，
+     * 只随构造透传给 GxEPD2_EPD::panel 存档，故无行为影响，但值本身错 */
+    static const GxEPD2::Panel panel = GxEPD2::GDEQ031T10;
     static const bool hasColor = false;
     static const bool hasPartialUpdate = true;
     static const bool usePartialUpdateWindow = true;

@@ -149,7 +149,9 @@ extern void test_layout_narrow_tiny(void);
 extern void test_layout_form_axis(void);
 extern void test_layout_cached_pointer_stable(void);
 extern void test_layout_profile_sanity_all_kinds(void);
-extern void test_layout_ppi_auto_level(void);   /* PPI 自动层（2026-09-08） */
+extern void test_layout_ppi_auto_level(void);        /* PPI 自动层（2026-09-08） */
+extern void test_layout_kb_scale_width_fit(void);    /* 3.1" 320 宽适配（2026-09-19） */
+extern void test_layout_mid_31_canvas(void);
 
 /* poem 默写数据通路（v1.4 T4.4）：同 runner 挂载 */
 extern void test_word_parser_poem_dictation_fields(void);
@@ -217,7 +219,7 @@ extern void test_panel_registry_stubs_contract_valid(void);
 extern void test_panel_auto_detect_probe_fail_returns_null(void);
 extern void test_panel_auto_detect_quiet_ssd16_hits_gdeq0426(void);
 extern void test_panel_auto_detect_otp_unique_first_stage(void);
-extern void test_panel_auto_detect_uc_flgreach_hits_opm(void);
+extern void test_panel_auto_detect_uc_flg_rejects_otp_stage(void);
 extern void test_panel_auto_detect_unknown_returns_null(void);
 
 int main(void)
@@ -293,6 +295,8 @@ int main(void)
     RUN_TEST(test_layout_cached_pointer_stable);
     RUN_TEST(test_layout_profile_sanity_all_kinds);
     RUN_TEST(test_layout_ppi_auto_level);   /* PPI 自动层（2026-09-08） */
+    RUN_TEST(test_layout_kb_scale_width_fit); /* 键盘宽度钳制（2026-09-19） */
+    RUN_TEST(test_layout_mid_31_canvas);      /* 3.1" 两块画布 */
     /* 开源通用化 Phase 1.5：路由栈协议 + 面板 desc 契约 */
     RUN_TEST(test_router_push_idempotent_top_repeat);
     RUN_TEST(test_router_push_null_and_overflow);
@@ -317,7 +321,7 @@ int main(void)
     RUN_TEST(test_panel_auto_detect_probe_fail_returns_null);
     RUN_TEST(test_panel_auto_detect_quiet_ssd16_hits_gdeq0426);
     RUN_TEST(test_panel_auto_detect_otp_unique_first_stage);
-    RUN_TEST(test_panel_auto_detect_uc_flgreach_hits_opm);
+    RUN_TEST(test_panel_auto_detect_uc_flg_rejects_otp_stage);
     RUN_TEST(test_panel_auto_detect_unknown_returns_null);
     return UNITY_END();
 }

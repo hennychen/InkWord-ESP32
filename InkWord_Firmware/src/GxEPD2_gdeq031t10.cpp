@@ -10,6 +10,29 @@
  *   - SPI 10MHz（DEPG0370 用 20MHz）
  *   - 局刷 E5=0x79（DEPG0370 用 100/0x64）
  *   - 快刷 E5=0x5A（DEPG0370 无此模式）
+ *
+ * 与库内官方同类的序列对照（2026-09-19 逐字节比
+ * .pio/libdeps/<env>/GxEPD2/src/gdeq/GxEPD2_310_GDEQ031T10.cpp，同一块屏的
+ * 独立参考实现）—— 真机对照探针 env:gdeq031t10-timing 已跑完，四条差异
+ * 全部归因完毕：
+ *   一致：CCSET E0=0x02；TSSET 快刷 E5=0x5A / 局刷 E5=0x79；
+ *         CDI 0x50=0x97（全刷）/ 0xD7（局刷）——本 demo 序列全中。
+ *         构造参数亦同：busy 有效电平 LOW、SPI 10MHz（10MHz 非待校项，
+ *         demo 与官方同值）。
+ *   差异① PSR 第二字节（官方 0x1F,0x0D，我们只发 0x1F）：实测排除。
+ *     探针 C 臂补发 0x0D 后全刷仍 3130ms，与单字节逐毫秒一致，
+ *     「驱动力不足先补 PSR2」的原第一顺位校准项作废。
+ *   差异② 官方 0x12、0x02 后不带数据字节，本实现各多写一个 0x00：
+ *     实测排除（D 臂 stray-00 与官方复刻 official 同为 3088ms）。
+ *   差异③ D 臂另两项亦排除：是否写旧帧 RAM 0x10、0x04 上电发两次，
+ *     以及 E 臂的冷热态（不复位、不断电连刷）——全部 3088ms。
+ *   ★ 3× 时长差的真因＝官方 useFastFullUpdate=true：官方全刷前发
+ *     E0=0x02 + E5=0x5A（TSFIX + 强制内部温度），其头文件自述
+ *     "1015000us vs 3082001us"。探针 G 臂单变量对照已坐实：官方真序
+ *     复刻不带 E0/E5 = 3088ms，带上 = 1018ms，与官方臂逐毫秒吻合。
+ *     即 initFullDemo（不发 E0/E5）跑的是规格书标称 3s 的自动温补
+ *     波形，不是 bug；本类 initFastDemo 实测 1060ms 即官方口径。官方
+ *     同一行注释警告该法不适用于低温环境，故量产全刷保留 3s 波形。
  */
 
 #include "GxEPD2_gdeq031t10.h"
@@ -488,7 +511,8 @@ void GxEPD2_gdeq031t10::demoWriteDualNoWindow(const uint8_t* prev_fb, const uint
 
 void GxEPD2_gdeq031t10::updateDemoPartial(uint8_t passes)
 {
-  /* demo 更新序列：0x04→0x12×passes→0x02。
+  /* demo 更新序列：0x04→0x12×passes→0x02。全刷与局刷共用本函数
+   * （panel_full_refresh 亦走此路径），故打印措辞不带 partial。
    * 注意：规格建议每 5 次快刷/局刷后加一次全屏刷新以减少残影 */
   if (passes < 1) passes = 1;
   _writeCommand(0x04);
@@ -499,7 +523,7 @@ void GxEPD2_gdeq031t10::updateDemoPartial(uint8_t passes)
     _writeData(0x00);
     _waitWhileBusy("DemoPart", full_refresh_time);
   }
-  Serial.printf("[EPD] demo partial refresh busy: %ums (%u %s)",
+  Serial.printf("[EPD] demo refresh busy: %ums (%u %s)",
                 (unsigned int)(millis() - t0), passes, passes > 1 ? "passes" : "pass");
   Serial.println();
   _writeCommand(0x02);

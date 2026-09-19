@@ -58,6 +58,7 @@
 #include "lan_pages.h"        /* PAGE_HTML/WIFI_HTML/SCHEDULE_HTML 资产 */
 #include "esp_mac.h"          /* v2.0：stats 端点 mac 字段（App 绑定凭据） */
 #include "layout_profile.h"   /* 2026-08-25：TINY 档紧凑版式分派 */
+#include "word_card_ui.h"     /* ui_fit_font：ASCII 行宽降级（2026-09-19） */
 #include "refresh_scheduler.h"
 #include "wifi_manager.h"
 #include "wifi_config_ui.h"
@@ -1046,12 +1047,13 @@ static bool get_sta_ip(char *buf, size_t len)
     return wifi_get_sta_ip(buf, len);
 }
 
-/* TINY 档 ASCII 按宽折行（2026-08-25）：URL/IP 无空格不做词边界
- * 启发，从整串起逐字符回退找可容纳前缀断行；*y 逐行前进（行距
- * 12px）。供配网页长串（LAN 地址/门户提示）在 106/112px 正文宽
- * 可读（size1 仍超宽时兜底拆两行，单字符不拆防死循环） */
-static void tiny_draw_wrap_ascii(const char *s, int x, int *y, int max_w,
-                                 uint16_t color)
+/* ASCII 按宽折行（2026-08-25 为 TINY 竖屏新增，2026-09-19 起 MID 档
+ * 窄宽画布共用）：URL/IP 无空格不做词边界启发，从整串起逐字符回退找
+ * 可容纳前缀断行；*y 逐行前进（行距 12px）。供配网页长串（LAN 地址/
+ * 门户提示）在窄正文宽可读（size1 仍超宽时兜底拆两行，单字符不拆防
+ * 死循环）。恒 size1 —— 已是字库下限，需要更大字号前先走 ui_fit_font */
+static void wrap_ascii_text(const char *s, int x, int *y, int max_w,
+                            uint16_t color)
 {
     char line[40];
     while (s[0]) {
@@ -1073,6 +1075,22 @@ static void tiny_draw_wrap_ascii(const char *s, int x, int *y, int max_w,
     }
 }
 
+/* 单行 ASCII 宽度预算（2026-09-19）：起步字号交 ui_fit_font 逐级降至
+ * 放得下；已到 size1 仍超宽则折行（折行只在降到底后接管，故宽屏
+ * 基线取值不变） */
+static void draw_ascii_fit_row(int x, int y, const char *s, int start_size,
+                               int max_w, uint16_t color)
+{
+    int fs = ui_fit_font(s, start_size, max_w);
+    int tw, th;
+    epd_gfx_text_bounds(s, fs, &tw, &th);
+    if (tw > max_w) {
+        wrap_ascii_text(s, x, &y, max_w, color);
+        return;
+    }
+    epd_gfx_draw_text(x, y, s, color, fs);
+}
+
 void lan_server_enter_receive_page(void)
 {
     /* portal 模式下重绘配网提示页（AP 服务后台保持） */
@@ -1088,7 +1106,7 @@ void lan_server_enter_receive_page(void)
 
     /* TINY 竖屏紧凑版式（2026-08-25）：原版式为 416px 宽设计值（URL
      * size3 ≈324px 超 122/128px 屏宽 2.5 倍），改标题栏 24 / size1
-     * 短句 / URL 逐行折行（tiny_draw_wrap_ascii）；未联网分支不再提
+     * 短句 / URL 逐行折行（wrap_ascii_text）；未联网分支不再提
      * 示键盘路径（wifi_config_ui 不适配 TINY，配网唯一通道=AP 门户） */
     if (layout_profile_get()->kind == LAYOUT_TINY) {
         int w = epd_gfx_width();
@@ -1103,7 +1121,7 @@ void lan_server_enter_receive_page(void)
             snprintf(url, sizeof(url), "http://%s", ip);
             epd_gfx_draw_text(8, 44, "Open browser:", EPD_GFX_BLACK, 1);
             int y = 64;
-            tiny_draw_wrap_ascii(url, 8, &y, w - 16, EPD_GFX_BLACK);
+            wrap_ascii_text(url, 8, &y, w - 16, EPD_GFX_BLACK);
             epd_gfx_draw_text(8, y + 8, "inkword.local", EPD_GFX_BLACK, 1);
         } else {
             epd_gfx_draw_text(8, 44, "WiFi off.", EPD_GFX_BLACK, 1);
@@ -1119,7 +1137,13 @@ void lan_server_enter_receive_page(void)
     }
 
     /* GFX 显示层（epd_gfx_width() x height()，面板无关），ASCII
-     * （FreeSans 无 CJK 字形） */
+     * （FreeSans 无 CJK 字形）。宽度预算（2026-09-19，3.1" 320 宽适
+     * 配）：本分支原版式按 416 宽设计，URL size3 ≈324px 与三条提示
+     * 行在 320 宽下越界——epd_gfx_draw_text 走 Adafruit print()，
+     * 越界不是截断而是换行续排（画面错位），故逐行按 max_w 降级
+     * 字号、降无可降再折行。416/400 现役屏两条路径均不触发 */
+    const int max_w = epd_gfx_width() - 32;   /* x=16 左右对称留白 */
+
     epd_gfx_fill_screen(EPD_GFX_WHITE);
 
     epd_gfx_fill_rect(0, 0, epd_gfx_width(), 36, EPD_GFX_BLACK);
@@ -1131,17 +1155,20 @@ void lan_server_enter_receive_page(void)
     if (lan_server_is_running() && has_ip) {
         char url[40];
         snprintf(url, sizeof(url), "http://%s/", ip);
-        epd_gfx_draw_text(16, 78, "Open in phone browser:", EPD_GFX_BLACK, 1);
-        epd_gfx_draw_text(16, 124, url, EPD_GFX_BLACK, 3);
-        epd_gfx_draw_text(16, 154, "or http://inkword.local", EPD_GFX_BLACK, 1);
-        epd_gfx_draw_text(16, 196, "Send text / image, then any key exit",
-                          EPD_GFX_BLACK, 1);
+        draw_ascii_fit_row(16, 78, "Open in phone browser:", 1, max_w,
+                           EPD_GFX_BLACK);
+        draw_ascii_fit_row(16, 124, url, 3, max_w, EPD_GFX_BLACK);
+        draw_ascii_fit_row(16, 154, "or http://inkword.local", 1, max_w,
+                           EPD_GFX_BLACK);
+        draw_ascii_fit_row(16, 196, "Send text / image, then any key exit",
+                           1, max_w, EPD_GFX_BLACK);
     } else {
-        epd_gfx_draw_text(16, 80, "WiFi not connected.", EPD_GFX_BLACK, 2);
-        epd_gfx_draw_text(16, 120, "Long press LEFT for WiFi portal,",
-                          EPD_GFX_BLACK, 2);
-        epd_gfx_draw_text(16, 150, "or long press CENTER (keyboard).",
-                          EPD_GFX_BLACK, 2);
+        draw_ascii_fit_row(16, 80, "WiFi not connected.", 2, max_w,
+                           EPD_GFX_BLACK);
+        draw_ascii_fit_row(16, 120, "Long press LEFT for WiFi portal,", 2,
+                           max_w, EPD_GFX_BLACK);
+        draw_ascii_fit_row(16, 150, "or long press CENTER (keyboard).", 2,
+                           max_w, EPD_GFX_BLACK);
     }
 
     epd_gfx_flush();
@@ -1270,12 +1297,15 @@ static void portal_monitor_task(void *arg)
         wifi_get_sta_ip(ip, sizeof(ip));
 
         if (lan_server_is_active()) {
+            const int max_w = epd_gfx_width() - 32;
             epd_gfx_fill_screen(EPD_GFX_WHITE);
             epd_gfx_fill_rect(0, 0, epd_gfx_width(), 36, EPD_GFX_BLACK);
             epd_gfx_draw_text(16, 26, "WiFi Connected", EPD_GFX_WHITE, 2);
-            epd_gfx_draw_text(16, 84, "Device IP:", EPD_GFX_BLACK, 1);
-            epd_gfx_draw_text(16, 116, ip, EPD_GFX_BLACK, 3);
-            epd_gfx_draw_text(16, 170, "Portal closing...", EPD_GFX_BLACK, 1);
+            draw_ascii_fit_row(16, 84, "Device IP:", 1, max_w,
+                               EPD_GFX_BLACK);
+            draw_ascii_fit_row(16, 116, ip, 3, max_w, EPD_GFX_BLACK);
+            draw_ascii_fit_row(16, 170, "Portal closing...", 1, max_w,
+                               EPD_GFX_BLACK);
             epd_gfx_flush();
         }
 
@@ -1338,8 +1368,8 @@ void lan_portal_enter(void)
         epd_gfx_draw_text(8, 100, "2. Open:", EPD_GFX_BLACK, 1);
         epd_gfx_draw_text(8, 120, "http://", EPD_GFX_BLACK, 1);
         int y = 136;
-        tiny_draw_wrap_ascii(AP_IFACE_IP "/", 8, &y, w - 16,
-                             EPD_GFX_BLACK);
+        wrap_ascii_text(AP_IFACE_IP "/", 8, &y, w - 16,
+                        EPD_GFX_BLACK);
 
         epd_gfx_draw_text(8, epd_gfx_height() - 24, "Any key exit",
                           EPD_GFX_BLACK, 1);
@@ -1349,20 +1379,24 @@ void lan_portal_enter(void)
         return;
     }
 
-    /* 屏幕提示页（ASCII） */
+    /* 屏幕提示页（ASCII）—— 宽度预算同接收页（2026-09-19）：
+     * "2. Open http://" + IP 与 SSID size3 在窄画布（3.1" 竖屏
+     * 240 宽）会越界续排，故逐行走降级/折行 */
+    const int max_w = epd_gfx_width() - 32;
+
     epd_gfx_fill_screen(EPD_GFX_WHITE);
     epd_gfx_fill_rect(0, 0, epd_gfx_width(), 36, EPD_GFX_BLACK);
     epd_gfx_draw_text(16, 26, s_portal_provision ? "WiFi Setup" : "AP Direct",
                       EPD_GFX_WHITE, 2);
 
-    epd_gfx_draw_text(16, 74, "1. Connect phone to hotspot:",
-                      EPD_GFX_BLACK, 1);
-    epd_gfx_draw_text(16, 112, PORTAL_SSID, EPD_GFX_BLACK, 3);
-    epd_gfx_draw_text(16, 150, "2. Open http://" AP_IFACE_IP,
-                      EPD_GFX_BLACK, 1);
-    epd_gfx_draw_text(16, 168, "   (send page / wifi setup)",
-                      EPD_GFX_BLACK, 1);
-    epd_gfx_draw_text(16, 208, "Any key exit", EPD_GFX_BLACK, 1);
+    draw_ascii_fit_row(16, 74, "1. Connect phone to hotspot:", 1, max_w,
+                       EPD_GFX_BLACK);
+    draw_ascii_fit_row(16, 112, PORTAL_SSID, 3, max_w, EPD_GFX_BLACK);
+    draw_ascii_fit_row(16, 150, "2. Open http://" AP_IFACE_IP, 1, max_w,
+                       EPD_GFX_BLACK);
+    draw_ascii_fit_row(16, 168, "   (send page / wifi setup)", 1, max_w,
+                       EPD_GFX_BLACK);
+    draw_ascii_fit_row(16, 208, "Any key exit", 1, max_w, EPD_GFX_BLACK);
     epd_gfx_flush();
 
     LOG_I("AP portal active (%s): SSID=" PORTAL_SSID " page=http://"

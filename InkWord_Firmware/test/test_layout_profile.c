@@ -7,7 +7,8 @@
  * 档位首调缓存单次初始化，用例间经 layout_profile_test_reset() 清
  * 缓存重新分派。覆盖：短边阈值边界 / 旋转无关 / narrow_tiny 特判 /
  * 缓存指针稳定 / 四档字段健全性 / form 形态轴（P2）/
- * PPI 自动层选级（2026-09-08）。
+ * PPI 自动层选级（2026-09-08）/ kb_scale 宽度钳制与 3.1" 320x240
+ * 及 240x320 画布（2026-09-19）。
  */
 #include <stdio.h>
 #include <unity.h>
@@ -150,4 +151,56 @@ void test_layout_ppi_auto_level(void)
     /* dpi=0 退表值（native 不注入路径）：LARGE 表值级3 */
     layout_profile_set_dpi(0);
     TEST_ASSERT_EQUAL_INT(3, dispatch(800, 480)->font_lvl_main);
+}
+
+/* kb_scale 横向钳制（2026-09-19，3.1" 320 宽适配）：档位表值只保证
+ * 垂直约束，最宽键盘行（行 0 = 10×36+9×3 = 387px）放不下时按运行期
+ * 宽度下调。现役屏必须零变化：416/400 放得下保持 100，SMALL 264 取
+ * 垂直定档的 60（钳制值 66 不触发） */
+void test_layout_kb_scale_width_fit(void)
+{
+    TEST_ASSERT_EQUAL_INT(100, dispatch(416, 240)->kb_scale);  /* 3.7" 基线 */
+    TEST_ASSERT_EQUAL_INT(100, dispatch(400, 300)->kb_scale);  /* 4.2" */
+    TEST_ASSERT_EQUAL_INT(60,  dispatch(264, 176)->kb_scale);  /* 2.7" 垂直档 */
+    TEST_ASSERT_EQUAL_INT(80,  dispatch(320, 240)->kb_scale);  /* 3.1" 横 */
+    TEST_ASSERT_EQUAL_INT(59,  dispatch(240, 320)->kb_scale);  /* 3.1" 竖 */
+
+    /* 不变式：钳制后行 0 实宽（wifi_config_ui.c kb_pixel_rect 口径）
+     * 必须 ≤ 可用宽（屏宽 - 8 居中余量），否则居中负 x、左键出屏 */
+    const int ws[] = { 416, 400, 320, 264, 240, 122 };
+    for (unsigned i = 0; i < sizeof(ws) / sizeof(ws[0]); i++) {
+        int w = ws[i];
+        int s = dispatch(w, 300)->kb_scale;
+        int key_w = 36 * s / 100;
+        int gap   = 3 * s / 100;
+        int total = 10 * key_w + 9 * gap;
+        char label[32];
+        snprintf(label, sizeof(label), "w=%d scale=%d", w, s);
+        TEST_ASSERT_GREATER_THAN_INT_MESSAGE(0, key_w, label);
+        TEST_ASSERT_LESS_OR_EQUAL_INT_MESSAGE(w - 8, total, label);
+    }
+}
+
+/* 3.1" 两块可达画布（desc gfx_rotation=1 → 320x240 横；用户改方向
+ * → 240x320 竖）：同落 MID 档、形态各判；PPI 自动层 @129 复现 MID
+ * 表值几何，说明该屏无需为字号/行高手工校准 */
+void test_layout_mid_31_canvas(void)
+{
+    const layout_profile_t *land = dispatch(320, 240);
+    TEST_ASSERT_EQUAL(LAYOUT_MID, land->kind);
+    TEST_ASSERT_EQUAL(LAYOUT_FORM_LANDSCAPE, land->form);
+
+    const layout_profile_t *port = dispatch(240, 320);
+    TEST_ASSERT_EQUAL(LAYOUT_MID, port->kind);
+    TEST_ASSERT_EQUAL(LAYOUT_FORM_PORTRAIT, port->form);
+
+    layout_profile_set_dpi(129);
+    const layout_profile_t *p = dispatch(320, 240);
+    TEST_ASSERT_EQUAL_INT(1,  p->font_lvl_main);   /* 3.7mm@129→19px→级1 */
+    TEST_ASSERT_EQUAL_INT(20, p->font_px_main);
+    TEST_ASSERT_EQUAL_INT(1,  p->mean_level);
+    TEST_ASSERT_EQUAL_INT(44, p->item_h);          /* cell20 + pad[MID]24 */
+    TEST_ASSERT_EQUAL_INT(22, p->hint_h);
+    TEST_ASSERT_EQUAL_INT(28, p->info_lh);
+    layout_profile_set_dpi(0);
 }

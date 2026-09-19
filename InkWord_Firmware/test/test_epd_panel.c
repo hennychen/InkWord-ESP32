@@ -278,19 +278,27 @@ void test_panel_auto_detect_quiet_ssd16_hits_gdeq0426(void)
 
 void test_panel_auto_detect_otp_unique_first_stage(void)
 {
-    /* SSD1619 指纹 0x01（e042a13 stub 定制）：第一阶唯一命中 */
+    /* SSD1619 指纹 0x01（e042a13 stub 定制）：第一阶唯一命中。
+     * busy_level 定制为 1（SSD 族 BUSY 空闲 LOW）——OTP 阶自
+     * 2026-09-19 起只接受 SSD16xx 0x2F，UC 特征探针不进此阶 */
     g_panel_e042a13.otp_signature = 0x01;
-    probe_set(true, true, 0x01);
+    g_panel_e042a13.busy_level = 1;
+    probe_set(false, true, 0x01);
     TEST_ASSERT_EQUAL_PTR(&g_panel_e042a13, epd_panel_auto_detect());
     g_panel_e042a13.otp_signature = 0;
+    g_panel_e042a13.busy_level = 0;
 }
 
-void test_panel_auto_detect_uc_flgreach_hits_opm(void)
+void test_panel_auto_detect_uc_flg_rejects_otp_stage(void)
 {
-    /* UC FLG 0x13（opm stub 定制）：第一阶唯一命中 */
+    /* UC 族探针（busy 空闲 HIGH）即便读回 0x13 也不进 OTP 阶：
+     * 0x71 是 FLG 状态位（真机证伪：硬复位 0x13/软复位 0x12，
+     * 且族内所有屏同值），拿它命中会把任意 UC 屏判给 opm021eb_bw。
+     * stub 全 desc 同几何 240x416 → 第三阶碰撞，第四阶需静默，
+     * 故期望 NULL 走 NVS fallback（2026-09-19 3.1" 劫持回归） */
     g_panel_opm021eb.otp_signature = 0x13;
     probe_set(true, true, 0x13);
-    TEST_ASSERT_EQUAL_PTR(&g_panel_opm021eb, epd_panel_auto_detect());
+    TEST_ASSERT_NULL(epd_panel_auto_detect());
     g_panel_opm021eb.otp_signature = 0;
 }
 
