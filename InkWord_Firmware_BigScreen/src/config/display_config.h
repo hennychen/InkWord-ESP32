@@ -6,7 +6,15 @@
 // 波形勘误记录（官方源码对齐纪律）：
 //   方案原文写 epdiy_ED097TC2；卖家示例（Info/ED060KD1-EpdiyV7示例和
 //   操作说明/ED060KD1-EpdiyV7/main.c）对同分辨率 ES108FC 使用
-//   epdiy_ED047TC1 —— 以卖家示例为准。专用波形到位后替换（遗留 TODO-A）。
+//   epdiy_ED047TC1 —— 以卖家示例为准。
+//
+// TODO-A 终态结论（2026-09-18 全网搜索 + 卖家示例确认 + 卖家直接回复）：
+//   ES108FC1 无专用波形文件。epdiy 官方波形库、NekoInk(zephray)、
+//   Glider(Modos-Labs)、元太官网 (einkholdings.com/eink.com) 均无；
+//   卖家示例（Info/ED060KD1-EpdiyV7/main.c L54-61）同样使用 ED047TC1；
+//   卖家确认不提供专用波形。
+//   最终方案：ED047TC1 通用波形 + 自研 binfast/scanq（run115 定稿）。
+//   tools/iwf2epdiy.py 保留以备未来万一获取 .wf/.iwf 文件。
 // ============================================================
 
 // ES108FC1C1-RHY 几何（1920x1080）
@@ -30,5 +38,5 @@
 #define PANEL_VCOM_MV 2450
 
 // 波形起点（非专用）：ED047TC1 为 9.7" 通用波形
-// TODO(A): 获取 ES108FC1C1-RHY 专用波形后替换此宏
+// 全网搜索无 ES108FC1 专用波形（见文件头 TODO-A 终态结论）
 #define PANEL_WAVEFORM epdiy_ED047TC1
