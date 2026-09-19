@@ -78,7 +78,7 @@ InkWord-ESP32/
 │       ├── services/            # BLE/mDNS/HTTP/Cloud 通信层
 │       ├── state/               # 账户/设备状态控制器
 │       └── core/                # EPD 帧协议
-├── tools/                   # 跨端工具（FSRS 对拍向量 / 默认词库音频）
+├── tools/                   # 跨端工具（FSRS 对拍向量 / 默认词库音频 / 板卡家族门禁 board_gate.py）
 ├── docs/                    # 设计文档（18 篇）
 ├── docker-compose.yml       # 全栈编排（postgres/redis/ollama/backend/frontend）
 └── README.md                # 本文档
@@ -310,7 +310,8 @@ cd InkWord_Firmware
 /opt/homebrew/bin/python3.11 -m platformio run -e inkword-s3-demo
 # 编译特定屏幕环境
 /opt/homebrew/bin/python3.11 -m platformio run -e inkword-s3-wf0270
-# 烧录
+# 烧录（先过板卡家族门禁：0 放行 / 2 家族不符 / 3 未登记，详见 tools/board_gate.py）
+python3 ../tools/board_gate.py check --env inkword-s3-demo
 /opt/homebrew/bin/python3.11 -m platformio run -e inkword-s3-demo -t upload --upload-port /dev/cu.usbserial-0001
 # 串口监控
 /opt/homebrew/bin/python3.11 -m platformio device monitor --port /dev/cu.usbserial-0001 --baud 115200
@@ -388,6 +389,12 @@ NVS blob = {magic "LR04", deck[8], count, used, lr_sparse_t[used]}
 6. **C 源码多字节字符**不能作 char 字面量（如间隔号用 `'\xC2','\xB7'` 两字节）。
 7. **协议 v2 向下兼容**：新增 Subject/Deck/PayloadJson 等字段，旧固件 cJSON 天然忽略未知键。
 8. **cjk_text 与 reader_engine 排版原语为同源副本**：上机验证后应合并单点维护。
+9. **串口号不能用来认板**：小屏/大屏两套治具的 CP2102 都枚举成
+   `/dev/cu.usbserial-0001`（桥只要供电就枚举，与固件无关），且同一块
+   N16R8 模组会在两套屏之间轮用，互烧还会连带重写分区表。烧录前跑
+   `python3 tools/board_gate.py check --env <env>`：它按 `tools/boards.json`
+   的 MAC 登记判族（一块板可登记多个 families），未登记时回落读 0x8000
+   分区表签名（`ota_0`=小屏 / `storage`=大屏）并要求先 `register`。
 
 ---
 

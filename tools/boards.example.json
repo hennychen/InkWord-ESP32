@@ -1,0 +1,15 @@
+{
+  "_说明": "复制为 tools/boards.json 后按实体板登记；boards.json 存 MAC 等设备指纹，不入库。tools/board_gate.py 读写本结构。",
+  "_家族": "small = InkWord_Firmware（Arduino，小屏 SPI 墨水屏，有音频）；big = InkWord_Firmware_BigScreen（ESP-IDF + epdiy，ES108FC1 大屏，无音频）",
+  "_families": "同一块 devkit 只换屏线束、不换模组时可有多个家族（check 按成员判定放行）；只有确认某模组专供一套屏时才写单元素",
+  "boards": {
+    "aa:bb:cc:dd:ee:ff": {
+      "families": ["small", "big"],
+      "label": "ESP32-S3-N16R8 主力板（两套屏轮用）",
+      "panel": "gdeq031t10_uc8253",
+      "power": "小屏 Mac 直供；大屏需 5V/2A 独立电源，经 hub 会供电塌陷反复 POWERON",
+      "added": "2026-09-19",
+      "family_on_flash_at_register": "small"
+    }
+  }
+}

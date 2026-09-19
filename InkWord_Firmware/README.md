@@ -273,6 +273,15 @@ cd InkWord_Firmware
 
 VSCode + PlatformIO 用户：底部状态栏环境切换器选 `inkword-s3` / `inkword-s3-e042` / `inkword-s3-gdew027c44` / `inkword-s3-wf0270` 后点 Upload 等效。
 
+> **烧录前先过板卡门禁**：本仓库另有一套大屏固件
+> `InkWord_Firmware_BigScreen/`（ESP-IDF + epdiy / ES108FC1），两套治具的
+> CP2102 都枚举成同一个 `/dev/cu.usbserial-0001`，端口名不能用来认板；同
+> 一块 N16R8 模组还会在两套屏之间轮用，互烧会连带重写分区表（小屏
+> `ota_0/ota_1` ↔ 大屏 `storage`）。故上传前跑
+> `python3 ../tools/board_gate.py check --env <env>`（退出码 0 放行 / 2
+> 家族不符 / 3 该板 MAC 未登记，需 `register --family small` 落 MAC；
+> 结构见 `tools/boards.example.json`）。
+
 **切换后自检**（串口 115200）：
 - 启动日志出现 `EPD driver initialized: panel 'depg0370_uc8253' ...` 或 `panel 'e042a13_ssd1619' 400x300 dual-plane color` / `panel 'gdew027c44_il91874' 176x264 rot=1 dual-plane color` = 面板识别正确；
 - 三色屏全刷时长：2.7" 快刷 ~4.4s（每 9 次含 1 次深刷 ~14.7s，日志 `FAST/DEEP LUT` 可辨）；4.2" ~14.6s（三色物理下限）；待机页文字应正常显示。
