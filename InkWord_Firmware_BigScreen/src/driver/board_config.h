@@ -67,18 +67,47 @@
 #define BS_SD_CS     0
 
 // ---------- [预留] 音频模块 ES8311 + NS4150B（P3，引脚已规划） ----------
-// 方案：沿用现有小屏板已验证的 ES8311+NS4150B 组合，无 MCLK 省线模式
-// （SCLK 派生时钟）。GPIO22-25 为全板唯一连续空闲四连号（epdiy 库零
-// 引用、非 strapping、非模组 flash/PSRAM 区 26-37），物理相邻走线集中，
-// 降低 SCLK/LRCK 接反风险（小屏板实测教训）。
-// I2C 复用 I2C_NUM_0（BS_I2C_SDA/SCL=39/40），ES8311 地址 0x18 与屏侧
-// 0x48/0x20 无冲突；NS4150B 使能默认上拉（模块板），如需软控用 GPIO3。
+// 方案：沿用小屏板已验证组合（gpio_config.h 2026-08-27 定档）——MCLK
+// 必须独立实线输出 256×fs（省线 SCLK 派生模式小屏实测嘶嘶声不可用；
+// xiaozhi-esp32 56/57 块量产板同用 MCLK 实线主流拓扑）。GPIO22-25 为
+// 全板唯一连续空闲四连号（epdiy 库零引用、非 strapping、非模组
+// flash/PSRAM 区 26-37），物理相邻走线集中，降低 SCLK/LRCK 接反
+// 风险（小屏板实测教训：接反→DAC 帧错位持续气流声）。
+// I2C 复用 I2C_NUM_0（BS_I2C_SDA/SCL=39/40），ES8311 地址 0x18（CE=GND，
+// NACK 自适应 0x19）与屏侧 TPS65185=0x48、PCA9555=0x20 无冲突——
+// 三方共线：audio 驱动 init 勿重复装 i2c driver 同端口（epdiy 已装）。
+// MCK=GPIO3（strapping JTAG 源选择脚，默认上拉启动安全；运行期输出
+// 无冲突——模块 MCK 为高阻输入不会拉低它，复位重采样亦安全）。
+// NS4150B 使能板载 R10 上拉常开（小屏同款模块），无 MCU 控制线；
+// 如需软控挪 R10→R11 焊盘后用富余脚。模块 5V 供电（无 5V 可 3V3
+// 功率稍小，小屏实测）。
 #define BS_I2S_BCLK   22   // ES8311 SCLK/BCLK
 #define BS_I2S_LRCK   23   // ES8311 LRCK/WS
 #define BS_I2S_DSDIN  24   // MCU DOUT → codec DSDIN（播放）
 #define BS_I2S_DSDOUT 25   // codec DSDOUT → MCU DIN（录音）
-// 备用条件空闲脚：GPIO3（strapping JTAG 源，启动后可作 PA 使能）、
-// GPIO19/20（USB 占用则不可用）、GPIO43/44（默认 UART0 日志，慎占）
+#define BS_I2S_MCLK   3    // 独立 256×fs（省线派生实测嘶嘶不可用）
+// 备选（弃 SD 三脚 0/1/2 后）：MCK 可挪 GPIO0（BOOT 脚运行期输出小屏
+// 实证安全）或 1/2，富余脚作 NS4150B 软使能；GPIO43/44（UART0 日志）
+// 不动。
+// [2026-09-16 勘误] 原注「GPIO19/20=USB D+/D- 不动」系卖家开发板假设；
+// 实板为自绘 PCB，GPIO19 已定为按键 ADC 检测脚（卖家告知），USB
+// 走线以自绘原理图为准，旧假设作废。
 
-// ---------- [待定] 五向按键（大屏板按键方案未定） ----------
-// TODO(Phase 3 P0): 原理图确认后补充按键 GPIO 定义（沿用五向导航交互）
+// ---------- [自绘板实证] 三按键 ADC 检测（2026-09-16 卖家告知） ----------
+// 自绘 PCB 三按键，分压网络汇总到 GPIO19（ESP32-S3 = ADC2_CH8）
+// 单脚多键：不同按键串不同分压电阻，ADC 原始值落在不同窗口。
+// 电气持征（典型）：无键=上拉满量程（~4095）；按键各自拉到中低段。
+// 窗口分界为占位初值，必须经串口 'a' 诊断命令实测后修正——
+// 实测方法：烧录后串口输入 a，分别按下三键读原始值，按段间中线填宏。
+// ADC2 与 WiFi 互斥（记忆实证）：仅 BIGSCREEN_APP 使用本驱动，LAN
+// 固件不编入 button_handler，无冲突。
+#define BS_BTN_ADC_GPIO   19   // ADC2_CH8（自绘板按键分压汇总脚）
+#define BS_BTN_ADC_TH_NONE 3400  // ≥此值=无键按下（实测：丝印01≈2731，无键=4095，中线3400）
+#define BS_BTN_ADC_TH_1_2 1460  // <此值=键1；[TH_1_2, TH_2_3)=键2（实测：丝印03≈957，丝印02≈1962，中线1460）
+#define BS_BTN_ADC_TH_2_3 2350  // [TH_2_3, TH_NONE)=键3（实测：丝印02≈1962，丝印01≈2731，中线2350）
+// 三物理键→导航键映射（可配；长按语义由 app_main 编排层定义）
+#define BS_BTN_KEY1  NAV_UP      // 键1（低段）：短=上翻/上一词，长=全刷清屏
+#define BS_BTN_KEY2  NAV_DOWN    // 键2（中段）：短=下翻/下一词，长=切模式
+#define BS_BTN_KEY3  NAV_CENTER  // 键3（高段）：短=确认（发音桩），长=菜单桩
+// 遗留：BS_NAV_* 七键 GPIO 直连方案作废（原 -1 待定表删除）；
+// 若后续自绘板加独立 GPIO 键，恢复直连分支再配。

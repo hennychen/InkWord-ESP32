@@ -1,0 +1,38 @@
+/**
+ * @file cjk_font.h
+ * @brief 中文点阵字库接口（六级 16/20/24/32/40/48px；大屏手维护）
+ *
+ * 字形数据 cjk_font_data.bin（EMBED_FILES 编入固件），码点升序二分查找。
+ * 位图行主序 MSB-first，bit=1 着色，可直接 blit 到 epd_gfx_draw_bitmap。
+ * level 档位：0=16px / 1=20px / 2=24px / 3=32px / 4=40px / 5=48px
+ * （32px 级 LARGE 档大屏 2026-09-03；40/48px 级大屏 UI 重设计 2026-09-17：
+ * 阅读正文 40px、词卡释义/待机引文 48px）；阅读器按级取形并做墨迹盒
+ * 变宽渲染（reader_engine）。
+ * 引文表已拆出至 quotes_app.h（App 层）。由 tools/gen_cjk_font.swift
+ * 生成（大屏版只产 bin；本 .h 与 cjk_font.c 为手维护，扩级时同步
+ * CJK_FONT_LEVELS 与兼容宏）。
+ */
+#ifndef INKWORD_CJK_FONT_H
+#define INKWORD_CJK_FONT_H
+
+#include <stdint.h>
+
+#define CJK_FONT_LEVELS    6                 /**< 字号级数 */
+#define CJK_GLYPH_W       48                 /**< 兼容宏：最大级字形宽（零消费方，随级数自适） */
+#define CJK_GLYPH_H       48                 /**< 兼容宏：最大级字形高 */
+#define CJK_GLYPH_STRIDE  6       /**< 兼容宏：最大级每行字节数 */
+#define CJK_GLYPH_N       3935                 /**< 字形总数（各级共用码点表） */
+
+/** UTF-32 码点 -> 指定级字形位图；未收录返回 NULL（调用方画占位框） */
+const uint8_t *cjk_glyph_lookup_level(uint32_t cp, int level);
+
+/** 兼容 API：UTF-32 码点 -> 最大级字形位图（零外部消费方）；未收录返回 NULL */
+const uint8_t *cjk_glyph_lookup(uint32_t cp);
+
+/** 指定级字形边长（px）：16/20/24/32/40/48；level 越界返回 0 */
+int cjk_glyph_cell_size(int level);
+
+/** 指定级每行字节数：2/3/3/4/5/6；level 越界返回 0 */
+int cjk_glyph_stride_size(int level);
+
+#endif /* INKWORD_CJK_FONT_H */
