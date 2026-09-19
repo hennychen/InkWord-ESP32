@@ -40,7 +40,28 @@
 #include "HelvBold48pt7b.h"
 #include "waveform_scanq.h"
 
+#ifdef BIGSCREEN_APP
+#include "button_handler.h"
+#endif
+
 static const char *TAG = "gfx";
+
+/* 刷新窗口挂起按键扫描：面板扫描/升压把 GPIO19(ADC2_CH8) 分压读数压进
+ * 按键窗口，去抖状态机 1.5s 后读成幻影长按（真机开机首刷实证）。
+ * 只有 BIGSCREEN_APP 编入按键扫描，其余 env 空操作 */
+static inline void btn_guard_begin(void)
+{
+#ifdef BIGSCREEN_APP
+    button_scan_pause();
+#endif
+}
+
+static inline void btn_guard_end(void)
+{
+#ifdef BIGSCREEN_APP
+    button_scan_resume();
+#endif
+}
 
 #define GFX_W 1920
 #define GFX_H 1080
@@ -101,8 +122,10 @@ static enum EpdDrawError full_update_gc16(EpdiyHighlevelState *hl)
         orig = hl->waveform;
         hl->waveform = binfast_waveform();
     }
-    enum EpdDrawError err = epd_hl_update_screen(hl, MODE_GC16,
-                                                 epd_ambient_temperature());
+    enum EpdDrawError err;
+    btn_guard_begin();
+    err = epd_hl_update_screen(hl, MODE_GC16, epd_ambient_temperature());
+    btn_guard_end();
     if (orig != NULL) {
         hl->waveform = orig;
     }
@@ -395,7 +418,10 @@ void epd_gfx_flush_window(int x, int y, int w, int h)
         for (int i = 0; i < nb; i++) drow[i] = ex[srow[i]];
     }
 
-    esp_err_t err = panel_es108fc_update_area(x0, y, x1 - x0, h);
+    esp_err_t err;
+    btn_guard_begin();
+    err = panel_es108fc_update_area(x0, y, x1 - x0, h);
+    btn_guard_end();
     int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "DU 局刷失败 err=%d（x=%d y=%d w=%d h=%d，%lld ms）",
@@ -465,6 +491,7 @@ void epd_gfx_deep_clean(void)
     const EpdWaveform *orig = hl->waveform;
     hl->waveform = binfast_waveform();
     int64_t t0 = esp_timer_get_time();
+    btn_guard_begin();
     enum EpdDrawError err = EPD_DRAW_SUCCESS;
     const struct { uint8_t front, back; } seq[3] = {
         {0xFF, 0x00}, {0x00, 0xFF}, {0xFF, 0x00},
@@ -482,6 +509,7 @@ void epd_gfx_deep_clean(void)
         memset(hl->back_fb, 0xFF, fb_bytes);
         err = epd_hl_update_screen(hl, MODE_GC16, epd_ambient_temperature());
     }
+    btn_guard_end();
     hl->waveform = orig;
     int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
     if (err != EPD_DRAW_SUCCESS) {

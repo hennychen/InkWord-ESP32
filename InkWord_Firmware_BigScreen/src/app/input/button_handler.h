@@ -75,14 +75,18 @@ bool button_is_pressed(nav_key_t id);
 void button_inject(nav_key_t id, button_event_t ev);
 
 /**
- * @brief 挂起后台扫描（ADC2/WiFi 互斥：lan_portal 会话起 WiFi 前调，
- *        扫描任务软门挂起不再采样 GPIO19=ADC2_CH8）。
+ * @brief 挂起后台扫描（软门计数，可嵌套）。两个使用方：
+ *        - lan_portal 会话：GPIO19=ADC2_CH8 与 WiFi 射频硬互斥；
+ *        - epd_gfx 刷新窗口：面板扫描/升压噪声压低分压读数，
+ *          去抖状态机会误读成「按住」（幻影按键）。
+ *        挂起期间扫描任务不采样并把去抖状态清零（见 .c s_pause_depth）。
  */
 void button_scan_pause(void);
 
 /**
- * @brief 恢复后台扫描（WiFi stop 后调；含 ADC 通道重配——ADC2 仲裁
- *        恢复的保险，失败降级串口命令输入）。
+ * @brief 解除一层挂起（与 button_scan_pause 配对；最外层归零时才真正
+ *        恢复采样，并做 ADC 通道重配——ADC2 仲裁恢复的保险，
+ *        失败降级串口命令输入）。
  */
 void button_scan_resume(void);
 

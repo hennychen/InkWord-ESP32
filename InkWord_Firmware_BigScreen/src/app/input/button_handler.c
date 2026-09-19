@@ -13,6 +13,11 @@
  * 语义，大屏全刷更慢，队列化更必要）。
  *
  * ADC 初始化失败时降级为无硬件键（串口命令注入补位），不阻塞启动。
+ *
+ * 幻影按键防线：面板刷新（0.4~3s）期间升压/扫描噪声会把分压读数拉到
+ * 按键窗口内，去抖状态机读成「按住」（真机开机首刷 1.5s 处自发
+ * 「UP 长按」）。刷新窗口由 epd_gfx 调 button_scan_pause/resume 套住，
+ * 挂起期不采样且清空状态机。
  */
 #include "button_handler.h"
 
@@ -33,6 +38,7 @@ static const char *TAG = "BTN";
 #define LONG_PRESS_TICKS 30    /* 长按阈值 1.5s = 30 x 50ms */
 #define QUEUE_DEPTH      16    /* 事件队列深度（满丢最旧） */
 #define ADC_SAMPLES      4     /* 每周期采样均值次数（抗噪） */
+#define PAUSE_POLL_MS    200   /* 挂起期的轮询节拍（WiFi 让路 200ms 足够） */
 
 /* GPIO19 = ADC2_CH8（ESP32-S3）；仅 BIGSCREEN_APP 编入本文件，
  * 与 LAN 固件的 WiFi/ADC2 互斥无关 */
@@ -46,9 +52,10 @@ static const nav_key_t k_adc_map[3] = {
 
 static adc_oneshot_unit_handle_t s_adc = NULL;  /* NULL=ADC 不可用，无硬件键 */
 
-/* ADC2/WiFi 互斥软门（lan_portal 会话用）：true=扫描挂起不采样
- * （GPIO19=ADC2_CH8，WiFi 射频占用期间 ADC2 读取冲突） */
-static volatile bool s_scan_paused = false;
+/* 扫描挂起软门（嵌套计数，>0=挂起）：两个来源——WiFi 会话期
+ * （GPIO19=ADC2_CH8 与射频硬互斥）、面板刷新窗口（升压/扫描噪声压低
+ * 分压读数 → 幻影按键，见 epd_gfx.c btn_guard_*） */
+static volatile int s_pause_depth = 0;
 
 /* 队列消息（扫描任务 -> 主任务；文件内私有类型） */
 typedef struct {
@@ -114,8 +121,11 @@ static void scan_task(void *arg)
 {
     (void)arg;
     for (;;) {
-        if (s_scan_paused) {          /* WiFi 会话期挂起（200ms 粗粒度足够） */
-            vTaskDelay(pdMS_TO_TICKS(200));
+        if (s_pause_depth > 0) {
+            /* 挂起期不采样，且每拍清过去抖状态：刷新窗口内的噪声读数
+             * 不得留在状态机里，否则恢复后半途按住会续计成长按 */
+            memset(s_states, 0, sizeof(s_states));
+            vTaskDelay(pdMS_TO_TICKS(PAUSE_POLL_MS));
             continue;
         }
         int raw = button_adc_sample();
@@ -233,13 +243,15 @@ void button_inject(nav_key_t id, button_event_t ev)
 
 void button_scan_pause(void)
 {
-    s_scan_paused = true;
-    ESP_LOGW(TAG, "扫描挂起（WiFi 会话期 ADC2 让路）");
+    if (s_pause_depth == 0) ESP_LOGW(TAG, "扫描挂起");
+    s_pause_depth++;
 }
 
 void button_scan_resume(void)
 {
-    s_scan_paused = false;
+    if (s_pause_depth > 0) s_pause_depth--;
+    if (s_pause_depth > 0) return;      /* 仍有外层挂起（嵌套）：保持静默 */
+
     /* WiFi stop 后 ADC2 仲裁恢复的保险：重配通道（幂等；失败降级串口） */
     if (s_adc) {
         adc_oneshot_chan_cfg_t chan_cfg = {
