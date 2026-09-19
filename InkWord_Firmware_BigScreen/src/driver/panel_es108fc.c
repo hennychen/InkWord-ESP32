@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 
 #include "driver/gpio.h"
 #include "driver/i2c.h"
@@ -129,18 +130,100 @@ esp_err_t panel_es108fc_safe_init(void) {
         s_hl_ready = true;
     }
 
-    // 4. 全白清除（验证上电/电源链/波形基本链路，双路径电源）
+    // 4. 全白基线（验证上电/电源链/波形基本链路）
+    //    [bring-up §13.2 禁用纪律] epd_clear() 走 epd_push_pixels_lcd，
+    //    缺每帧残留排空：帧未等完屏停驱黑阶段、时长 643~6623ms 十倍漂移、
+    //    无 frame k= 签名不可观测（run96/97 实证）。一切清屏走 GC16 diff
+    //    （run98 定案）：front=白 / back=黑 显式构造全屏白驱 diff；更新后
+    //    back 脏行同步为白，后续首帧词卡 diff 即 to=词卡/from=白。
+    //    （hl init 虽已 memset 双白，但双白空 diff 为 no-op 不扫描
+    //    ——run92 踩坑 1；屏物理残影必须靠强驱动清除）
     panel_power_on();
-    epd_clear();
-    panel_power_off();
+    vTaskDelay(pdMS_TO_TICKS(500));  // 升压建立窗，对齐 lan_image L1159
+    {
+        const size_t fb_bytes = (size_t)(PANEL_WIDTH / 2) * PANEL_HEIGHT;
+        uint8_t* fb = epd_hl_get_framebuffer(&s_hl);
+        memset(fb, 0xFF, fb_bytes);            // front = 白（to）
+        memset(s_hl.back_fb, 0x00, fb_bytes);  // back = 黑（from）
+        enum EpdDrawError err = epd_hl_update_screen(
+            &s_hl, MODE_GC16, epd_ambient_temperature());
+        if (err != EPD_DRAW_SUCCESS) {
+            // 不阻塞启动：首帧 flush 还会再走一次 GC16（等价重试），
+            // 但屏状态未知时串口 frame k= 签名是唯一可信判据
+            ESP_LOGE(TAG, "GC16 白驱基线失败 err=%d", (int)err);
+        }
+    }
+    // 电源保持常驻（对齐 lan_image/demo 定稿路径，run48/49 实证频繁
+    // 断电上电致屏不稳定；后续刷新由 epd_gfx_flush 直接驱动）
 
     ESP_LOGI(TAG, "ES108FC1C1-RHY 初始化完成（bus=%dMHz, VCOM 目标=%dmV, 波形=ED047TC1 起步）",
              (int)s_display.bus_speed, PANEL_VCOM_MV);
+    ESP_LOGW(TAG, "TODO-B 硬件校准：请用万用表测量板载电位器输出，确认 VCOM = -2.45V");
     return ESP_OK;
 }
 
 EpdiyHighlevelState* panel_es108fc_hl(void) {
     return s_hl_ready ? &s_hl : NULL;
+}
+
+esp_err_t panel_es108fc_update_area(int x, int y, int w, int h) {
+    if (!s_hl_ready) return ESP_ERR_INVALID_STATE;
+
+    // 裁剪到屏内（负坐标收缩，越界截断）
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > PANEL_WIDTH)  w = PANEL_WIDTH - x;
+    if (y + h > PANEL_HEIGHT) h = PANEL_HEIGHT - y;
+    if (w <= 0 || h <= 0) return ESP_ERR_INVALID_ARG;
+
+    EpdRect area = { .x = x, .y = y, .width = w, .height = h };
+
+    // LCD 输出每帧扫满 1920x1080，"局部"由 no-drive 数据实现而非裁剪
+    // 扫描（bring-up §10.1；render_lcd.c 断言要求 area 全屏且按全屏 stride
+    // 取行）。窗口生效的两层掩码：
+    //   纵向：dirty_lines 先清零，只有本次窗口内的脏行被驱动；
+    //   横向：同行窗口外列填 0xFF（from==to → 全相位 keep）。
+    // 不掩码则上次刷新留在 difference_fb 的旧 diff 会被重驱（泵电荷累积）。
+    memset(s_hl.dirty_lines, 0x00, sizeof(bool) * PANEL_HEIGHT);
+    bool pw = false, pb = false;
+    EpdRect diff = epd_difference_image_cropped(
+        s_hl.front_fb, s_hl.back_fb, area,
+        s_hl.difference_fb, s_hl.dirty_lines, &pw, &pb);
+    if (diff.width == 0 || diff.height == 0) {
+        return ESP_OK;  // 窗口内无差异：no-op（不扫描不泵电荷）
+    }
+    const int head = x;
+    const int tail = PANEL_WIDTH - (x + w);
+    for (int l = diff.y; l < diff.y + diff.height; l++) {
+        if (!s_hl.dirty_lines[l]) continue;
+        uint8_t *row = s_hl.difference_fb + (size_t)PANEL_WIDTH * l;
+        memset(row, 0xFF, head);
+        memset(row + x + w, 0xFF, tail);
+    }
+
+    // 窗口扫描 DU 快刷（P4：554ms 级；省的是驱动而非扫描时间）
+    // DU 模式需要 builtin 波形（scanq/binfast 仅定义 GC16）
+    const EpdWaveform* du_waveform = epd_get_display()->default_waveform;
+    EpdRect full = epd_full_screen();
+    enum EpdDrawError err = epd_draw_base(
+        full, s_hl.difference_fb, full,
+        MODE_PACKING_1PPB_DIFFERENCE | MODE_DU,
+        epd_ambient_temperature(), s_hl.dirty_lines, du_waveform);
+    if (err != EPD_DRAW_SUCCESS) {
+        ESP_LOGE(TAG, "DU 窗口局刷失败 err=%d（x=%d y=%d w=%d h=%d）",
+                 (int)err, diff.x, diff.y, diff.width, diff.height);
+        return ESP_FAIL;
+    }
+
+    // back 脏行同步（对齐库 highlevel.c 同款语义；整行 memcpy：
+    // fb 修改必经刷后同步，窗口外 front==back 恒成立）
+    for (int l = diff.y; l < diff.y + diff.height; l++) {
+        if (!s_hl.dirty_lines[l]) continue;
+        uint8_t* lfb = s_hl.front_fb + (size_t)(PANEL_WIDTH / 2) * l;
+        uint8_t* lbb = s_hl.back_fb + (size_t)(PANEL_WIDTH / 2) * l;
+        memcpy(lbb, lfb, PANEL_WIDTH / 2);
+    }
+    return ESP_OK;
 }
 
 EpdDisplay_t* panel_es108fc_display(void) {
