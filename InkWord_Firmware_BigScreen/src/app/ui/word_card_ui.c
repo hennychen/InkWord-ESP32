@@ -154,8 +154,6 @@ void word_card_ui_render(void)
         s_flush_mode = 2;
     }
 
-    LOG_I("词卡渲染：wi=%d, total=%d, flush_mode=%d, first=%d",
-          wi, study_mode_seq_total(), s_flush_mode, s_first_render);
     s_first_render = false;
     s_last_mode = m;
     s_last_collected = collected;

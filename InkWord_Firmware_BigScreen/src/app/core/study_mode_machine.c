@@ -136,7 +136,7 @@ void study_mode_handle_action(int action)
 {
     int total = seq_total();
 
-    LOG_I("按键 action=%d, 当前模式=%d, 序列总数=%d", action, s_current, total);
+    LOG_D("action=%d, mode=%d, seq_total=%d", action, s_current, total);
 
     if (total <= 0) {
         LOG_I("序列为空（词库空或当前视图无词条），按键无响应");

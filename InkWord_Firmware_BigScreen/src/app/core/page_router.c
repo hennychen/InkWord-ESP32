@@ -115,7 +115,5 @@ bool page_router_dispatch_button(nav_key_t id, button_event_t event)
 void page_router_render_top(void)
 {
     const page_t *p = page_router_top();
-    LOG_I("page_router_render_top: top=%d, page=%s, render=%p",
-          s_top, p ? p->name : "NULL", p ? (void*)p->render : NULL);
     if (p && p->render) p->render();
 }

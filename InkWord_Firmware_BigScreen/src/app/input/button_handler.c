@@ -72,7 +72,8 @@ static QueueHandle_t s_queue = NULL;
 static void push_event(nav_key_t id, button_event_t ev)
 {
     static const char *k_names[] = {"UP", "DOWN", "LEFT", "RIGHT", "CENTER", "SET", "RST"};
-    ESP_LOGI(TAG, "BTN_EV: %s %s", k_names[id], ev == BUTTON_EVENT_LONG_PRESS ? "LONG" : "SHORT");
+    ESP_LOGI(TAG, "按键事件：%s %s", k_names[id],
+             ev == BUTTON_EVENT_LONG_PRESS ? "长按" : "短按");
     button_msg_t msg;
     msg.id = id;
     msg.ev = ev;
