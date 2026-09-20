@@ -18,6 +18,7 @@
 #include "srs_engine.h"
 #include "debug_log.h"
 #include "schedule.h"      /* v1.6：课程表自动激活（评分路径跨日触发） */
+#include "word_parser.h"   /* R3.1：cloudId 迁移读词池 cloud_id */
 
 #include "nvs.h"
 #include "settings_keys.h"   /* P2b：NVS 键权威表 */
@@ -83,6 +84,30 @@ typedef struct __attribute__((packed)) {
 static lr_stats_t s_stats = { LR_STATS_MAGIC, 0, 0, 0, 0 };
 static bool s_stats_dirty = false;
 
+/* ---- R4.1 日学习历史环形缓冲（2026-09-20） ----
+ * 存最近 90 天的每日学习量（new/review），供日历热力图消费。
+ * stats_roll 跨日结算时推入昨日数据；查询时按日期范围扫描。
+ * NVS 独立 key "lr_hist"（H901），与 lr_stats 同窗口落盘。 */
+#define LR_HIST_MAGIC  0x48393031u  /* "H901" */
+#define LR_HIST_DAYS   90
+
+typedef struct __attribute__((packed)) {
+    int32_t  ymd;        /* yyyymmdd；0 = 空槽 */
+    uint16_t new_n;
+    uint16_t rev_n;
+} lr_hist_entry_t;       /* 8B */
+
+typedef struct __attribute__((packed)) {
+    uint32_t          magic;
+    uint8_t           count;   /* 有效条目数 ≤ LR_HIST_DAYS */
+    uint8_t           head;    /* 环形缓冲头指针（最新条目位置） */
+    uint8_t           _pad[2];
+    lr_hist_entry_t   e[LR_HIST_DAYS];
+} lr_hist_t;                   /* 4 + 4 + 720 = 728B */
+
+static lr_hist_t s_hist = { LR_HIST_MAGIC, 0, 0, {0}, {{{0, 0, 0}}} };
+static bool s_hist_dirty = false;
+
 /* 卡组短串宽度 8 = DECK_ID_MAX(7) + NUL（SD01 按组表与 LR04 头共用；
  * 定义前置供 dstats 区引用，对齐 deck_manager 短 id 约定） */
 #define LR_DECK_W    (8)
@@ -144,12 +169,33 @@ static void ymd_split(int32_t ymd, int *y, int *m, int *d)
     *y = ymd / 10000; *m = ymd % 10000 / 100; *d = ymd % 100;
 }
 
+/* R4.1：推入昨日学习数据到历史环形缓冲（stats_roll 跨日时调用） */
+static void hist_push_yesterday(void)
+{
+    if (s_stats.ymd <= 0) return;
+    if (s_stats.today_new == 0 && s_stats.today_reviews == 0) return;
+
+    /* 环形缓冲前进一格 */
+    s_hist.head = (s_hist.head + 1) % LR_HIST_DAYS;
+    if (s_hist.count < LR_HIST_DAYS) s_hist.count++;
+
+    lr_hist_entry_t *e = &s_hist.e[s_hist.head];
+    e->ymd = s_stats.ymd;
+    e->new_n = s_stats.today_new;
+    e->rev_n = s_stats.today_reviews;
+    s_hist_dirty = true;
+    LOG_D("hist push: %d new=%d rev=%d", s_stats.ymd, s_stats.today_new, s_stats.today_reviews);
+}
+
 /* 跨日结算：今日首个评分时调用——昨日有学习且连续则 streak+1，
  * 否则从今日置 1；计数清零（首日同步前学习的计数从同步起算） */
 static void stats_roll(int64_t epoch)
 {
     int32_t today = epoch_ymd(epoch);
     if (today == 0 || today == s_stats.ymd) return;
+
+    /* R4.1：跨日结算前推入昨日数据到历史 */
+    hist_push_yesterday();
 
     if (s_stats.ymd > 0 && s_stats.today_reviews > 0) {
         int y1, m1, d1, y2, m2, d2;
@@ -177,6 +223,19 @@ static void stats_load(void)
     if (nvs_get_blob(h, NVS_KEY_LR_STATS, &t, &len) == ESP_OK &&
         len == sizeof(t) && t.magic == LR_STATS_MAGIC)
         s_stats = t;
+    nvs_close(h);
+}
+
+/* R4.1：历史环形缓冲加载 */
+static void hist_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    lr_hist_t t;
+    size_t len = sizeof(t);
+    if (nvs_get_blob(h, NVS_KEY_LR_HIST, &t, &len) == ESP_OK &&
+        len == sizeof(t) && t.magic == LR_HIST_MAGIC && t.count <= LR_HIST_DAYS)
+        s_hist = t;
     nvs_close(h);
 }
 
@@ -512,6 +571,7 @@ void learning_state_init(int word_count, const char *deck_id)
 
     stats_load();
     dstats_load();
+    hist_load();   /* R4.1：日学习历史环形缓冲 */
     restore_from_nvs();
 }
 
@@ -640,6 +700,16 @@ void learning_state_save(void)
             nvs_close(h);
         }
         s_dstats_dirty = false;
+    }
+    /* R4.1：历史环形缓冲同窗口落盘 */
+    if (s_hist_dirty) {
+        if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+            esp_err_t err = nvs_set_blob(h, NVS_KEY_LR_HIST, &s_hist, sizeof(s_hist));
+            if (err == ESP_OK) err = nvs_commit(h);
+            if (err != ESP_OK) LOG_W("lr_hist save failed: %d", (int)err);
+            nvs_close(h);
+        }
+        s_hist_dirty = false;
     }
 }
 
@@ -864,3 +934,208 @@ bool learning_state_is_new(int word_idx)
 int learning_state_today_new(void)      { return s_stats.today_new; }
 int learning_state_today_reviews(void)  { return s_stats.today_reviews; }
 int learning_state_streak_days(void)    { return s_stats.streak_days; }
+
+/* ---- R4.1 日学习历史查询（2026-09-20） ----
+ * 环形缓冲按日期范围查询，返回指定天数内每日的学习量。
+ * out_days[0] = 今天，out_days[1] = 昨天，...，out_days[n-1] = 最远日。
+ * 空槽（无数据）填 0。 */
+int learning_state_hist_get(int days, uint16_t *out_new, uint16_t *out_rev)
+{
+    if (days <= 0 || days > LR_HIST_DAYS) return 0;
+    if (!out_new || !out_rev) return 0;
+
+    /* 清空输出 */
+    for (int i = 0; i < days; i++) {
+        out_new[i] = 0;
+        out_rev[i] = 0;
+    }
+
+    /* 今天的数据从 s_stats 取 */
+    out_new[0] = s_stats.today_new;
+    out_rev[0] = s_stats.today_reviews;
+
+    /* 历史数据从环形缓冲取（倒序扫描） */
+    int today_ymd = s_stats.ymd;
+    if (today_ymd <= 0 || s_hist.count == 0) return 1;
+
+    for (int i = 0; i < s_hist.count && i + 1 < days; i++) {
+        /* 从 head 倒推 */
+        int idx = (s_hist.head + LR_HIST_DAYS - i) % LR_HIST_DAYS;
+        const lr_hist_entry_t *e = &s_hist.e[idx];
+        if (e->ymd <= 0) continue;
+
+        /* 计算与今天的天数差 */
+        int y1, m1, d1, y2, m2, d2;
+        ymd_split(today_ymd, &y1, &m1, &d1);
+        ymd_split(e->ymd, &y2, &m2, &d2);
+        int day_diff = (int)(civil_days(y1, m1, d1) - civil_days(y2, m2, d2));
+        if (day_diff > 0 && day_diff < days) {
+            out_new[day_diff] = e->new_n;
+            out_rev[day_diff] = e->rev_n;
+        }
+    }
+    return days;
+}
+
+/* 周/月汇总：指定天数内的总新词/总复习 */
+void learning_state_hist_summary(int days, int *total_new, int *total_rev)
+{
+    uint16_t new_arr[LR_HIST_DAYS];
+    uint16_t rev_arr[LR_HIST_DAYS];
+    int n = learning_state_hist_get(days, new_arr, rev_arr);
+    int sum_new = 0, sum_rev = 0;
+    for (int i = 0; i < n; i++) {
+        sum_new += new_arr[i];
+        sum_rev += rev_arr[i];
+    }
+    if (total_new) *total_new = sum_new;
+    if (total_rev) *total_rev = sum_rev;
+}
+
+/* ---- R3.1 cloudId 状态迁移（2026-09-20）----
+ * 词库云端重载（word_loader_reload_from_cloud）全量替换词池后，
+ * s_state[idx] 与新词池索引错位。通过 cloudId 匹配旧→新索引，
+ * 保持学习进度（FSRS/收藏/墨封/连错）不丢失。
+ *
+ * 两阶段调用（词池替换前后各一次）：
+ *   1. learning_state_pre_remap()：替换前调用，快照非默认态条目
+ *      的 cloudId + 完整 lr_entry_t，以及事件队列的 cloudId
+ *   2. learning_state_post_remap(new_count)：替换后调用，按 cloudId
+ *      在新词池匹配新索引回填状态，重建事件队列
+ *
+ * 无 cloudId 的本地导入词迁移时丢弃（与上报队列 flush 行为一致：
+ * 无云端身份的词条不参与迁移，重新学习可接受） */
+
+typedef struct {
+    char       cloud_id[WORD_CLOUD_ID_MAX];
+    lr_entry_t entry;
+} lr_snap_t;
+
+typedef struct {
+    char cloud_id[WORD_CLOUD_ID_MAX];
+    int  quality;
+    bool collected;
+} lr_snap_ev_t;
+
+static lr_snap_t    *s_snap    = NULL;
+static int           s_snap_n  = 0;
+static lr_snap_ev_t  s_snap_ev[LR_EVENT_MAX];
+static int           s_snap_ev_n = 0;
+
+void learning_state_pre_remap(void)
+{
+    free(s_snap);
+    s_snap = NULL;
+    s_snap_n = 0;
+    s_snap_ev_n = 0;
+
+    if (!s_state || s_count <= 0) return;
+
+    int active = 0;
+    for (int i = 0; i < s_count; i++) {
+        if (s_state[i].srs.stability > 0.f || s_state[i].consecutive_wrong > 0 ||
+            s_state[i].collected || s_state[i].mastered)
+            active++;
+    }
+
+    if (active > 0) {
+        s_snap = (lr_snap_t *)malloc((size_t)active * sizeof(lr_snap_t));
+        if (s_snap) {
+            int w = 0;
+            for (int i = 0; i < s_count && w < active; i++) {
+                if (!(s_state[i].srs.stability > 0.f ||
+                      s_state[i].consecutive_wrong > 0 ||
+                      s_state[i].collected || s_state[i].mastered))
+                    continue;
+                const WordEntry *wp = word_parser_get(i);
+                if (wp && wp->cloud_id[0])
+                    memcpy(s_snap[w].cloud_id, wp->cloud_id, WORD_CLOUD_ID_MAX);
+                else
+                    s_snap[w].cloud_id[0] = '\0';
+                s_snap[w].entry = s_state[i];
+                w++;
+            }
+            s_snap_n = w;
+        }
+    }
+
+    portENTER_CRITICAL(&s_ev_mux);
+    for (int e = 0; e < s_ev_count && s_snap_ev_n < LR_EVENT_MAX; e++) {
+        lr_event_t *ev = &s_events[(s_ev_head + e) % LR_EVENT_MAX];
+        const WordEntry *wp = word_parser_get(ev->word_idx);
+        if (wp && wp->cloud_id[0]) {
+            memcpy(s_snap_ev[s_snap_ev_n].cloud_id, wp->cloud_id, WORD_CLOUD_ID_MAX);
+            s_snap_ev[s_snap_ev_n].quality   = ev->quality;
+            s_snap_ev[s_snap_ev_n].collected = ev->collected;
+            s_snap_ev_n++;
+        }
+    }
+    portEXIT_CRITICAL(&s_ev_mux);
+
+    LOG_I("pre_remap: snap %d state entries, %d events", s_snap_n, s_snap_ev_n);
+}
+
+void learning_state_post_remap(int new_count)
+{
+    if (!s_state) return;
+    if (new_count > LEARNING_STATE_MAX) new_count = LEARNING_STATE_MAX;
+
+    int old_count = s_count;
+
+    memset(s_state, 0, (size_t)LEARNING_STATE_MAX * sizeof(lr_entry_t));
+    if (s_done)
+        memset(s_done, 0, LEARNING_STATE_MAX / 8 + 1);
+    s_count = new_count;
+
+    int remapped = 0, dropped = 0;
+    for (int s = 0; s < s_snap_n; s++) {
+        if (!s_snap[s].cloud_id[0]) { dropped++; continue; }
+        bool found = false;
+        for (int i = 0; i < new_count; i++) {
+            const WordEntry *w = word_parser_get(i);
+            if (w && strcmp(w->cloud_id, s_snap[s].cloud_id) == 0) {
+                s_state[i] = s_snap[s].entry;
+                remapped++;
+                found = true;
+                break;
+            }
+        }
+        if (!found) dropped++;
+    }
+
+    portENTER_CRITICAL(&s_ev_mux);
+    s_ev_head = 0;
+    s_ev_count = 0;
+    int ev_remapped = 0;
+    for (int e = 0; e < s_snap_ev_n; e++) {
+        for (int i = 0; i < new_count; i++) {
+            const WordEntry *w = word_parser_get(i);
+            if (w && strcmp(w->cloud_id, s_snap_ev[e].cloud_id) == 0) {
+                lr_event_t *ev = &s_events[s_ev_count];
+                ev->word_idx   = i;
+                ev->quality    = s_snap_ev[e].quality;
+                ev->collected  = s_snap_ev[e].collected;
+                s_ev_count++;
+                ev_remapped++;
+                break;
+            }
+        }
+    }
+    portEXIT_CRITICAL(&s_ev_mux);
+
+    int total_snap = s_snap_n;
+    int total_ev   = s_snap_ev_n;
+
+    free(s_snap);
+    s_snap = NULL;
+    s_snap_n = 0;
+    s_snap_ev_n = 0;
+
+    s_dirty = true;
+    s_dirty_at = now_sec();
+
+    LOG_I("post_remap: %d/%d state remapped (%d dropped), %d/%d events "
+          "(old=%d new=%d)",
+          remapped, total_snap, dropped,
+          ev_remapped, total_ev, old_count, new_count);
+}

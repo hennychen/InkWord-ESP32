@@ -60,6 +60,7 @@
 #define NVS_KEY_LR_ST_PFX   "lr_st_"    /* LR 状态 blob 卡组键前缀 */
 #define NVS_KEY_LR_STATS    "lr_stats"  /* 累计统计 blob（跨词库保留） */
 #define NVS_KEY_LR_STDECK   "lr_stdeck" /* 跨词库学习统计 blob */
+#define NVS_KEY_LR_HIST     "lr_hist"   /* R4.1：日学习历史环形缓冲 blob（90天） */
 
 /* ---- 阅读进度（reader_engine；rd_key 基名 + scope 后缀） ---- */
 #define NVS_KEY_RD_SIG      "rd_sig"    /* 书签名（u32；书变化失效判据） */
@@ -76,5 +77,8 @@
 #define NVS_KEY_WX_TS       "wx_ts"     /* 天气缓存时间戳（u32） */
 #define NVS_KEY_SLP_EPOCH   "slp_ep0"   /* 入睡自治钟基准 Unix 秒（i64） */
 #define NVS_KEY_SLP_RTC     "slp_rtc0"  /* 入睡时刻系统 RTC 原始值（i64） */
+
+/* ---- 词库同步（R3.1 sync_session） ---- */
+#define NVS_KEY_WORD_VER    "word_ver"  /* 词库版本号（u32；云端增量拉取） */
 
 #endif /* INKWORD_SETTINGS_KEYS_H */

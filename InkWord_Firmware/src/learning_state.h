@@ -199,6 +199,40 @@ int learning_state_today_reviews(void);
  */
 int learning_state_streak_days(void);
 
+/* ---- R4.1 日学习历史查询（2026-09-20） ---- */
+
+/**
+ * @brief 获取最近 N 天的每日学习量（环形缓冲查询）。
+ * @param days 查询天数（1~90）。
+ * @param out_new 输出数组：每日新词数（out_new[0]=今天，out_new[1]=昨天...）。
+ * @param out_rev 输出数组：每日复习数（同上顺序）。
+ * @return 实际返回的天数（<= days）。
+ */
+int learning_state_hist_get(int days, uint16_t *out_new, uint16_t *out_rev);
+
+/**
+ * @brief 指定天数内的学习汇总（总新词/总复习）。
+ * @param days 汇总天数（1~90）。
+ * @param total_new 输出：总新词数（NULL=不取）。
+ * @param total_rev 输出：总复习数（NULL=不取）。
+ */
+void learning_state_hist_summary(int days, int *total_new, int *total_rev);
+
+/* ---- R3.1 cloudId 状态迁移（2026-09-20）---- */
+
+/**
+ * @brief 词池替换前调用：快照非默认态学习条目及事件队列的 cloudId。
+ *        快照在 post_remap 内消费后自动释放。
+ */
+void learning_state_pre_remap(void);
+
+/**
+ * @brief 词池替换后调用：按 cloudId 匹配新索引回填状态，重建事件队列，
+ *        置脏标记触发 NVS 重写。无 cloudId 的本地词丢弃。
+ * @param new_count 新词池词条数。
+ */
+void learning_state_post_remap(int new_count);
+
 /**
  * @brief 全量写入 NVS（sparse 格式；评分/收藏自动置脏，一般无需外部调）。
  */

@@ -73,6 +73,7 @@ extern bool deck_flow_switch(int idx);
 #include "ui_stamp.h"     /* 2026-09-04：墨封当前词落印动画 */
 #include "word_card_ui.h" /* 2026-09-04：菜单退出强制全刷（ui_force_full_refresh_next） */
 #include "book_shelf.h"   /* 2026-09-05 阅读器增强：我的书架 */
+#include "cloud_book_shelf.h"  /* R3.2 云书屋 */
 #include "schedule.h"     /* v1.6：课程表（周计划编排与自动激活） */
 
 #include "freertos/FreeRTOS.h"   /* A3：周报拉取一次性任务 */
@@ -552,6 +553,18 @@ static void act_bookshelf(void)
     page_router_push(&g_book_shelf_page);   /* 栈串联：退出 pop 回菜单 */
 }
 
+/* R3.2 云书屋：从云端拉取书目列表，下载到本地 */
+static void act_cloud_bookshelf(void)
+{
+    if (!wifi_is_connected()) {
+        haptic_event(HAPTIC_ERROR);
+        s_hint_override = "未连接网络 · 请先配网";
+        draw_main(false);
+        return;
+    }
+    page_router_push(&g_cloud_book_shelf_page);
+}
+
 /* v1.6 课程表：进入设置页（一级总览，上/下选天，中=编辑该天） */
 static void act_schedule(void)
 {
@@ -652,6 +665,9 @@ static const mu_item_t s_items[] = {
 #endif
     { "快速测验",   false, menu_icon_quiz,     NULL,             act_quiz },
     { "我的书架",   false, menu_icon_decks,    NULL,             act_bookshelf },
+#if INKWORD_FEATURE_CLOUD
+    { "云书屋",     false, menu_icon_decks,    NULL,             act_cloud_bookshelf },
+#endif
     { "课程表",     false, menu_icon_settings, NULL,             act_schedule },
 #if INKWORD_FEATURE_CLOUD || INKWORD_FEATURE_WIFI || INKWORD_FEATURE_LAN
     { "[ 同步 ]",  true,  NULL,               NULL,             NULL },
@@ -1013,7 +1029,7 @@ static void draw_info_row(int row, const char *label, const char *value)
 
 static int info_page_count(void)
 {
-    return 2;
+    return 3;   /* R4.1：学习概况 / 设备信息 / 学习报告（热力图） */
 }
 
 static void draw_info_body(void)
@@ -1060,20 +1076,97 @@ static void draw_info_body(void)
     }
 
     int rows = s_info_page == 0 ? 5 : MU_INFO_ROWS;   /* 概况页 5 行（T5.5 倒计时行） */
-    for (int i = 0; i < rows; i++)
-        draw_info_row(i, labels[s_info_page][i], v[i]);
+    if (s_info_page < 2) {
+        for (int i = 0; i < rows; i++)
+            draw_info_row(i, labels[s_info_page][i], v[i]);
+    }
+}
+
+/* ---- R4.1 学习报告页（日历热力图 + 周汇总） ---- */
+#define REPORT_DAYS 42   /* 6 周 × 7 天 */
+#define HEATMAP_CELL  10 /* 每格 10×10 像素 */
+#define HEATMAP_GAP    2 /* 格间距 2px */
+
+static void draw_report_body(void)
+{
+    int y = MU_LIST_TOP + 4;
+
+    /* 周汇总文字 */
+    int week_new = 0, week_rev = 0;
+    learning_state_hist_summary(7, &week_new, &week_rev);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "本周：新学 %d 词 · 复习 %d 次", week_new, week_rev);
+    cjk_text_draw(MU_MARGIN_X, y, 0, buf, EPD_GFX_BLACK);
+    y += 24;
+
+    /* 日历热力图（6 周 × 7 天，今天在最右） */
+    uint16_t new_arr[REPORT_DAYS];
+    uint16_t rev_arr[REPORT_DAYS];
+    learning_state_hist_get(REPORT_DAYS, new_arr, rev_arr);
+
+    /* 找最大值用于归一化 */
+    int max_val = 1;
+    for (int i = 0; i < REPORT_DAYS; i++) {
+        int total = new_arr[i] + rev_arr[i];
+        if (total > max_val) max_val = total;
+    }
+
+    /* 绘制 6×7 网格（列=周，行=星期） */
+    int grid_w = 7 * (HEATMAP_CELL + HEATMAP_GAP) - HEATMAP_GAP;
+    int grid_h = 6 * (HEATMAP_CELL + HEATMAP_GAP) - HEATMAP_GAP;
+    int grid_x = (epd_gfx_width() - grid_w) / 2;
+    int grid_y = y;
+
+    for (int week = 0; week < 6; week++) {
+        for (int day = 0; day < 7; day++) {
+            int idx = week * 7 + day;
+            int cell_x = grid_x + day * (HEATMAP_CELL + HEATMAP_GAP);
+            int cell_y = grid_y + week * (HEATMAP_CELL + HEATMAP_GAP);
+
+            int total = new_arr[idx] + rev_arr[idx];
+            if (total > 0) {
+                /* 有学习：填充黑色（强度用填充比例表示，简化为全黑） */
+                epd_gfx_fill_rect(cell_x, cell_y, HEATMAP_CELL, HEATMAP_CELL,
+                                  EPD_GFX_BLACK);
+            } else {
+                /* 无学习：画边框 */
+                epd_gfx_draw_rect(cell_x, cell_y, HEATMAP_CELL, HEATMAP_CELL,
+                                  EPD_GFX_BLACK);
+            }
+        }
+    }
+
+    y = grid_y + grid_h + 12;
+
+    /* 月汇总 */
+    int month_new = 0, month_rev = 0;
+    learning_state_hist_summary(30, &month_new, &month_rev);
+    snprintf(buf, sizeof(buf), "30 天：新学 %d 词 · 复习 %d 次", month_new, month_rev);
+    cjk_text_draw(MU_MARGIN_X, y, 0, buf, EPD_GFX_BLACK);
+    y += 24;
+
+    /* 连续学习天数 */
+    snprintf(buf, sizeof(buf), "连续学习：%d 天", learning_state_streak_days());
+    cjk_text_draw(MU_MARGIN_X, y, 0, buf, EPD_GFX_BLACK);
 }
 
 static void draw_info(bool partial)
 {
     if (partial && !refresh_gfx_before_partial_n(mu_partial_threshold())) {
-        partial_refresh(draw_info_body);
+        if (s_info_page == 2)
+            partial_refresh(draw_report_body);
+        else
+            partial_refresh(draw_info_body);
         return;
     }
     epd_gfx_fill_screen(EPD_GFX_WHITE);
-    draw_title(s_info_page == 0 ? "学习概况" : "设备信息",
-               s_info_page + 1, info_page_count());
-    draw_info_body();
+    const char *title = (s_info_page == 0) ? "学习概况" :
+                        (s_info_page == 1) ? "设备信息" : "学习报告";
+    draw_title(title, s_info_page + 1, info_page_count());
+    if (s_info_page == 2)
+        draw_report_body();
+    else
+        draw_info_body();
     draw_hint();
     draw_flush();
 }
