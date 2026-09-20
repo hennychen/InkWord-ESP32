@@ -85,6 +85,7 @@ idf_component_register(
         "cjk_text.c"
         "reader_engine.c"
         "book_shelf.c"        # 2026-09-05 阅读器增强：书架管理/列表 UI
+        "cloud_book_shelf.c"  # R3.2 云书屋：云端书目浏览/下载
         "chapter_index.c"     # 2026-09-05 阅读器增强：章节检测与导航
         "bookmark_mgr.c"      # 2026-09-05 阅读器增强：书签管理
         "reader_search.c"     # 2026-09-05 阅读器增强：文本搜索
