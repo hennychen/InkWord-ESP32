@@ -37,6 +37,8 @@ extern "C" {
 extern const page_t g_wrongbook_page;
 extern const page_t g_collection_page;
 extern const page_t g_mastered_page;
+extern const page_t g_dictation_summary_page;  /* R2.2 听写汇总栈页 */
+extern const page_t g_practice_summary_page;   /* R4.2 练习完成汇总栈页 */
 
 typedef enum {
     MODE_FLASH = 0,      /**< 闪卡：看词猜义 */
@@ -124,6 +126,34 @@ bool study_mode_enter_wrongbook(void);
  * @brief 退出错词本回闪卡模式（错词本内 RST 长按）。
  */
 void study_mode_exit_wrongbook(void);
+
+/* ---- R4.2 错词练习队列（2026-09-20） ---- */
+
+/**
+ * @brief 启动错词练习（错词本内上键长按）：收集错词到队列并洗牌。
+ * @return true 成功；false 无错词。
+ */
+bool study_mode_start_practice(void);
+
+/**
+ * @brief 停止练习（练习中上键长按或汇总页退出）。
+ */
+void study_mode_stop_practice(void);
+
+/**
+ * @brief 练习是否激活（进行中或已完成待确认）。
+ */
+bool study_mode_practice_is_active(void);
+
+/**
+ * @brief 已完成练习的词数。
+ */
+int study_mode_practice_done_count(void);
+
+/**
+ * @brief 练习总词数（启动时确定）。
+ */
+int study_mode_practice_total(void);
 
 /* ---- 收藏浏览临时视图（P 快捷菜单，错词本同构） ---- */
 
@@ -326,6 +356,36 @@ bool study_mode_pron_ui_visible(void);
  *        结果屏亮着→立即恢复词卡。调用方吞掉本次按键。
  */
 void study_mode_pron_any_key(void);
+
+/* ---- 听写会话统计（R2.2，2026-09-20）---- */
+
+/** 听写会话统计 */
+typedef struct {
+    int total;     /**< 本次会话总词数 */
+    int correct;   /**< 答对（Q5） */
+    int wrong;     /**< 答错（Q1） */
+} dictation_session_t;
+
+/**
+ * @brief 重置听写会话统计（进入听写模式时调用）。
+ */
+void dictation_session_reset(void);
+
+/**
+ * @brief 记录听写自评结果（learning_state_apply_quality 之前调用）。
+ * @param quality 质量分（1=忘记/错，5=简单/对）
+ */
+void dictation_session_record(int quality);
+
+/**
+ * @brief 获取听写会话统计（只读）。
+ */
+dictation_session_t dictation_session_get(void);
+
+/**
+ * @brief 听写会话是否有数据（total > 0）。
+ */
+bool dictation_session_has_data(void);
 
 #ifdef __cplusplus
 }

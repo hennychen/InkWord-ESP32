@@ -170,25 +170,46 @@ int ui_fit_font(const char *text, int start_size, int max_w)
  * 同一断行核心，页数与渲染行严格一致（reader_engine 建页同策略）。
  * ============================================================ */
 
-/* 释义正文流（全档位单列）：释义 + 全角空格(U+3000) + 词根 + 例句
+/* 释义正文流（全档位单列）：释义 + 全角空格(U+3000) + 词根 + 派生变形 + 例句
  * （单列无独立槽位，随释义滚动分页；空段前导空白被断行核心
- * 行首吞掉。v1.2 T2.7：例句入流——静态核验确认 ui_draw_content
- * 此前不消费 example，按任务补在词根后，阅读顺序即「词根下方」） */
+ * 行首吞掉。v1.2 T2.7：例句入流；R3.3：派生变形入流，位于词根后） */
 static const char *ui_body_stream(const WordEntry *w)
 {
-    if (!w->root[0] && !w->example[0])
+    bool has_root = w->root[0] != '\0';
+    bool has_infl = w->inflections[0] != '\0';
+    bool has_ex   = w->example[0] != '\0';
+
+    if (!has_root && !has_infl && !has_ex)
         return w->meaning;
+
     static char stream[WORD_MEANING_MAX + WORD_ROOT_MAX +
-                       WORD_EXAMPLE_MAX + 12];
-    if (!w->example[0])
-        snprintf(stream, sizeof(stream), "%s\xE3\x80\x80%s",
-                 w->meaning, w->root);
-    else if (!w->root[0])
-        snprintf(stream, sizeof(stream), "%s\xE3\x80\x80%s",
-                 w->meaning, w->example);
-    else
-        snprintf(stream, sizeof(stream), "%s\xE3\x80\x80%s\xE3\x80\x80%s",
-                 w->meaning, w->root, w->example);
+                       WORD_INFL_MAX + WORD_EXAMPLE_MAX + 24];
+    char *p = stream;
+    int remain = sizeof(stream);
+    int n;
+
+    /* 释义 */
+    n = snprintf(p, remain, "%s", w->meaning);
+    p += n; remain -= n;
+
+    /* 词根 */
+    if (has_root && remain > 0) {
+        n = snprintf(p, remain, "\xE3\x80\x80%s", w->root);
+        p += n; remain -= n;
+    }
+
+    /* 派生变形（R3.3） */
+    if (has_infl && remain > 0) {
+        n = snprintf(p, remain, "\xE3\x80\x80%s", w->inflections);
+        p += n; remain -= n;
+    }
+
+    /* 例句 */
+    if (has_ex && remain > 0) {
+        n = snprintf(p, remain, "\xE3\x80\x80%s", w->example);
+        p += n; remain -= n;
+    }
+
     return stream;
 }
 
@@ -933,4 +954,101 @@ void ui_render_pron(pron_state_t st, int total, const char *engine)
     epd_gfx_flush_window(0, UI_STATUS_H, epd_gfx_width(),
                          epd_gfx_height() - UI_STATUS_H);
     LOG_I("pron ui state=%d total=%d", (int)st, total);
+}
+
+/* R2.2 听写会话汇总页（整屏全刷，低频帧）：标题+统计+提示 */
+void ui_render_dictation_summary(void)
+{
+    dictation_session_t s = dictation_session_get();
+
+    epd_gfx_fill_screen(EPD_GFX_WHITE);
+
+    /* 状态栏 */
+    cjk_text_draw(UI_MARGIN_X, (UI_STATUS_H - 16) / 2, 0,
+                  "听写汇总", EPD_GFX_BLACK);
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%d/%d", s.total, s.total);
+    int tw, th;
+    epd_gfx_text_bounds(buf, 1, &tw, &th);
+    epd_gfx_draw_text(epd_gfx_width() - UI_MARGIN_X - tw, UI_STATUS_BASE,
+                      buf, EPD_GFX_BLACK, 1);
+    epd_gfx_draw_hline(UI_MARGIN_X, UI_STATUS_H,
+                       epd_gfx_width() - 2 * UI_MARGIN_X, EPD_GFX_BLACK);
+
+    /* 居中统计 */
+    int cy = (epd_gfx_height() - UI_STATUS_H) / 2 + UI_STATUS_H;
+
+    snprintf(buf, sizeof(buf), "共 %d 词", s.total);
+    int w1 = cjk_text_width(UI_MEAN_LEVEL, buf);
+    cjk_text_draw((epd_gfx_width() - w1) / 2, cy - 40,
+                  UI_MEAN_LEVEL, buf, EPD_GFX_BLACK);
+
+    snprintf(buf, sizeof(buf), "对 %d · 错 %d", s.correct, s.wrong);
+    w1 = cjk_text_width(UI_MEAN_LEVEL, buf);
+    cjk_text_draw((epd_gfx_width() - w1) / 2, cy - 16,
+                  UI_MEAN_LEVEL, buf, EPD_GFX_BLACK);
+
+    if (s.total > 0) {
+        int pct = s.correct * 100 / s.total;
+        snprintf(buf, sizeof(buf), "正确率 %d%%", pct);
+        w1 = cjk_text_width(0, buf);
+        cjk_text_draw((epd_gfx_width() - w1) / 2, cy + 12,
+                      0, buf, EPD_GFX_BLACK);
+    }
+
+    const char *hint = "任意键继续";
+    int w2 = cjk_text_width(0, hint);
+    cjk_text_draw((epd_gfx_width() - w2) / 2, cy + 40,
+                  0, hint, EPD_GFX_BLACK);
+
+    epd_gfx_flush();
+    LOG_I("dictation summary: total=%d correct=%d wrong=%d",
+          s.total, s.correct, s.wrong);
+}
+
+/* R4.2 错词练习完成汇总页（整屏全刷，低频帧）：标题+统计+提示 */
+void ui_render_practice_summary(void)
+{
+    /* 从 study_mode_machine 获取练习统计 */
+    extern int study_mode_practice_done_count(void);
+    extern int study_mode_practice_total(void);
+    int done = study_mode_practice_done_count();
+    int total = study_mode_practice_total();
+    int remaining = total - done;
+
+    epd_gfx_fill_screen(EPD_GFX_WHITE);
+
+    /* 状态栏 */
+    cjk_text_draw(UI_MARGIN_X, (UI_STATUS_H - 16) / 2, 0,
+                  "练习完成", EPD_GFX_BLACK);
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%d/%d", done, total);
+    int tw, th;
+    epd_gfx_text_bounds(buf, 1, &tw, &th);
+    epd_gfx_draw_text(epd_gfx_width() - UI_MARGIN_X - tw, UI_STATUS_BASE,
+                      buf, EPD_GFX_BLACK, 1);
+    epd_gfx_draw_hline(UI_MARGIN_X, UI_STATUS_H,
+                       epd_gfx_width() - 2 * UI_MARGIN_X, EPD_GFX_BLACK);
+
+    /* 居中统计 */
+    int cy = (epd_gfx_height() - UI_STATUS_H) / 2 + UI_STATUS_H;
+
+    snprintf(buf, sizeof(buf), "共练习 %d 词", total);
+    int w1 = cjk_text_width(UI_MEAN_LEVEL, buf);
+    cjk_text_draw((epd_gfx_width() - w1) / 2, cy - 28,
+                  UI_MEAN_LEVEL, buf, EPD_GFX_BLACK);
+
+    snprintf(buf, sizeof(buf), "剩余 %d 词未掌握", remaining);
+    w1 = cjk_text_width(UI_MEAN_LEVEL, buf);
+    cjk_text_draw((epd_gfx_width() - w1) / 2, cy,
+                  UI_MEAN_LEVEL, buf, EPD_GFX_BLACK);
+
+    const char *hint = "任意键继续";
+    int w2 = cjk_text_width(0, hint);
+    cjk_text_draw((epd_gfx_width() - w2) / 2, cy + 32,
+                  0, hint, EPD_GFX_BLACK);
+
+    epd_gfx_flush();
+    LOG_I("practice summary: total=%d done=%d remaining=%d",
+          total, done, remaining);
 }

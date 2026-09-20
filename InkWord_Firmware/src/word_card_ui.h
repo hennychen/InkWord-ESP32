@@ -44,6 +44,12 @@ int ui_word_start_size(void);
 /** 上下键词内翻释义页（true=已消费；base 按键编排调） */
 bool ui_mean_page_step(int dir);
 
+/** R2.2：听写会话汇总页渲染（退出听写模式时显示） */
+void ui_render_dictation_summary(void);
+
+/** R4.2：练习完成汇总页渲染（错词练习完成后显示） */
+void ui_render_practice_summary(void);
+
 #ifdef __cplusplus
 }
 #endif

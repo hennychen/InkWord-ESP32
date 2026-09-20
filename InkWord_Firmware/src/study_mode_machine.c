@@ -30,6 +30,7 @@
 #include "chapter_index.h"   /* 2026-09-05 阅读器增强：章节跳转 */
 #include "word_card_ui.h"    /* 架构拆分 2026-09-17：page 回调 ui_render_word */
 #include "word_view_page.h"  /* 架构拆分 2026-09-17：page 回调 word_view_on_button */
+#include "ui_sfx.h"          /* R4.2：练习模式音效 */
 
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -55,6 +56,18 @@ static int s_cursor = 0;
  * SET 翻义切换；翻页/切模式自动回显示（新词全显，按 SET 开始遮蔽自测） */
 static bool s_reveal = true;
 
+/* ---- R4.2 错词练习队列（2026-09-20） ----
+ * 错词本内一键生成随机序练习队列；完成后显示汇总页。
+ * 练习期间 seq_total/seq_word_index 切换到队列视图，
+ * 自评质量 >=3 的词从错词本移除（learning_state 自动处理），
+ * 队列内已移除词跳过。 */
+#define PRACTICE_QUEUE_MAX 128
+static int  s_practice_queue[PRACTICE_QUEUE_MAX];
+static int  s_practice_count = 0;
+static bool s_practice_active = false;
+static bool s_practice_done = false;
+static int  s_practice_total = 0;   /* 开始时的词数（汇总用） */
+
 static const char *s_names[MODE_COUNT] =
     { "Flash", "Dictation", "Review", "Reader", "WrongBook", "收藏",
       "AI Chat", "测验", "目录", "语音", "墨封录" };
@@ -63,7 +76,11 @@ static const char *s_names[MODE_COUNT] =
 
 static int seq_total(void)
 {
-    if (s_current == MODE_WRONGBOOK)  return learning_state_wrong_count();
+    if (s_current == MODE_WRONGBOOK) {
+        /* R4.2：练习队列激活时覆盖错词本序列 */
+        if (s_practice_active) return s_practice_count > 0 ? 1 : 0;
+        return learning_state_wrong_count();
+    }
     if (s_current == MODE_COLLECTION) return learning_state_collected_count();
     if (s_current == MODE_MASTERED)   return learning_state_mastered_count();
     if (s_current == MODE_REVIEW)     return learning_state_due_count();
@@ -89,7 +106,12 @@ static void reader_cursor_restore(void)
  * 复习=FSRS 到期视图，2026-08-24 PRD「复习=SRS 到期词」落地） */
 static int seq_word_index(int cursor)
 {
-    if (s_current == MODE_WRONGBOOK)  return learning_state_wrong_at(cursor);
+    if (s_current == MODE_WRONGBOOK) {
+        /* R4.2：练习队列激活时从队列取词 */
+        if (s_practice_active && s_practice_count > 0)
+            return s_practice_queue[0];
+        return learning_state_wrong_at(cursor);
+    }
     if (s_current == MODE_COLLECTION) return learning_state_collected_at(cursor);
     if (s_current == MODE_MASTERED)   return learning_state_mastered_at(cursor);
     if (s_current == MODE_REVIEW)     return learning_state_due_at(cursor);
@@ -131,6 +153,11 @@ static void apply_mode(study_mode_t mode)
     s_cursor = 0;
     if (s_current == MODE_READER) reader_cursor_restore();
     s_reveal = true;
+
+    /* R2.2：进入听写模式时重置会话统计 */
+    if (s_current == MODE_DICTATION) {
+        dictation_session_reset();
+    }
 
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
@@ -684,6 +711,122 @@ int study_mode_seq_total(void)
 }
 
 /* ================================================================
+ * R4.2 错词练习队列（2026-09-20）
+ * 错词本内一键生成随机序练习队列；完成后显示汇总页。
+ * ================================================================ */
+
+/* Fisher-Yates 洗牌（练习队列随机序） */
+static void practice_shuffle(void)
+{
+    for (int i = s_practice_count - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        int tmp = s_practice_queue[i];
+        s_practice_queue[i] = s_practice_queue[j];
+        s_practice_queue[j] = tmp;
+    }
+}
+
+/* 启动练习：收集错词到队列并洗牌 */
+bool study_mode_start_practice(void)
+{
+    int wrong_count = learning_state_wrong_count();
+    if (wrong_count <= 0) return false;
+
+    s_practice_count = (wrong_count < PRACTICE_QUEUE_MAX)
+                       ? wrong_count : PRACTICE_QUEUE_MAX;
+    for (int i = 0; i < s_practice_count; i++) {
+        s_practice_queue[i] = learning_state_wrong_at(i);
+    }
+    practice_shuffle();
+    s_practice_active = true;
+    s_practice_done = false;
+    s_practice_total = s_practice_count;
+    s_cursor = 0;
+    s_reveal = true;
+    LOG_I("practice started: %d words", s_practice_count);
+    return true;
+}
+
+/* 停止练习：清空队列 */
+void study_mode_stop_practice(void)
+{
+    s_practice_active = false;
+    s_practice_done = false;
+    s_practice_count = 0;
+    s_practice_total = 0;
+    LOG_I("practice stopped");
+}
+
+/* 练习完成：标记完成并切换到汇总页 */
+static void practice_mark_done(void)
+{
+    s_practice_done = true;
+    s_practice_active = false;
+    LOG_I("practice completed: %d words", s_practice_total);
+}
+
+/* 练习队列前进到下一个有效词（跳过已从错词本移除的词） */
+static bool practice_advance(void)
+{
+    if (!s_practice_active || s_practice_count <= 0) return false;
+
+    /* 当前词在队列头部，移除（无论是否答对，都移到下一个） */
+    for (int i = 0; i < s_practice_count - 1; i++) {
+        s_practice_queue[i] = s_practice_queue[i + 1];
+    }
+    s_practice_count--;
+
+    if (s_practice_count <= 0) {
+        practice_mark_done();
+        return false;
+    }
+    return true;
+}
+
+bool study_mode_practice_is_active(void)
+{
+    return s_practice_active || s_practice_done;
+}
+
+int study_mode_practice_done_count(void)
+{
+    return s_practice_total - s_practice_count;
+}
+
+int study_mode_practice_total(void)
+{
+    return s_practice_total;
+}
+
+/* ---- 练习完成汇总页 ---- */
+static void practice_summary_render(void)
+{
+    ui_render_practice_summary();   /* word_card_ui.cpp 实现（整屏全刷） */
+}
+
+static void practice_summary_enter(void)
+{
+    practice_summary_render();
+}
+
+static bool practice_summary_on_button(nav_key_t id, button_event_t event)
+{
+    if (event != BUTTON_EVENT_SHORT_PRESS && event != BUTTON_EVENT_LONG_PRESS)
+        return true;
+    /* 任意键退出汇总页 */
+    study_mode_stop_practice();
+    page_router_exit(&g_practice_summary_page);
+    page_router_render_top();
+    return true;
+}
+
+const page_t g_practice_summary_page = {
+    "practice_summary", practice_summary_render,
+    practice_summary_on_button, practice_summary_enter,
+    NULL, true
+};
+
+/* ================================================================
  * 学习视图栈页 page_t 定义（架构拆分 2026-09-17，自 main.cpp 迁入）
  * owns_display=false 复用渲染族（ui_render_word）；on_button 委托
  * word_view_on_button（base + 栈页同源），返回 false 时 dispatch
@@ -708,6 +851,61 @@ static void wrongbook_exit(void)
 
 static bool wrongbook_on_button(nav_key_t id, button_event_t event)
 {
+    /* R4.2：练习模式按键处理 */
+    if (s_practice_done) {
+        /* 练习完成：任意键进汇总页 */
+        if (event == BUTTON_EVENT_SHORT_PRESS || event == BUTTON_EVENT_LONG_PRESS) {
+            page_router_push(&g_practice_summary_page);
+        }
+        return true;
+    }
+    if (s_practice_active) {
+        /* 练习进行中 */
+        if (event == BUTTON_EVENT_LONG_PRESS) {
+            if (id == NAV_UP) {
+                /* 上键长按：退出练习 */
+                study_mode_stop_practice();
+                page_router_render_top();
+                return true;
+            }
+            /* 其他长按委托给 word_view_on_button（菜单/清屏等） */
+            return word_view_on_button(MODE_WRONGBOOK, id, event);
+        }
+        if (event == BUTTON_EVENT_SHORT_PRESS) {
+            if (id == NAV_LEFT || id == NAV_RIGHT) {
+                /* 左/右：自评 + 队列前进 */
+                int quality = (id == NAV_LEFT) ? 1 : 5;
+                int word_idx = seq_word_index(s_cursor);
+                dictation_session_record(quality);
+                learning_state_apply_quality(word_idx, quality);
+                haptic_event(HAPTIC_REVIEW);
+                ui_sfx_play(UI_SFX_RATE);
+                practice_advance();
+                if (s_practice_done) {
+                    page_router_push(&g_practice_summary_page);
+                } else {
+                    page_router_render_top();
+                }
+                return true;
+            }
+            /* 上下翻词：练习模式禁止（一次一题） */
+            if (id == NAV_UP || id == NAV_DOWN) return true;
+        }
+        /* 其他键（中=发音，SET=揭晓）委托 */
+        return word_view_on_button(MODE_WRONGBOOK, id, event);
+    }
+    /* 非练习模式：上键长按启动练习 */
+    if (event == BUTTON_EVENT_LONG_PRESS && id == NAV_UP) {
+        if (study_mode_start_practice()) {
+            haptic_event(HAPTIC_MODE);
+            ui_sfx_play(UI_SFX_MODE);
+            page_router_render_top();
+        } else {
+            haptic_event(HAPTIC_ERROR);
+            ui_sfx_play(UI_SFX_ERR);
+        }
+        return true;
+    }
     return word_view_on_button(MODE_WRONGBOOK, id, event);
 }
 
@@ -768,3 +966,68 @@ const page_t g_mastered_page = { "mastered", mastered_render,
                                  mastered_on_button,
                                  mastered_enter, mastered_exit,
                                  false };
+
+/* ---- 听写汇总栈页（R2.2，2026-09-20）：切离听写时显示会话统计 ---- */
+static void dictation_summary_render(void)
+{
+    ui_render_dictation_summary();   /* word_card_ui.cpp 实现（整屏全刷） */
+}
+
+static void dictation_summary_enter(void)
+{
+    /* 入栈即切换模式（会话数据在 apply_mode 切离 DICTATION 时不重置，
+     * 仅进入 DICTATION 时重置；ui_render_dictation_summary 读 session） */
+    study_mode_switch_next();
+    dictation_summary_render();      /* 首帧自绘 */
+}
+
+static bool dictation_summary_on_button(nav_key_t id, button_event_t event)
+{
+    (void)id;
+    if (event != BUTTON_EVENT_SHORT_PRESS &&
+        event != BUTTON_EVENT_LONG_PRESS) return true;
+    /* 任意键退出汇总页，render_top 回 base 分流新模式 */
+    page_router_exit(&g_dictation_summary_page);
+    page_router_render_top();
+    return true;
+}
+
+const page_t g_dictation_summary_page = {
+    "dict_summary", dictation_summary_render,
+    dictation_summary_on_button, dictation_summary_enter,
+    NULL, true   /* owns_display：汇总页独占整帧 */
+};
+
+/* ---- 听写会话统计（R2.2，2026-09-20）---- */
+static dictation_session_t s_dict_session = {0, 0, 0};
+
+void dictation_session_reset(void)
+{
+    s_dict_session.total = 0;
+    s_dict_session.correct = 0;
+    s_dict_session.wrong = 0;
+    LOG_I("dictation session reset");
+}
+
+void dictation_session_record(int quality)
+{
+    if (s_current != MODE_DICTATION) return;
+    s_dict_session.total++;
+    if (quality >= 3) {
+        s_dict_session.correct++;
+    } else {
+        s_dict_session.wrong++;
+    }
+    LOG_I("dictation record: q=%d total=%d correct=%d wrong=%d",
+          quality, s_dict_session.total, s_dict_session.correct, s_dict_session.wrong);
+}
+
+dictation_session_t dictation_session_get(void)
+{
+    return s_dict_session;
+}
+
+bool dictation_session_has_data(void)
+{
+    return s_dict_session.total > 0;
+}
