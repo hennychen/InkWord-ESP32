@@ -1,9 +1,11 @@
 /**
  * @file standby_page.c
- * @brief 无词库待机页实现（《传习录》引文独占：居中引文 + 右下出处）
+ * @brief 无词库待机页实现（引文 + 时间 + 天气）
  *
- * 布局（引文独占，GFX 横屏 416x240，rotation=1，用户 2026-08-18 定稿：
- * 仅显示《传习录》引文，星期/日期/农历/月年均不显示）：
+ * 布局（GFX 横屏 416x240，rotation=1，用户 2026-08-18 定稿引文独占，
+ * 2026-09-20 R4.3 增加时间+天气）：
+ *   时间 [8,20)：左上角 HH:MM（16px 等宽字体）
+ *   天气 [4,60)：右上角 40x40 图标 + 下方温度（复用 weather_icons.h）
  *   引文块 [112,8,192,176)：cjk_font 子集楷体 Bold 点阵（档位字库级，
  *     MID 档 24px 与历史定稿一致；SMALL 档 16px），
  *     8 字/行 x 5 行，行距 8px（行高 32，松排版）；水平居中
@@ -11,8 +13,7 @@
  *     每 STANDBY_QUOTE_INTERVAL_S(5min) 轮换一条（24 条循环）
  *   出处 [192,216)：右下角右对齐至 x=392 "——王阳明《传习录》"
  *     （k_chuanxilu_attrib，与引文同字库，静态不随小时变）
- *   时间无效时引文留白（仅出处）；天气不显示（数据链路保留，
- *   后端就绪后可随时加回）
+ *   时间无效时引文留白（仅出处+天气）；天气无效时不显示图标+温度
  *
  * 刷新策略（2026-08-20：引文轮换单段直接差分局刷 + 智能分流全刷，
  * 见 epd_driver.cpp）：
@@ -161,6 +162,10 @@ static int64_t s_time_timer_us = 0;         /* 基准对应的 esp_timer 微秒 
 
 /* 上次绘制内容跟踪（tick 差异检测；校时强制置失效重画） */
 static int s_last_quote = -2;         /* 引文下标（5 分钟窗；-1=无效空白，初始 -2 强制首绘） */
+static int s_last_minute = -1;        /* R4.2：上次绘制的分钟（0~59；-1=未绘制，强制首绘） */
+static bool s_last_wx_valid = false;  /* R4.2：上次绘制的天气有效性 */
+static int8_t s_last_wx_temp = 0;     /* R4.2：上次绘制的温度 */
+static uint8_t s_last_wx_icon = 0;    /* R4.2：上次绘制的天气图标 */
 
 /* Phase 5 档位化：字库级与字格（standby_init 按布局档位填充；
  * MID 档 level=2 即 24px，与旧 CJK_GLYPH_W/H 硬宏精确相等。
@@ -313,6 +318,49 @@ static void sb_draw_attrib(void)
         col++;
         i += len;
     }
+}
+
+/* 前向声明（sb_draw_time 调用 sb_now） */
+static bool sb_now(struct tm *out_tm);
+
+/* R4.2 时间显示：左上角 HH:MM（16px 等宽字体，与引文区分） */
+#define SB_TIME_X       16    /* 时间左边距 */
+#define SB_TIME_Y       8     /* 时间上边距 */
+#define SB_TIME_FONT    2     /* 16px 等宽（epd_gfx 内置字体级） */
+
+static void sb_draw_time(void)
+{
+    struct tm tm_;
+    if (!sb_now(&tm_)) return;   /* 未同步不绘制 */
+
+    char buf[6];
+    snprintf(buf, sizeof(buf), "%02d:%02d", tm_.tm_hour, tm_.tm_min);
+    epd_gfx_draw_text(SB_TIME_X, SB_TIME_Y + 12, buf, EPD_GFX_BLACK, SB_TIME_FONT);
+}
+
+/* R4.2 天气显示：右上角图标 + 温度（图标 40x40，温度 16px） */
+#define SB_WX_X         (epd_gfx_width() - WX_ICON_W - 16)   /* 图标左边距 16 */
+#define SB_WX_Y         4                                     /* 图标上边距 */
+#define SB_WX_TEMP_DX   (-4)                                  /* 温度相对图标右缘偏移 */
+
+static void sb_draw_weather(void)
+{
+    if (!s_wx_valid) return;   /* 无天气数据不绘制 */
+
+    /* 天气图标 */
+    const uint8_t *bits = weather_icon_bits(s_wx.icon);
+    if (bits)
+        epd_gfx_draw_bitmap(SB_WX_X, SB_WX_Y, WX_ICON_W, WX_ICON_H,
+                            bits, EPD_GFX_BLACK);
+
+    /* 温度：图标下方居中 */
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d°C", s_wx.temp_c);
+    int tw, th;
+    epd_gfx_text_bounds(buf, SB_TIME_FONT, &tw, &th);
+    int tx = SB_WX_X + (WX_ICON_W - tw) / 2;
+    int ty = SB_WX_Y + WX_ICON_H + 2;
+    epd_gfx_draw_text(tx, ty, buf, EPD_GFX_BLACK, SB_TIME_FONT);
 }
 
 /* ============================================================
@@ -553,9 +601,17 @@ void standby_render_full(void)
     epd_gfx_fill_screen(EPD_GFX_WHITE);
     sb_draw_quote(quote);
     sb_draw_attrib();
+    sb_draw_time();       /* R4.2：左上角时间 */
+    sb_draw_weather();    /* R4.2：右上角天气 */
     epd_gfx_flush();   /* 整页全刷 */
 
     s_last_quote = quote;    /* 同步跟踪状态，避免 tick 误判首帧差异 */
+    /* R4.2：同步时间与天气跟踪状态 */
+    struct tm tm_;
+    if (sb_now(&tm_)) s_last_minute = tm_.tm_min;
+    s_last_wx_valid = s_wx_valid;
+    s_last_wx_temp = s_wx.temp_c;
+    s_last_wx_icon = s_wx.icon;
     sb_hold_win_sync();    /* 三色屏：冻结自然窗（自动轮换停用） */
 
     /* 全刷后屏幕与画布同步，刷新引文带影子（局刷差分新基准；
@@ -736,10 +792,66 @@ void standby_tick(void)
      * 首绘/校时跳变（-2 无基准）走全刷；其余先白后画 + 差分分流
      * （常规轮换走局刷引文带，大面积变化/局刷超阈值自动全刷） */
     int quote = sb_quote_now();
-    if (quote == s_last_quote) return;
+    bool quote_changed = (quote != s_last_quote);
 
-    if (s_last_quote == -2 || !s_shadow_valid)
-        standby_render_full();   /* 无屏幕基准：整页全刷 */
-    else
-        standby_render_quote();  /* 有基准：局刷优先智能分流 */
+    /* R4.2：检测分钟变化（时间更新） */
+    bool minute_changed = false;
+    if (valid && tm_.tm_min != s_last_minute) {
+        minute_changed = true;
+    }
+
+    /* R4.2：检测天气变化 */
+    bool weather_changed = false;
+    if (s_wx_valid != s_last_wx_valid ||
+        s_wx.temp_c != s_last_wx_temp ||
+        s_wx.icon != s_last_wx_icon) {
+        weather_changed = true;
+    }
+
+    /* 无任何变化则返回 */
+    if (!quote_changed && !minute_changed && !weather_changed) return;
+
+    /* 首绘/校时跳变（-2 无基准）走全刷 */
+    if (s_last_quote == -2 || !s_shadow_valid) {
+        standby_render_full();
+        return;
+    }
+
+    /* 引文变化：走原有引文局刷逻辑 */
+    if (quote_changed) {
+        standby_render_quote();
+        /* 引文局刷后，若时间/天气也变了，需额外刷新时间/天气区域 */
+        if (minute_changed || weather_changed) {
+            sb_draw_time();
+            sb_draw_weather();
+            /* 时间区域：左上角 80x24 */
+            epd_gfx_flush_window_passes(SB_TIME_X - 2, SB_TIME_Y - 2,
+                                        84, 28, 1);
+            /* 天气区域：右上角 60x60（图标 40x40 + 温度） */
+            epd_gfx_flush_window_passes(SB_WX_X - 2, SB_WX_Y - 2,
+                                        WX_ICON_W + 4, WX_ICON_H + 24, 1);
+            /* 更新跟踪状态 */
+            if (valid) s_last_minute = tm_.tm_min;
+            s_last_wx_valid = s_wx_valid;
+            s_last_wx_temp = s_wx.temp_c;
+            s_last_wx_icon = s_wx.icon;
+        }
+        return;
+    }
+
+    /* 仅时间/天气变化（引文未变）：局刷时间/天气区域 */
+    if (minute_changed) {
+        sb_draw_time();
+        epd_gfx_flush_window_passes(SB_TIME_X - 2, SB_TIME_Y - 2,
+                                    84, 28, 1);
+        if (valid) s_last_minute = tm_.tm_min;
+    }
+    if (weather_changed) {
+        sb_draw_weather();
+        epd_gfx_flush_window_passes(SB_WX_X - 2, SB_WX_Y - 2,
+                                    WX_ICON_W + 4, WX_ICON_H + 24, 1);
+        s_last_wx_valid = s_wx_valid;
+        s_last_wx_temp = s_wx.temp_c;
+        s_last_wx_icon = s_wx.icon;
+    }
 }

@@ -37,6 +37,13 @@ bool word_view_on_button(study_mode_t m, nav_key_t id,
             refresh_force_full();
             return true;
         case NAV_DOWN:
+            /* R2.2：听写模式切离时显示会话汇总（有数据才弹页） */
+            if (m == MODE_DICTATION && dictation_session_has_data()) {
+                haptic_event(HAPTIC_MODE);
+                ui_sfx_play(UI_SFX_MODE);
+                page_router_push(&g_dictation_summary_page);
+                return true;
+            }
             /* 切换学习模式并重绘（ui_render_word 检测到模式变化自动全刷） */
             haptic_event(HAPTIC_MODE);   /* 模式切换 50ms（PRD 5.4） */
             ui_sfx_play(UI_SFX_MODE);    /* T1.6 模式切换音「滴--」 */
@@ -118,6 +125,8 @@ bool word_view_on_button(study_mode_t m, nav_key_t id,
         page_router_push(&g_settings_ui_page);  /* T1.4：enter=settings_ui_enter */
         return true;
     case NAV_LEFT:
+        /* R2.2：听写模式记录会话统计（Q1=错） */
+        dictation_session_record(1);
         learning_state_apply_quality(study_mode_current_word_index(), 1);
         haptic_event(HAPTIC_REVIEW);   /* 自评提交 30ms（PRD 5.4） */
         ui_sfx_play(UI_SFX_RATE);      /* T1.6 自评提交音「滴答」 */
@@ -125,6 +134,8 @@ bool word_view_on_button(study_mode_t m, nav_key_t id,
             page_router_render_top();
         return true;
     case NAV_RIGHT:
+        /* R2.2：听写模式记录会话统计（Q5=对） */
+        dictation_session_record(5);
         learning_state_apply_quality(study_mode_current_word_index(), 5);
         haptic_event(HAPTIC_REVIEW);   /* 自评提交 30ms（PRD 5.4） */
         ui_sfx_play(UI_SFX_RATE);      /* T1.6 自评提交音「滴答」 */
