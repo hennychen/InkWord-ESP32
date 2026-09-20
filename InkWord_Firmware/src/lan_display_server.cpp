@@ -33,6 +33,10 @@
  *                        deck_flow_switch：NVS+重载+状态作废+进度隔离）
  *   GET  /api/stats     今日统计/连续天数（lr_stats 口径 + 错词/到期/收藏数）
  *                        + mac 字段（v2.0 App 绑定凭据，与注册 MAC 同源）
+ *   GET  /input         R2.1 查词表单页（手机浏览器打字 → POST 到设备查词 → 墨水屏词卡）
+ *   POST /api/input     R2.1 查词端点（精确/前缀匹配 → study_mode_seek 跳转）
+ *   GET  /search        R2.3 书内搜索表单页（手机浏览器输入关键词）
+ *   POST /api/search    R2.3 书内搜索端点（reader_search → 跳转命中页 + 返回结果列表）
  *   GET  其他任意 URI   302 重定向（captive portal 探测域名 → 弹出配网页）
  *
  * 两种工作模式：
@@ -69,6 +73,8 @@
 #include "gpio_config.h"      /* SD_MOUNT_POINT */
 #include "schedule.h"         /* 课程表显示数据读写 */
 #include "study_mode_machine.h"  /* R2.1：study_mode_seek 查词跳转 */
+#include "reader_search.h"       /* R2.3：reader_search 书内搜索 */
+#include "reader_engine.h"       /* R2.3：reader_ready 阅读器状态检查 */
 
 #include "esp_http_server.h"
 #include "esp_netif.h"
@@ -355,6 +361,10 @@ static esp_err_t schedule_page_handler(httpd_req_t *req);
 static esp_err_t input_page_get_handler(httpd_req_t *req);
 static esp_err_t input_post_handler(httpd_req_t *req);
 
+/* R2.3 书内搜索端点（2026-09-20） */
+static esp_err_t search_page_get_handler(httpd_req_t *req);
+static esp_err_t search_post_handler(httpd_req_t *req);
+
 /* GET 总入口（路径通配）：路径分发；未知路径 302（captive portal 探测域名重定向） */
 static esp_err_t catchall_get_handler(httpd_req_t *req)
 {
@@ -366,6 +376,7 @@ static esp_err_t catchall_get_handler(httpd_req_t *req)
     if (strcmp(path, "/") == 0)                 return root_get_handler(req);
     if (strcmp(path, "/wifi") == 0)             return wifi_page_get_handler(req);
     if (strcmp(path, "/input") == 0)            return input_page_get_handler(req);
+    if (strcmp(path, "/search") == 0)           return search_page_get_handler(req);
     if (strcmp(path, "/api/wifi/scan") == 0)    return wifi_scan_get_handler(req);
     if (strcmp(path, "/api/wifi/status") == 0)  return wifi_status_get_handler(req);
     if (strcmp(path, "/api/decks") == 0)        return deck_list_get_handler(req);
@@ -1069,6 +1080,96 @@ static esp_err_t input_post_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * R2.3 书内搜索端点（2026-09-20）
+ * GET /search    搜索表单页（手机浏览器输入关键词）
+ * POST /api/search  搜索已加载的书 → 跳转墨水屏到命中页 + 返回结果列表
+ * ============================================================ */
+
+/* GET /search：书内搜索表单页 */
+static esp_err_t search_page_get_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, SEARCH_HTML, sizeof(SEARCH_HTML) - 1);
+}
+
+/* POST /api/search：书内搜索 → 跳转墨水屏 */
+static esp_err_t search_post_handler(httpd_req_t *req)
+{
+    /* 检查阅读器是否就绪（有书加载） */
+    if (!reader_ready() || study_mode_current() != MODE_READER) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"no book loaded\",\"count\":0}");
+        return ESP_OK;
+    }
+
+    /* 接收 JSON body */
+    char body[128];
+    if (req->content_len >= (int)sizeof(body)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"keyword too long\",\"count\":0}");
+        return ESP_OK;
+    }
+    int r = httpd_req_recv(req, body, req->content_len);
+    if (r <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"recv failed\",\"count\":0}");
+        return ESP_OK;
+    }
+    body[r] = '\0';
+
+    /* 解析 JSON */
+    cJSON *j = cJSON_Parse(body);
+    if (!j) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"invalid json\",\"count\":0}");
+        return ESP_OK;
+    }
+    const char *keyword = cJSON_GetStringValue(cJSON_GetObjectItem(j, "keyword"));
+    if (!keyword || !keyword[0]) {
+        cJSON_Delete(j);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"empty keyword\",\"count\":0}");
+        return ESP_OK;
+    }
+
+    /* 执行搜索 */
+    search_hit_t hits[SEARCH_MAX_HITS];
+    int count = reader_search(keyword, hits, SEARCH_MAX_HITS);
+
+    if (count > 0) {
+        /* 跳转到第一个命中页（墨水屏） */
+        study_mode_reader_goto_page(hits[0].page);
+        LOG_I("search '%s': %d hits, jump to page %d", keyword, count, hits[0].page);
+    } else {
+        LOG_W("search '%s': no hits", keyword);
+    }
+
+    /* 组装 JSON 响应（最多返回 20 条给浏览器） */
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resp, "count", count);
+    cJSON *arr = cJSON_AddArrayToObject(resp, "results");
+    int limit = (count < 20) ? count : 20;
+    for (int i = 0; i < limit; i++) {
+        cJSON *hit = cJSON_CreateObject();
+        cJSON_AddNumberToObject(hit, "page", hits[i].page);
+        cJSON_AddStringToObject(hit, "context", hits[i].context);
+        cJSON_AddItemToArray(arr, hit);
+    }
+    char *json_str = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    cJSON_Delete(j);
+
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t ret = httpd_resp_send(req, json_str, strlen(json_str));
+    free(json_str);
+    return ret;
+}
+
+/* ============================================================
  * 公共接口
  * ============================================================ */
 static void register_mdns(void)
@@ -1096,7 +1197,7 @@ int lan_server_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = 80;
     cfg.stack_size = 8192;                   /* handler 内执行整帧全刷，留足调用栈 */
-    cfg.max_uri_handlers = 11;               /* GET 通配 + POST×7（display/wifi/deck×2/schedule×2/input） */
+    cfg.max_uri_handlers = 12;               /* GET 通配 + POST×8（display/wifi/deck×2/schedule×2/input/search） */
     cfg.uri_match_fn = httpd_uri_match_wildcard;  /* 支持路径通配路由 */
 
     esp_err_t err = httpd_start(&s_server, &cfg);
@@ -1149,6 +1250,13 @@ int lan_server_start(void)
     uri_input_post.method = HTTP_POST;
     uri_input_post.handler = input_post_handler;
     httpd_register_uri_handler(s_server, &uri_input_post);
+
+    /* R2.3 书内搜索端点（2026-09-20） */
+    httpd_uri_t uri_search_post = {};
+    uri_search_post.uri = "/api/search";
+    uri_search_post.method = HTTP_POST;
+    uri_search_post.handler = search_post_handler;
+    httpd_register_uri_handler(s_server, &uri_search_post);
 
     /* mDNS：仅 STA 在线模式注册 inkword.local（失败不影响 IP 直访）。
      * portal 模式跳过，待配网完成回 STA 后由 monitor 补注册 */

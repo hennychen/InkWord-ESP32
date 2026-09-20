@@ -31,7 +31,7 @@ button{padding:12px 24px;font-size:16px;width:100%}
 </head>
 <body>
 <h2>InkWord 墨水屏发送</h2>
-<p><a href="/input">查词</a> | <a href="/wifi">Wi-Fi 设置</a> | <a href="/schedule">课程表编辑</a></p>
+<p><a href="/input">查词</a> | <a href="/search">书内搜索</a> | <a href="/wifi">Wi-Fi 设置</a> | <a href="/schedule">课程表编辑</a></p>
 <div class="row">
 <label><input type="radio" name="mode" value="text" checked onchange="onMode()">文本</label>
 &nbsp;&nbsp;
@@ -565,7 +565,7 @@ button:active{background:#555}
 </head>
 <body>
 <h2>查词 → 墨水屏</h2>
-<p><a href="/">← 发送页</a> | <a href="/wifi">Wi-Fi</a> | <a href="/schedule">课程表</a></p>
+<p><a href="/">← 发送页</a> | <a href="/search">书内搜索</a> | <a href="/wifi">Wi-Fi</a> | <a href="/schedule">课程表</a></p>
 <div class="row">
 <input type="text" id="q" placeholder="输入单词（如 hello）" autocomplete="off" autofocus>
 </div>
@@ -588,6 +588,71 @@ function submit(){
     }else{
       st.textContent='未找到: '+t+(d.hint?' — '+d.hint:'');st.className='err';
     }
+  })
+  .catch(function(e){st.textContent='请求失败: '+e;st.className='err'});
+}
+</script>
+</body>
+</html>)HTML";
+
+
+/* ============================================================
+ * 书内搜索页（/search）：手机浏览器输入关键词 → POST 到设备搜索已加载的书
+ * R2.3 书内搜索接线（2026-09-20）
+ * ============================================================ */
+static const char SEARCH_HTML[] = R"HTML(<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>InkWord 书内搜索</title>
+<style>
+body{font-family:sans-serif;max-width:480px;margin:0 auto;padding:12px;background:#f5f5f5}
+h2{margin:8px 0}
+.row{margin:8px 0}
+input[type=text]{width:100%;box-sizing:border-box;padding:12px;font-size:18px;border:2px solid #333;border-radius:4px}
+button{padding:12px 24px;font-size:16px;width:100%;background:#333;color:#fff;border:none;border-radius:4px;cursor:pointer}
+button:active{background:#555}
+#st{margin-top:8px;padding:8px;background:#ddd;word-break:break-all;min-height:20px}
+.ok{background:#cfc!important}
+.err{background:#fcc!important}
+#hits{margin-top:8px;max-height:60vh;overflow-y:auto}
+.hit{padding:6px 8px;border-bottom:1px solid #ccc;font-size:14px}
+.hit b{color:#333}
+.hit small{color:#666}
+</style>
+</head>
+<body>
+<h2>书内搜索 → 墨水屏</h2>
+<p><a href="/">← 发送页</a> | <a href="/input">查词</a> | <a href="/wifi">Wi-Fi</a></p>
+<div class="row">
+<input type="text" id="q" placeholder="输入关键词（如 天地）" autocomplete="off" autofocus>
+</div>
+<div class="row">
+<button onclick="submit()">搜索</button>
+</div>
+<div id="st">在已加载的书中搜索关键词，命中后墨水屏跳转到对应页</div>
+<div id="hits"></div>
+<script>
+var q=document.getElementById('q'),st=document.getElementById('st'),hits=document.getElementById('hits');
+q.addEventListener('keydown',function(e){if(e.key==='Enter')submit()});
+function submit(){
+  var t=q.value.trim();
+  if(!t){st.textContent='请输入关键词';st.className='err';hits.innerHTML='';return}
+  st.textContent='搜索中...';st.className='';hits.innerHTML='';
+  fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keyword:t})})
+  .then(function(r){return r.json()})
+  .then(function(d){
+    if(d.error){st.textContent='错误: '+d.error;st.className='err';return}
+    if(d.count===0){st.textContent='未找到: '+t;st.className='err';return}
+    st.textContent='找到 '+d.count+' 处（已跳转第 1 处到墨水屏）';st.className='ok';
+    var html='';
+    for(var i=0;i<d.results.length&&i<20;i++){
+      var r=d.results[i];
+      html+='<div class="hit"><b>P'+(r.page+1)+'</b> <small>'+r.context+'</small></div>';
+    }
+    if(d.count>20)html+='<div class="hit"><small>... 还有 '+(d.count-20)+' 处</small></div>';
+    hits.innerHTML=html;
   })
   .catch(function(e){st.textContent='请求失败: '+e;st.className='err'});
 }
