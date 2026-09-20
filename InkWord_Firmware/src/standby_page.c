@@ -66,6 +66,9 @@
 #include "page_router.h"     /* T2.2 守卫统一：display_busy（P2 注册制） */
 #include "lan_display_server.h"
 #include "menu_ui.h"      /* 长按中进菜单（standby_on_button） */
+#include "voice_search.h" /* R2.4：短按下进语音查词（2026-09-20） */
+#include "haptic.h"       /* R2.4：无网络时长震提示 */
+#include "sync_client.h"  /* R2.4：sync_has_device_key 前置检查 */
 #include "debug_log.h"
 
 #include "freertos/FreeRTOS.h"
@@ -502,13 +505,28 @@ void standby_on_button(nav_key_t id, button_event_t event)
     }
 
     /* 短按中 = 立即拉取天气（loop 中联网执行）；短按 SET = 手动轮换
-     * 下一条引文（不用等 5 分钟窗）；其余短按忽略：
+     * 下一条引文（不用等 5 分钟窗）；短按下 = 语音查词直达（R2.4，
+     * 2026-09-20：需 Wi-Fi + 设备 Key，否则长震提示）；其余短按忽略：
      * 无词库无内容可翻，避免烧刷新次数 */
     if (event == BUTTON_EVENT_SHORT_PRESS && id == NAV_CENTER) {
         s_flag_fetch_weather = true;
     }
     if (event == BUTTON_EVENT_SHORT_PRESS && id == NAV_SET) {
         s_flag_quote_next = true;
+    }
+    /* R2.4 语音查词直达（待机页短按下） */
+    if (event == BUTTON_EVENT_SHORT_PRESS && id == NAV_DOWN) {
+        if (wifi_is_connected() && sync_has_device_key()) {
+            if (study_mode_enter_voice_search()) {
+                voice_search_reset();
+                page_router_push(&g_voice_page);
+                LOG_I("standby: voice search shortcut (short press DOWN)");
+            }
+        } else {
+            haptic_event(HAPTIC_ERROR);  /* 无网络长震提示 */
+            LOG_W("standby: voice search rejected: wifi=%d key=%d",
+                  wifi_is_connected(), sync_has_device_key());
+        }
     }
 }
 
