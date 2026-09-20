@@ -68,6 +68,7 @@
 #include "storage_manager.h"
 #include "gpio_config.h"      /* SD_MOUNT_POINT */
 #include "schedule.h"         /* 课程表显示数据读写 */
+#include "study_mode_machine.h"  /* R2.1：study_mode_seek 查词跳转 */
 
 #include "esp_http_server.h"
 #include "esp_netif.h"
@@ -350,6 +351,10 @@ static esp_err_t schedule_get_handler(httpd_req_t *req);
 static esp_err_t schedule_post_handler(httpd_req_t *req);
 static esp_err_t schedule_page_handler(httpd_req_t *req);
 
+/* R2.1 文字代输入端点（2026-09-20） */
+static esp_err_t input_page_get_handler(httpd_req_t *req);
+static esp_err_t input_post_handler(httpd_req_t *req);
+
 /* GET 总入口（路径通配）：路径分发；未知路径 302（captive portal 探测域名重定向） */
 static esp_err_t catchall_get_handler(httpd_req_t *req)
 {
@@ -360,6 +365,7 @@ static esp_err_t catchall_get_handler(httpd_req_t *req)
 
     if (strcmp(path, "/") == 0)                 return root_get_handler(req);
     if (strcmp(path, "/wifi") == 0)             return wifi_page_get_handler(req);
+    if (strcmp(path, "/input") == 0)            return input_page_get_handler(req);
     if (strcmp(path, "/api/wifi/scan") == 0)    return wifi_scan_get_handler(req);
     if (strcmp(path, "/api/wifi/status") == 0)  return wifi_status_get_handler(req);
     if (strcmp(path, "/api/decks") == 0)        return deck_list_get_handler(req);
@@ -947,6 +953,122 @@ static esp_err_t schedule_page_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * R2.1 文字代输入端点（2026-09-20）
+ * GET  /input      查词表单页（手机浏览器打字）
+ * POST /api/input  接收 {"text":"hello"}，搜索词库，跳转词卡
+ * ============================================================ */
+
+/* GET /input：查词表单页 */
+static esp_err_t input_page_get_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, INPUT_HTML, sizeof(INPUT_HTML) - 1);
+}
+
+/* 大小写不敏感字符串比较（ASCII） */
+static int strcasecmp_ascii(const char *a, const char *b)
+{
+    while (*a && *b) {
+        char ca = (*a >= 'A' && *a <= 'Z') ? (*a + 32) : *a;
+        char cb = (*b >= 'A' && *b <= 'Z') ? (*b + 32) : *b;
+        if (ca != cb) return ca - cb;
+        a++; b++;
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
+/* 前缀匹配（大小写不敏感） */
+static bool starts_with_ci(const char *str, const char *prefix)
+{
+    while (*prefix) {
+        char cs = (*str >= 'A' && *str <= 'Z') ? (*str + 32) : *str;
+        char cp = (*prefix >= 'A' && *prefix <= 'Z') ? (*prefix + 32) : *prefix;
+        if (cs != cp) return false;
+        str++; prefix++;
+    }
+    return true;
+}
+
+/* POST /api/input：查词 → 跳转词卡 */
+static esp_err_t input_post_handler(httpd_req_t *req)
+{
+    /* 接收 JSON body */
+    char body[128];
+    if (req->content_len >= (int)sizeof(body)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"found\":false,\"hint\":\"input too long\"}");
+        return ESP_OK;
+    }
+    int r = httpd_req_recv(req, body, req->content_len);
+    if (r <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"found\":false,\"hint\":\"recv failed\"}");
+        return ESP_OK;
+    }
+    body[r] = '\0';
+
+    /* 解析 JSON */
+    cJSON *j = cJSON_Parse(body);
+    if (!j) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"found\":false,\"hint\":\"invalid json\"}");
+        return ESP_OK;
+    }
+    const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(j, "text"));
+    if (!text || !text[0]) {
+        cJSON_Delete(j);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"found\":false,\"hint\":\"empty text\"}");
+        return ESP_OK;
+    }
+
+    /* 搜索词库：精确匹配优先，前缀匹配兜底 */
+    int total = word_parser_get_count();
+    int exact_idx = -1;
+    int prefix_idx = -1;
+    for (int i = 0; i < total; i++) {
+        const WordEntry *w = word_parser_get(i);
+        if (!w) continue;
+        if (strcasecmp_ascii(w->text, text) == 0) {
+            exact_idx = i;
+            break;  /* 精确匹配命中，立即退出 */
+        }
+        if (prefix_idx < 0 && starts_with_ci(w->text, text)) {
+            prefix_idx = i;  /* 首个前缀匹配 */
+        }
+    }
+
+    int found_idx = (exact_idx >= 0) ? exact_idx : prefix_idx;
+    char resp[256];
+    if (found_idx >= 0) {
+        const WordEntry *w = word_parser_get(found_idx);
+        /* 跳转词卡（study_mode_seek 内部触发 page_router_render_top） */
+        study_mode_seek(found_idx);
+        LOG_I("input seek word #%d (%s)", found_idx, w->text);
+        /* 返回 JSON（释义截断防溢出） */
+        char meaning_safe[80];
+        strlcpy(meaning_safe, w->meaning, sizeof(meaning_safe));
+        snprintf(resp, sizeof(resp),
+                 "{\"found\":true,\"word\":\"%s\",\"meaning\":\"%s\"}",
+                 w->text, meaning_safe);
+    } else {
+        snprintf(resp, sizeof(resp),
+                 "{\"found\":false,\"hint\":\"not in dictionary (%d words)\"}",
+                 total);
+        LOG_W("input word not found: %.32s", text);
+    }
+
+    cJSON_Delete(j);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+/* ============================================================
  * 公共接口
  * ============================================================ */
 static void register_mdns(void)
@@ -974,7 +1096,7 @@ int lan_server_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = 80;
     cfg.stack_size = 8192;                   /* handler 内执行整帧全刷，留足调用栈 */
-    cfg.max_uri_handlers = 10;               /* GET 通配 + POST×6（display/wifi/deck×2/schedule×2） */
+    cfg.max_uri_handlers = 11;               /* GET 通配 + POST×7（display/wifi/deck×2/schedule×2/input） */
     cfg.uri_match_fn = httpd_uri_match_wildcard;  /* 支持路径通配路由 */
 
     esp_err_t err = httpd_start(&s_server, &cfg);
@@ -1020,6 +1142,13 @@ int lan_server_start(void)
     uri_sched_post.method = HTTP_POST;
     uri_sched_post.handler = schedule_post_handler;
     httpd_register_uri_handler(s_server, &uri_sched_post);
+
+    /* R2.1 文字代输入端点（2026-09-20） */
+    httpd_uri_t uri_input_post = {};
+    uri_input_post.uri = "/api/input";
+    uri_input_post.method = HTTP_POST;
+    uri_input_post.handler = input_post_handler;
+    httpd_register_uri_handler(s_server, &uri_input_post);
 
     /* mDNS：仅 STA 在线模式注册 inkword.local（失败不影响 IP 直访）。
      * portal 模式跳过，待配网完成回 STA 后由 monitor 补注册 */

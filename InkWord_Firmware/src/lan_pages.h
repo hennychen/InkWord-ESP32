@@ -31,7 +31,7 @@ button{padding:12px 24px;font-size:16px;width:100%}
 </head>
 <body>
 <h2>InkWord 墨水屏发送</h2>
-<p><a href="/wifi">Wi-Fi 设置</a> | <a href="/schedule">课程表编辑</a></p>
+<p><a href="/input">查词</a> | <a href="/wifi">Wi-Fi 设置</a> | <a href="/schedule">课程表编辑</a></p>
 <div class="row">
 <label><input type="radio" name="mode" value="text" checked onchange="onMode()">文本</label>
 &nbsp;&nbsp;
@@ -536,6 +536,61 @@ function save(){
 }
 
 load();
+</script>
+</body>
+</html>)HTML";
+
+
+/* ============================================================
+ * 文字代输入页（/input）：手机浏览器打字 → POST 到设备查词 → 墨水屏渲染词卡
+ * R2.1 Web 代输入端点（2026-09-20）
+ * ============================================================ */
+static const char INPUT_HTML[] = R"HTML(<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>InkWord 查词</title>
+<style>
+body{font-family:sans-serif;max-width:480px;margin:0 auto;padding:12px;background:#f5f5f5}
+h2{margin:8px 0}
+.row{margin:8px 0}
+input[type=text]{width:100%;box-sizing:border-box;padding:12px;font-size:18px;border:2px solid #333;border-radius:4px}
+button{padding:12px 24px;font-size:16px;width:100%;background:#333;color:#fff;border:none;border-radius:4px;cursor:pointer}
+button:active{background:#555}
+#st{margin-top:8px;padding:8px;background:#ddd;word-break:break-all;min-height:20px}
+.ok{background:#cfc!important}
+.err{background:#fcc!important}
+</style>
+</head>
+<body>
+<h2>查词 → 墨水屏</h2>
+<p><a href="/">← 发送页</a> | <a href="/wifi">Wi-Fi</a> | <a href="/schedule">课程表</a></p>
+<div class="row">
+<input type="text" id="q" placeholder="输入单词（如 hello）" autocomplete="off" autofocus>
+</div>
+<div class="row">
+<button onclick="submit()">查词</button>
+</div>
+<div id="st">输入单词后点击查词，结果将显示在墨水屏</div>
+<script>
+var q=document.getElementById('q'),st=document.getElementById('st');
+q.addEventListener('keydown',function(e){if(e.key==='Enter')submit()});
+function submit(){
+  var t=q.value.trim();
+  if(!t){st.textContent='请输入单词';st.className='err';return}
+  st.textContent='查询中...';st.className='';
+  fetch('/api/input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})})
+  .then(function(r){return r.json()})
+  .then(function(d){
+    if(d.found){
+      st.textContent='已找到: '+d.word+' ('+d.meaning+')';st.className='ok';
+    }else{
+      st.textContent='未找到: '+t+(d.hint?' — '+d.hint:'');st.className='err';
+    }
+  })
+  .catch(function(e){st.textContent='请求失败: '+e;st.className='err'});
+}
 </script>
 </body>
 </html>)HTML";
