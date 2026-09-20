@@ -37,10 +37,11 @@ typedef struct {
     char     tag[WORD_TAG_MAX];          /**< 标签（年级等） */
     /* 词库扩展四字段（V2.1 §6.2，2026-08-20；旧 JSON 缺键时为空串）：
      * root 词根行（词卡右栏顶部）；source/grade 拼入底部标签行；
-     * inflections V1 暂不渲染（导出兼容保留）。注：四字段使
-     * WordEntry 816→1096B，词池+书最坏并发 ≈7.9MB < 8MB PSRAM 仍可行 */
+     * inflections 派生变形（R3.3 2026-09-20 接入渲染，词卡正文流
+     * 词根后显示）。注：四字段使 WordEntry 816→1096B，词池+书最坏
+     * 并发 ≈7.9MB < 8MB PSRAM 仍可行 */
     char     root[WORD_ROOT_MAX];        /**< 词根词缀（"spect=看; vis=看"） */
-    char     inflections[WORD_INFL_MAX]; /**< 派生变形（逗号分隔，暂不渲染） */
+    char     inflections[WORD_INFL_MAX]; /**< 派生变形（逗号分隔，词卡正文流渲染） */
     char     source[WORD_SOURCE_MAX];    /**< 教材来源（"人教版 九年级 Unit 5"） */
     char     grade[WORD_GRADE_MAX];      /**< 年级（"九年级"） */
     char     cloud_id[WORD_CLOUD_ID_MAX];/**< 云端词条 Guid（后端 /words/export

@@ -18,6 +18,7 @@
 #include "cjk_font_sd.h"       /* v1.4 T4.5：卡组子集字库级联 */
 #include "storage_manager.h"   /* storage_file_exists */
 #include "catalog_index.h"     /* catalog_build */
+#include "learning_state.h"    /* R3.1：cloudId 状态迁移 pre/post_remap */
 
 #include "esp_heap_caps.h"     /* heap_caps_malloc / MALLOC_CAP_SPIRAM */
 
@@ -148,4 +149,32 @@ void word_loader_init(void)
         catalog_build();    /* 演示词路径同建索引（装载尾部口径统一） */
     }
 #endif
+}
+
+/* R3.1 云端词库重载（简化版）：从云端 JSON 缓冲重新装载词池。
+ * 成功后重建目录索引。返回词条数（<0 失败）。
+ * R3.1 cloudId 迁移：替换前快照学习状态 + cloudId，替换后按 cloudId
+ * 匹配新索引回填（learning_state_pre/post_remap），进度不丢失。 */
+int word_loader_reload_from_cloud(const char *json, size_t len)
+{
+    if (!s_word_pool || s_word_cap <= 0) {
+        LOG_E("cloud reload: word pool not allocated");
+        return -1;
+    }
+    if (!json || len == 0) {
+        LOG_E("cloud reload: empty JSON");
+        return -1;
+    }
+
+    learning_state_pre_remap();
+
+    int n = word_parser_load_mem(json, len, s_word_pool, s_word_cap);
+    if (n > 0) {
+        catalog_build();
+        learning_state_post_remap(n);
+        LOG_I("cloud reload: %d entries (state migrated)", n);
+    } else {
+        LOG_E("cloud reload: parse failed");
+    }
+    return n;
 }

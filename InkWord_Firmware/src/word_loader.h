@@ -10,6 +10,7 @@
 #define INKWORD_WORD_LOADER_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,6 +37,12 @@ typedef enum {
 } word_loader_src_t;
 
 word_loader_src_t word_loader_last_source(void);
+
+/** R3.1 云端词库重载：从云端 JSON 缓冲重新装载词池。
+ *  成功后重建目录索引。返回词条数（<0 失败）。
+ *  全量替换词池，替换前/后调用 learning_state_pre/post_remap
+ *  按 cloudId 匹配迁移学习状态（FSRS/收藏/墨封/连错）。 */
+int word_loader_reload_from_cloud(const char *json, size_t len);
 
 #ifdef __cplusplus
 }

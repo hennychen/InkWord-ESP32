@@ -21,10 +21,12 @@
 #include "lan_display_server.h" /* lan_server_is_running / start */
 #include "learning_state.h"     /* 上报事件队列（peek/drop/count） */
 #include "word_parser.h"        /* WordEntry / cloud_id 过滤 */
+#include "word_loader.h"        /* R3.1：云端词库重载 */
 #include "debug_log.h"
 
 #include "esp_system.h"         /* ESP_ERROR_CHECK */
 #include "esp_mac.h"            /* esp_read_mac：首次注册的设备身份 */
+#include "esp_heap_caps.h"      /* heap_caps_malloc：R3.1 拉取缓冲 PSRAM 分配 */
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "settings_keys.h"   /* P2b：NVS 键权威表 */
@@ -46,6 +48,8 @@ extern "C" const char *fw_version(void);
  * 联网后按 MAC 幂等注册（后端返回既有 ApiKey）并回写 NVS。
  * ============================================================ */
 
+static void word_version_load(void);   /* fwd: R3.1 词库版本号加载 */
+
 void sync_credentials_load(void)
 {
     char url[128], key[64];
@@ -63,6 +67,9 @@ void sync_credentials_load(void)
     if (nvs_get_str(h, NVS_KEY_DEV_KEY, key, &len) == ESP_OK)
         sync_set_device_key(key);
     nvs_close(h);
+
+    /* R3.1：加载本地词库版本号（供后续 sync_words_if_needed 比较） */
+    word_version_load();
 }
 
 static void sync_try_register(void)
@@ -155,6 +162,93 @@ static void sync_flush_pending(void)
 }
 
 /* ============================================================
+ * R3.1 词库云端增量拉取（2026-09-20）
+ * 策略：拉取云端版本号，与本地 NVS 比较；版本变化时全量重载词池。
+ * 全量替换 + cloudId 迁移（learning_state_pre/post_remap）：
+ * 按 cloudId 匹配旧→新索引，学习进度不丢失。
+ * ============================================================ */
+
+/* 本地词库版本号（NVS 持久化） */
+static uint32_t s_word_version = 0;
+
+static void word_version_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    uint32_t ver = 0;
+    if (nvs_get_u32(h, NVS_KEY_WORD_VER, &ver) == ESP_OK) {
+        s_word_version = ver;
+    }
+    nvs_close(h);
+    LOG_I("word version loaded: %u", (unsigned)s_word_version);
+}
+
+static void word_version_save(uint32_t ver)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u32(h, NVS_KEY_WORD_VER, ver);
+    nvs_commit(h);
+    nvs_close(h);
+    s_word_version = ver;
+    LOG_I("word version saved: %u", (unsigned)ver);
+}
+
+/* 词库同步：拉取云端增量，版本变化时重载词池。
+ * R3.1：word_loader_reload_from_cloud 内部 pre/post_remap 按 cloudId
+ * 迁移学习状态，进度不丢失。 */
+static void sync_words_if_needed(void)
+{
+    if (!sync_has_device_key()) return;
+
+    /* 分配拉取缓冲（PSRAM，与词池同策略） */
+    static char *pull_buf = NULL;
+    if (!pull_buf) {
+        pull_buf = (char *)heap_caps_malloc(512 * 1024, MALLOC_CAP_SPIRAM);
+        if (!pull_buf) {
+            LOG_E("word sync: pull buffer alloc failed");
+            return;
+        }
+    }
+
+    int new_ver = sync_pull_words((int)s_word_version, pull_buf, 512 * 1024);
+    if (new_ver == SYNC_ERR_AUTH) {
+        sync_recover_auth();
+        return;
+    }
+    if (new_ver < 0) {
+        LOG_W("word sync: pull failed (%d)", new_ver);
+        return;
+    }
+
+    /* 版本相同：无更新 */
+    if ((uint32_t)new_ver == s_word_version) {
+        LOG_D("word sync: up to date (v%u)", (unsigned)s_word_version);
+        return;
+    }
+
+    /* 版本变化：重载词池 */
+    LOG_I("word sync: version changed %u -> %d, reloading",
+          (unsigned)s_word_version, new_ver);
+
+    /* 计算 JSON 长度（pull_buf 已 NUL 终止） */
+    size_t json_len = strlen(pull_buf);
+    if (json_len == 0) {
+        LOG_W("word sync: empty response, skip reload");
+        word_version_save((uint32_t)new_ver);
+        return;
+    }
+
+    int n = word_loader_reload_from_cloud(pull_buf, json_len);
+    if (n > 0) {
+        word_version_save((uint32_t)new_ver);
+        LOG_I("word sync: reloaded %d entries", n);
+    } else {
+        LOG_E("word sync: reload failed, keep old version");
+    }
+}
+
+/* ============================================================
  * P5 静默心跳会话：RTC TIMER 唤醒后的极简启动路径（不返回）
  * 屏/SD/音频/学习状态全不初始化：墨水屏驻留末帧不碰 COG，
  * sync_flush_pending 的 guard=learning_state_event_count()=0（静态
@@ -204,6 +298,7 @@ void silent_heartbeat_session(void)
     /* 云端闭环（与 background_task 周期段同链）：幂等注册 + 上报 flush */
     sync_try_register();
     sync_flush_pending();
+    sync_words_if_needed();   /* R3.1：词库增量拉取 */
     int bat = max17048_percent();   /* T2.6：实数（模块不在位回退占位） */
     if (bat < 0) bat = 100;
     if (sync_heartbeat(bat, fw_version()) == SYNC_ERR_AUTH)
@@ -239,6 +334,7 @@ static void background_task(void *arg)
      * 时 Wi-Fi 必已连，已注册设备此调用零网络开销 */
     sync_try_register();
     sync_flush_pending();
+    sync_words_if_needed();   /* R3.1：开机即同步词库 */
     const TickType_t period = pdMS_TO_TICKS(10 * 60 * 1000); /* 10 分钟 */
     int wx_poll_cnt = 2; /* 待机页天气轮询计数：初始 2 -> 首个周期即拉取 */
     while (1) {
@@ -249,6 +345,9 @@ static void background_task(void *arg)
             /* 云端闭环（P2）：首次注册（幂等）+ 评分/收藏上报 flush */
             sync_try_register();
             sync_flush_pending();
+
+            /* R3.1：词库增量拉取（版本变化时重载词池） */
+            sync_words_if_needed();
 
             int bat = max17048_percent();   /* T2.6：实数（不在位回退占位） */
             if (bat < 0) bat = 100;
