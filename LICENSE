@@ -1,0 +1,40 @@
+# InkWord 许可总览
+
+本仓库是**多组件单仓（monorepo）**，不同组件采用不同许可。
+本文件是导航说明，**本身不是授权文本**——实际授权以下列各目录内的 `LICENSE` 为准。
+
+版权：Copyright (C) 2026 LexInk
+
+## 组件许可表
+
+| 路径 | 许可 | 说明 |
+|:--|:--|:--|
+| [`InkWord_Firmware/`](InkWord_Firmware/LICENSE) | **GPL-3.0** | 设备固件。墨水屏驱动栈含 GxEPD2（GPL-3.0）派生代码，故整体须 GPL-3.0 兼容 |
+| [`InkWord_Firmware_BigScreen/`](InkWord_Firmware_BigScreen/LICENSE) | **GPL-3.0** | 大屏固件，同上 |
+| [`InkWord_Backend/`](InkWord_Backend/LICENSE) | **AGPL-3.0** | 后端服务。以网络服务形式部署时，须向使用者提供对应源码 |
+| [`InkWord_App/`](InkWord_App/LICENSE) | **Apache-2.0** | Flutter 手机客户端（含专利授权条款） |
+| [`InkWord_Admin/`](InkWord_Admin/LICENSE) | **Apache-2.0** | Angular 管理后台 |
+| [`tools/`](tools/LICENSE)、[`docs/`](docs/LICENSE) | **Apache-2.0** | 工具链与设计文档 |
+
+选择说明：固件采用 GPL-3.0 是**被依赖约束**（GxEPD2 为 GPL-3.0），同时也是**有意选择**——
+copyleft 可防止他人将本项目代码闭源后作为竞品分发。后端采用 AGPL-3.0 是为了防止
+第三方直接托管本项目的服务端代码对外提供同类服务。
+
+## 商业授权（双授权模式）
+
+如需在**闭源产品**中集成本项目代码，或需要不受上述 copyleft 条款约束的使用方式，
+可另行获取商业授权。咨询渠道：通过本仓库 Issue，或 GitHub [@hennychen](https://github.com/hennychen)。
+
+## 不在代码许可范围内的资产
+
+以下资产**不随上述代码许可授权**：
+
+- **内容资产**：词库、卡组、读音音频、点阵字库等，另有独立条款（见
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 中的内容源署名与许可）；
+- **商标与品牌**：`InkWord`、`LexInk`、`einkword.com` 等名称与标识的使用规则见
+  [`TRADEMARK.md`](TRADEMARK.md)——代码许可不包含商标授权。
+
+## 贡献
+
+外部贡献的授权安排（DCO 签署 + 贡献者许可协议）见 [`CONTRIBUTING.md`](CONTRIBUTING.md)
+与 [`CLA.md`](CLA.md)。

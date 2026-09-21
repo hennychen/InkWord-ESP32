@@ -24,7 +24,7 @@
 //   [12..19] u16 cell[4]    [20..27] u16 stride[4]
 //   [28..]   u16 cp[n] 升序（4 对齐后） level0 位图 n*32B → level1 n*60B → level2 n*72B → level3 n*128B
 //
-// 用法：cd InkWord_Firmware && swift tools/gen_cjk_font.swift
+// 用法：cd InkWord_Firmware_BigScreen && swift tools/gen_cjk_font.swift
 //       （改引文/字表后重新运行即可，勿手改生成文件）
 // 子集模式（v1.4 T4.5 字库子集下发）：
 //       swift tools/gen_cjk_font.swift --subset <charset.txt> <deck_id>
@@ -32,6 +32,12 @@
 //       src/cjk_font_data.bin 已收录码点，差集空即退出；差集字符渲染三级
 //       位图 → ./deck_<id>.bin（CKF1 同格式，固件 cjk_font_sd 级联查找：
 //       主集 miss → 子集；拷入 SD /fonts/deck_<id>.bin 生效）。
+// OFL 严格模式（--ofl，商业化发行构建用，2026-09-21 自小屏同名脚本同步）：
+//       swift tools/gen_cjk_font.swift --ofl
+//       仅允许可自由再分发的字体（SIL OFL 及同等级：Noto / 思源 / DejaVu），
+//       且不做静默回退——字体缺失或覆盖不足即报错退出。默认模式沿用原
+//       字体链（含 Apple 系统字体）以维持真机黄金帧基线，勿混用两种模式的
+//       产物：--ofl 产物字形与默认产物不同，换用需重过真机走查。
 
 import Foundation
 import CoreText
@@ -42,14 +48,24 @@ let args = CommandLine.arguments
 var subsetMode = false
 var subsetDeckId = ""
 if args.contains("--subset") {
-    /* swift JIT：args[0]=脚本路径 → [1]="--subset" [2]=charset [3]=deck_id */
-    guard args.count == 4 else {
+    /* swift JIT：args[0]=脚本路径 → [1]="--subset" [2]=charset [3]=deck_id
+     * （[4] 可选 "--ofl"，见下方 OFL 严格模式） */
+    guard args.count == 4 || (args.count == 5 && args.contains("--ofl")) else {
         FileHandle.standardError.write(
-            "usage: swift tools/gen_cjk_font.swift --subset <charset.txt> <deck_id>\n"
+            "usage: swift tools/gen_cjk_font.swift --subset <charset.txt> <deck_id> [--ofl]\n"
                 .data(using: .utf8)!); exit(1)
     }
     subsetMode = true
     subsetDeckId = args[3]
+}
+/* OFL 严格模式（--ofl）：字体来源须可从产物审计（打印实际使用字体，
+ * 见 fontsDesc），故拒绝一切静默回退与 Apple 系统字体。 */
+let oflMode = args.contains("--ofl")
+/* 干净失败：swift JIT 下 preconditionFailure 会打整篇崩溃堆栈、掩盖真实原因，
+ * 审计场景（--ofl 门禁）只留一行可读报错 + 非零退出码。 */
+func die(_ msg: String) -> Never {
+    FileHandle.standardError.write(Data((msg + "\n").utf8))
+    exit(1)
 }
 
 let LEVELS = [16, 20, 24, 32, 40, 48]   // 像素格边长（level 0~5；40/48px 级
@@ -204,6 +220,11 @@ let SMALL_CHAIN = ["PingFang SC", "Heiti SC", "Hiragino Sans GB",
                    "Songti SC", "Kaiti SC"]   /* "Heiti SC" 方为实际家族名，
                    "STHeiti SC" 解析落 Helvetica（2026-08-23 探测实测） */
 let LARGE_CHAIN = ["Kaiti SC", "Kaiti TC", "Songti SC", "STHeiti SC", "Hiragino Sans GB"]
+/* OFL 严格模式链（--ofl）：只列可自由再分发的字体，且不做替身回退。
+ * 大字级用思源宋体（Noto Serif CJK）——OFL 侧无楷体，书卷气由宋体承
+ * 担（换用后字形与默认产物不同，需真机走查，见文件头 OFL 段）。 */
+let SMALL_CHAIN_OFL = ["Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC"]
+let LARGE_CHAIN_OFL = ["Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC"]
 
 /* 覆盖全部字符的第一个家族 + Bold 能力（原单链逻辑提取，两链各调）。
  * 白名单：纯 CJK 家族不含但无需该家族自带的字符——
@@ -222,6 +243,13 @@ func fallbackOK(_ cp: UInt16) -> Bool {
 func pickFont(_ chain: [String]) -> (name: String, bold: Bool) {
     for name in chain {
         guard let f = CTFontCreateWithName(name as CFString, 16, nil) as CTFont? else { continue }
+        /* OFL 严格模式：CTFontCreateWithName 对未安装家族会静默落系统默认
+         * 字体（2026-08-23 实测 "STHeiti SC" 解析落 Helvetica），故校验实际
+         * 家族名，不匹配即视为未安装——宁可报错也不产出混入 Apple 字形的字库 */
+        if oflMode && (CTFontCopyFamilyName(f) as String).caseInsensitiveCompare(name) != .orderedSame {
+            print("font '\(name)' not installed (OFL strict mode)")
+            continue
+        }
         let u16 = Array(String(charset).utf16)
         var glyphs = [CGGlyph](repeating: 0, count: u16.count)
         /* Bold 能力检测（全有/白名单两路径共用）：白名单路径原硬编码 false，
@@ -246,10 +274,13 @@ func pickFont(_ chain: [String]) -> (name: String, bold: Bool) {
         if missing.isEmpty { return (name, bold) }   /* 仅白名单缺口：级联可补 */
         print("font '\(name)' skipped \(missing)")
     }
-    preconditionFailure("no covering CJK font found")
+    die(oflMode
+        ? "OFL strict mode: no covering font. Install Noto CJK first "
+            + "(brew install --cask font-noto-sans-cjk-sc font-noto-serif-cjk-sc)"
+        : "no covering CJK font found")
 }
-let smallFont = pickFont(SMALL_CHAIN)
-let largeFont = pickFont(LARGE_CHAIN)
+let smallFont = pickFont(oflMode ? SMALL_CHAIN_OFL : SMALL_CHAIN)
+let largeFont = pickFont(oflMode ? LARGE_CHAIN_OFL : LARGE_CHAIN)
 
 /* 加粗（墨水屏笔画细则发虚）：优先真 Bold 变体；无则渲染后 3x3 膨胀 */
 let BOLD = true
@@ -279,12 +310,29 @@ for ch in phonCps {
     if cp > 0x7F && cp < 0x3000 { phonSet.insert(ch) }
 }
 var phonFontCache: [CGFloat: CTFont] = [:]
+/* OFL 严格模式的音标字体：DejaVu Sans 覆盖 IPA 全套（OFL 侧首选），
+ * 其次 Noto Sans / Noto Sans CJK SC。逐个校验家族名，全缺即失败——
+ * 静默回退会让字库字形来源无法从产物审计（默认模式链保持不动）。 */
+func pickOFLPhonFont(_ size: CGFloat) -> CTFont {
+    for name in ["DejaVu Sans", "Noto Sans", "Noto Sans CJK SC"] {
+        let f = CTFontCreateWithName(name as CFString, size, nil)
+        if (CTFontCopyFamilyName(f) as String).caseInsensitiveCompare(name) == .orderedSame {
+            return f
+        }
+    }
+    die("OFL strict mode: no IPA font. Install DejaVu Sans or Noto Sans")
+}
 func phonFont(_ size: CGFloat) -> CTFont {
     if let f = phonFontCache[size] { return f }
-    let f = CTFontCreateWithName("STHeitiSC-Medium" as CFString, size, nil)
-    let ps = CTFontCopyPostScriptName(f) as String? ?? ""
-    let chosen = ps == "STHeitiSC-Medium" ? f
-        : CTFontCreateWithName("STHeiti SC" as CFString, size, nil)
+    let chosen: CTFont
+    if oflMode {
+        chosen = pickOFLPhonFont(size)
+    } else {
+        let f = CTFontCreateWithName("STHeitiSC-Medium" as CFString, size, nil)
+        let ps = CTFontCopyPostScriptName(f) as String? ?? ""
+        chosen = ps == "STHeitiSC-Medium" ? f
+            : CTFontCreateWithName("STHeiti SC" as CFString, size, nil)
+    }
     phonFontCache[size] = chosen
     return chosen
 }

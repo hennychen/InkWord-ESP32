@@ -444,4 +444,16 @@ NVS blob = {magic "LR04", deck[8], count, used, lr_sparse_t[used]}
 
 ## License
 
-Proprietary — LexInk
+本项目采用**分层许可**（多组件单仓，实际授权以各组件目录内 LICENSE 为准）：
+
+| 组件 | 许可 |
+|:--|:--|
+| `InkWord_Firmware/`、`InkWord_Firmware_BigScreen/` | **GPL-3.0** |
+| `InkWord_Backend/` | **AGPL-3.0** |
+| `InkWord_App/`、`InkWord_Admin/` | **Apache-2.0** |
+| `tools/`、`docs/` | **Apache-2.0** |
+
+- 许可总览与**商业授权（双授权）**说明：[`LICENSE`](LICENSE)
+- 第三方组件与内容来源（词库/诗词/字库/音频授权）：[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
+- 商标与品牌使用规则：[`TRADEMARK.md`](TRADEMARK.md)
+- 贡献指南与贡献者许可协议：[`CONTRIBUTING.md`](CONTRIBUTING.md)、[`CLA.md`](CLA.md)
